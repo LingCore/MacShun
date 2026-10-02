@@ -104,7 +104,7 @@ enum PointerSpeed {
         let text = String(format: "%.3f", value)
             .replacingOccurrences(of: "0+$", with: "", options: .regularExpression)
             .replacingOccurrences(of: "\\.$", with: "", options: .regularExpression)
-        return "\(text) 倍"
+        return L("%@ 倍", text)
     }
 }
 

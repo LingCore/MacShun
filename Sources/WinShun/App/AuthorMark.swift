@@ -35,7 +35,7 @@ struct AuthorMark: View {
         // 稻秆和谷粒会画到底板外面一点，画布四周多留一圈，布局上仍按 size 算
         .frame(width: size + margin * 2, height: size + margin * 2)
         .padding(-margin)
-        .accessibilityLabel("光标与稻穗")
+        .accessibilityLabel(L("光标与稻穗"))
     }
 }
 
@@ -415,7 +415,7 @@ struct AuthorAvatar: View {
             }
             .contentShape(Circle())
             .onTapGesture { clock.play() }
-            .accessibilityLabel("作者 LingCore 的头像")
+            .accessibilityLabel(L("作者 LingCore 的头像"))
         } else {
             AuthorMark(size: size)
         }

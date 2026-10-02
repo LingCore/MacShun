@@ -111,8 +111,9 @@ enum Pinyin {
         let s = NSMutableString(string: String(ch))
         CFStringTransform(s, nil, kCFStringTransformMandarinLatin, false)
         var latin = (s as String).lowercased()
+        // 逐个 Unicode 码位比较：默认的比较会把 “uō” 当成 “ǖ”（都是 u 加符号），“缩 suō” 就成了 “sv”
         for u in ["ü", "ǖ", "ǘ", "ǚ", "ǜ"] {
-            latin = latin.replacingOccurrences(of: u, with: "v")
+            latin = latin.replacingOccurrences(of: u, with: "v", options: .literal)
         }
         let plain = NSMutableString(string: latin)
         CFStringTransform(plain, nil, kCFStringTransformStripDiacritics, false)

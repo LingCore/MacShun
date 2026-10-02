@@ -147,14 +147,14 @@ struct ClipboardPanelView: View {
                 .foregroundStyle(.secondary)
             SearchField(
                 text: $model.query,
-                placeholder: "搜索剪贴板历史，支持拼音和首字母",
+                placeholder: L("搜索剪贴板历史，支持拼音和首字母"),
                 focusToken: model.focusToken,
                 onMove: { model.move($0) },
                 onSubmit: { model.pasteSelected() },
                 onCancel: { model.onClose() }
             )
             if !model.results.isEmpty {
-                Text("\(model.results.count) 条")
+                Text(L("%ld 条", model.results.count))
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
@@ -199,8 +199,8 @@ struct ClipboardPanelView: View {
     private func groupTitle(at index: Int) -> String? {
         let results = model.results
         guard results.first?.pinned == true else { return nil }
-        if index == 0 { return "已固定" }
-        if !results[index].pinned && results[index - 1].pinned { return "最近" }
+        if index == 0 { return L("已固定") }
+        if !results[index].pinned && results[index - 1].pinned { return L("最近") }
         return nil
     }
 
@@ -210,9 +210,9 @@ struct ClipboardPanelView: View {
                 .font(.system(size: 30, weight: .light))
                 .foregroundStyle(.tertiary)
                 .padding(.bottom, 4)
-            Text(model.query.isEmpty ? "还没有记录" : "没有找到")
+            Text(model.query.isEmpty ? L("还没有记录") : L("没有找到"))
                 .font(.headline)
-            Text(model.query.isEmpty ? "复制的文字和图片会出现在这里" : "换个关键词，或者试试拼音首字母")
+            Text(model.query.isEmpty ? L("复制的文字和图片会出现在这里") : L("换个关键词，或者试试拼音首字母"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -220,17 +220,29 @@ struct ClipboardPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// 放不下（英文的字比中文长）时先收紧间距，再省掉谁都知道的“↑↓ 选择”和“Esc 关闭”。
     private var footer: some View {
-        HStack(spacing: 12) {
-            KeyHint(key: "↑↓", action: "选择")
-            KeyHint(key: "Enter", action: "粘贴")
-            KeyHint(key: "Ctrl+P", action: "固定")
-            KeyHint(key: "Ctrl+Del", action: "删除")
-            Spacer(minLength: 0)
-            KeyHint(key: "Esc", action: "关闭")
+        ViewThatFits(in: .horizontal) {
+            hints(spacing: 12, all: true)
+            hints(spacing: 8, all: true)
+            hints(spacing: 12, all: false)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .frame(height: 34)
+    }
+
+    private func hints(spacing: CGFloat, all: Bool) -> some View {
+        HStack(spacing: spacing) {
+            if all { KeyHint(key: "↑↓", action: L("选择")) }
+            KeyHint(key: "Enter", action: L("粘贴"))
+            KeyHint(key: "Ctrl+P", action: L("固定"))
+            KeyHint(key: "Ctrl+Del", action: L("删除"))
+            if all {
+                Spacer(minLength: 0)
+                KeyHint(key: "Esc", action: L("关闭"))
+            }
+        }
     }
 }
 
@@ -267,7 +279,7 @@ private struct ClipboardRow: View {
 
     private static let timeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
-        f.locale = Locale(identifier: "zh_CN")
+        f.locale = AppLanguage.uiLocale
         f.unitsStyle = .short
         return f
     }()
@@ -347,7 +359,7 @@ private struct ClipboardRow: View {
                             .strokeBorder(Color.primary.opacity(0.1))
                     )
             } else {
-                Text("图片").font(.system(size: 13))
+                Text(L("图片")).font(.system(size: 13))
             }
         }
     }
@@ -376,7 +388,7 @@ private struct ClipboardRow: View {
     private var metaText: String {
         var parts: [String] = []
         if item.kind == .image, let w = item.imageWidth, let h = item.imageHeight {
-            parts.append("图片 \(w)×\(h)")
+            parts.append(L("图片 %@×%@", "\(w)", "\(h)"))
         }
         if let app = item.sourceApp { parts.append(AppInfo.name(app)) }
         parts.append(Self.timeFormatter.localizedString(for: item.lastUsed, relativeTo: Date()))
@@ -385,10 +397,10 @@ private struct ClipboardRow: View {
 
     private var actions: some View {
         HStack(spacing: 2) {
-            RowButton(symbol: item.pinned ? "pin.slash" : "pin", help: item.pinned ? "取消固定" : "固定") {
+            RowButton(symbol: item.pinned ? "pin.slash" : "pin", help: item.pinned ? L("取消固定") : L("固定")) {
                 model.store.togglePin(item.id)
             }
-            RowButton(symbol: "trash", help: "删除") {
+            RowButton(symbol: "trash", help: L("删除")) {
                 model.store.delete(item.id)
             }
         }

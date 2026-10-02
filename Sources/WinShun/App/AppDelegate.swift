@@ -67,6 +67,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboard.applyConfig()
         startEventTapsIfPossible()
 
+        if GuideTest.isRequested {
+            let test = GuideTest { [weak self] in self?.settingsWindow.show(tab: .general) }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await test.run(state: self.state)
+                NSApp.terminate(nil)
+            }
+            return
+        }
+
         if SelfTest.isRequested {
             keyboard.learningEnabled.set(false)
             startPermissionPolling()
@@ -86,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !state.allGood || clipboardNeedsSetup {
             if !state.accessibilityGranted { Permissions.requestAccessibility() }
             if !state.inputMonitoringGranted { Permissions.requestInputMonitoring() }
+            settingsWindow.show(tab: .general)
+        } else if CommandLine.arguments.contains(AppState.showSettingsArgument) {
+            // 授权引导重启 Win顺 之后，回到设置窗口
             settingsWindow.show(tab: .general)
         }
         startPermissionPolling()
@@ -195,6 +208,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let after = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
             if before != after || !self.state.eventTapRunning {
                 self.startEventTapsIfPossible()
+            }
+            // macOS 27：刚开了“设备控制和数据访问”（不管是在引导里还是在系统弹窗里开的），
+            // 输入监控要重启才生效，直接重启，不用用户再点
+            if PermissionKind.accessibilityCoversInputMonitoring, !before.0, after.0, !after.1, !GuideTest.isRequested {
+                PermissionGuide.shared.start([.inputMonitoring], state: self.state)
             }
             self.logPermissionsIfChanged()
         }

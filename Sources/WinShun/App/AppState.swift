@@ -40,12 +40,16 @@ final class AppState: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
+    /// 重启后要打开设置窗口时带的参数
+    static let showSettingsArgument = "--show-settings"
+
     /// 重新启动本程序。有时授予“输入监控”权限后要重启才生效。
-    static func relaunch() {
+    static func relaunch(showSettings: Bool = false) {
         let path = Bundle.main.bundlePath
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$0\"", path]
+        let args = showSettings ? " --args \(showSettingsArgument)" : ""
+        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$0\"\(args)", path]
         try? task.run()
         NSApp.terminate(nil)
     }

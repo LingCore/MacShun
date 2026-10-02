@@ -26,7 +26,7 @@ struct Work: Identifiable {
 }
 
 enum Gleaning {
-    static let title = "拾穗计划"
+    static let title = L("拾穗计划")
     static let symbol = "leaf.fill"
     static let tint = Color(red: 0.80, green: 0.58, blue: 0.20)
     /// 作品图标容器（包括“更多作品”的占位方块）统一的边长。
@@ -36,7 +36,7 @@ enum Gleaning {
 
     /// 作者的名字和一句话介绍，标志见 AuthorMark。
     static let authorName = "LingCore"
-    static let authorMotto = "且将新火试新茶，诗酒趁年华"
+    static let authorMotto = L("且将新火试新茶，诗酒趁年华")
 
     /// 作者主页。填上后作者那一行会出现“作者主页”按钮。
     static let authorURL: URL? = nil
@@ -47,9 +47,9 @@ enum Gleaning {
     /// 新作品加在这里，开源的和付费的会自动分开显示。
     static let works: [Work] = [
         Work(
-            id: "io.github.bofu.winshun",
-            name: "Win顺",
-            summary: "把 Windows 的顺手带到 Mac",
+            id: "io.github.lingcore.winshun",
+            name: L("Win顺"),
+            summary: L("把 Windows 的顺手带到 Mac"),
             kind: .openSource,
             symbol: "keyboard",
             tint: .blue,
@@ -117,9 +117,11 @@ struct GleaningPage: View {
                         ComingSoonItem(palette: palette)
                     }
                 }
+                .settingsAnchor(.works)
                 .padding(.top, 22)
                 Spacer(minLength: 20)
                 FeedbackNote(palette: palette)
+                    .settingsAnchor(.feedback)
                 footer
                     .padding(.top, 16)
             }
@@ -142,12 +144,12 @@ struct GleaningPage: View {
                 HStack(spacing: 6) {
                     let works = Gleaning.works
                     let open = works.filter { $0.kind == .openSource }.count
-                    StatChip(text: "\(works.count) 个作品", palette: palette)
-                    if open > 0 { StatChip(text: "\(open) 个开源", palette: palette) }
-                    if works.count > open { StatChip(text: "\(works.count - open) 个付费", palette: palette) }
+                    StatChip(text: L("%ld 个作品", works.count), palette: palette)
+                    if open > 0 { StatChip(text: L("%ld 个开源", open), palette: palette) }
+                    if works.count > open { StatChip(text: L("%ld 个付费", works.count - open), palette: palette) }
                 }
             }
-            Text("每一个作品，都是认真生活留下的痕迹")
+            Text(L("每一个作品，都是认真生活留下的痕迹"))
                 .font(.system(size: 13.5))
                 .foregroundStyle(palette.inkSoft)
         }
@@ -163,7 +165,7 @@ struct GleaningPage: View {
                     Text(Gleaning.authorName)
                         .font(.system(size: 17, weight: .bold, design: .serif))
                         .foregroundStyle(palette.ink)
-                    Tag(text: "作者", palette: palette)
+                    Tag(text: L("作者"), palette: palette)
                 }
                 Text(Gleaning.authorMotto)
                     .font(.callout)
@@ -174,7 +176,7 @@ struct GleaningPage: View {
                 Button {
                     NSWorkspace.shared.open(url)
                 } label: {
-                    Label("作者主页", systemImage: "arrow.up.right")
+                    Label(L("作者主页"), systemImage: "arrow.up.right")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(palette.ink)
                         .padding(.horizontal, 12)
@@ -188,7 +190,7 @@ struct GleaningPage: View {
     }
 
     private var footer: some View {
-        Text("“拾穗计划”的名字取自米勒的名画《拾穗者》")
+        Text(L("“拾穗计划”的名字取自米勒的名画《拾穗者》"))
             .font(.caption)
             .foregroundStyle(palette.ink.opacity(0.8))
             .shadow(color: palette.halo, radius: 4)
@@ -460,8 +462,8 @@ private struct WorkItem: View {
                     .foregroundStyle(palette.inkSoft)
                     .lineLimit(1)
                 HStack(spacing: 5) {
-                    Tag(text: work.kind == .openSource ? "开源" : "付费", palette: palette)
-                    if isCurrent { Tag(text: "正在使用", palette: palette) }
+                    Tag(text: work.kind == .openSource ? L("开源") : L("付费"), palette: palette)
+                    if isCurrent { Tag(text: L("正在使用"), palette: palette) }
                 }
                 .padding(.top, 3)
             }
@@ -548,10 +550,10 @@ private struct ComingSoonItem: View {
                     .foregroundStyle(palette.ink)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("更多作品正在路上")
+                Text(L("更多作品正在路上"))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(palette.ink.opacity(0.85))
-                Text("新作品做好就放在这里")
+                Text(L("新作品做好就放在这里"))
                     .font(.callout)
                     .foregroundStyle(palette.inkSoft)
             }
@@ -570,13 +572,13 @@ private struct FeedbackNote: View {
                 IconBadge(symbol: "envelope.fill", tint: palette.accent, size: 32)
                     .rotationEffect(.degrees(-9))
                     .shadow(color: palette.accent.opacity(0.45), radius: 8, y: 4)
-                Text("您的建议非常重要")
+                Text(L("您的建议非常重要"))
                     .font(.system(size: 19, weight: .bold, design: .serif))
                     .foregroundStyle(palette.ink)
                     .shadow(color: palette.halo, radius: 5)
                     .shadow(color: palette.halo, radius: 2)
             }
-            Text("有任何建议，或想对开发者说的话，欢迎写信给我")
+            Text(L("有任何建议，或想对开发者说的话，欢迎写信给我"))
                 .font(.callout)
                 .foregroundStyle(palette.ink.opacity(0.85))
                 .shadow(color: palette.halo, radius: 4)
@@ -586,7 +588,7 @@ private struct FeedbackNote: View {
                     HStack(spacing: 6) {
                         Image(systemName: "paperplane.fill")
                             .font(.system(size: 11, weight: .semibold))
-                        Text(email ?? "还没有")
+                        Text(email ?? L("还没有"))
                             .font(.system(size: 13, weight: .semibold))
                     }
                     .foregroundStyle(.white)
@@ -597,13 +599,13 @@ private struct FeedbackNote: View {
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .help("用邮件程序写信")
-                Button("复制", action: copy)
+                .help(L("用邮件程序写信"))
+                Button(L("复制"), action: copy)
                     .buttonStyle(.plain)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(palette.ink.opacity(0.85))
                     .shadow(color: palette.halo, radius: 3)
-                    .help("复制邮箱地址")
+                    .help(L("复制邮箱地址"))
             }
             .padding(.top, 6)
             // 不用 .disabled：禁用的按钮会被画成半透明，透出后面的麦子。没填邮箱时按钮本来就什么也不做。
@@ -617,12 +619,12 @@ private struct FeedbackNote: View {
     private func compose() {
         guard let email else { return }
         let info = Bundle.main.infoDictionary
-        let app = info?["CFBundleName"] as? String ?? "Win顺"
-        let version = info?["CFBundleShortVersionString"] as? String ?? "开发版"
+        let app = info?["CFBundleName"] as? String ?? L("Win顺")
+        let version = info?["CFBundleShortVersionString"] as? String ?? L("开发版")
         var components = URLComponents()
         components.scheme = "mailto"
         components.path = email
-        components.queryItems = [URLQueryItem(name: "subject", value: "\(app) \(version) 的建议")]
+        components.queryItems = [URLQueryItem(name: "subject", value: L("%@ %@ 的建议", app, version))]
         if let url = components.url { NSWorkspace.shared.open(url) }
     }
 

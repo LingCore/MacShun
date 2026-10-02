@@ -160,7 +160,7 @@ final class InputDeviceMonitor {
     }
 
     static func describe(_ device: IOHIDDevice) -> InputDevice? {
-        let name = (IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String) ?? "未知设备"
+        let name = (IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String) ?? L("未知设备")
         let vendor = (IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
         let product = (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) ?? 0
         return InputDevice(

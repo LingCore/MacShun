@@ -18,6 +18,14 @@ struct PinyinTests {
         #expect(!matches("剪贴板", "bantie"))
     }
 
+    @Test func toneMarksOnO() {
+        // “uō” 不能被当成 ü
+        #expect(matches("缩放", "suofang"))
+        #expect(matches("说明", "shuoming"))
+        #expect(matches("多少", "duoshao"))
+        #expect(matches("女儿", "nver"))
+    }
+
     @Test func mixedFullAndInitials() {
         #expect(matches("剪贴板", "jiantb"))
         #expect(matches("剪贴板", "jtieb"))

@@ -123,7 +123,7 @@ final class PointerAccelerationController {
     }
 
     private func deviceKey(_ service: IOHIDServiceClient) -> String? {
-        let name = stringProperty(service, kIOHIDProductKey) ?? "未知鼠标"
+        let name = stringProperty(service, kIOHIDProductKey) ?? L("未知鼠标")
         let vendor = intProperty(service, kIOHIDVendorIDKey) ?? 0
         let product = intProperty(service, kIOHIDProductIDKey) ?? 0
         return InputDevice.makeKey(vendorID: vendor, productID: product, name: name)

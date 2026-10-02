@@ -32,7 +32,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     private func updateIcon() {
         item.button?.image = BrandMark.menuBarImage(needsAttention: !state.allGood)
-        item.button?.toolTip = state.allGood ? "Win顺" : "Win顺：需要授权"
+        item.button?.toolTip = state.allGood ? L("Win顺") : L("Win顺：需要授权")
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -40,25 +40,25 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let cfg = configStore.config
 
         if !state.allGood {
-            menu.addItem(action("需要授权才能工作…", #selector(showSettings), symbol: "exclamationmark.triangle.fill"))
+            menu.addItem(action(L("需要授权才能工作…"), #selector(showSettings), symbol: "exclamationmark.triangle.fill"))
             menu.addItem(.separator())
         } else if cfg.clipboard.enabled && state.pasteboardAccess != .allowed {
-            menu.addItem(action("剪贴板历史需要授权…", #selector(showSettings), symbol: "exclamationmark.triangle.fill"))
+            menu.addItem(action(L("剪贴板历史需要授权…"), #selector(showSettings), symbol: "exclamationmark.triangle.fill"))
             menu.addItem(.separator())
         }
 
-        menu.addItem(.sectionHeader(title: "Win顺"))
-        menu.addItem(toggle("快捷键像 Windows", cfg.keyboard.enabled, #selector(toggleKeyboard), symbol: "keyboard"))
-        menu.addItem(toggle("鼠标像 Windows", cfg.mouse.enabled, #selector(toggleMouse), symbol: "computermouse"))
-        menu.addItem(toggle("剪贴板历史", cfg.clipboard.enabled, #selector(toggleClipboard), symbol: "doc.on.clipboard"))
+        menu.addItem(.sectionHeader(title: L("Win顺")))
+        menu.addItem(toggle(L("快捷键像 Windows"), cfg.keyboard.enabled, #selector(toggleKeyboard), symbol: "keyboard"))
+        menu.addItem(toggle(L("鼠标像 Windows"), cfg.mouse.enabled, #selector(toggleMouse), symbol: "computermouse"))
+        menu.addItem(toggle(L("剪贴板历史"), cfg.clipboard.enabled, #selector(toggleClipboard), symbol: "doc.on.clipboard"))
         menu.addItem(.separator())
 
-        let history = action("打开剪贴板历史", #selector(showClipboard), symbol: "clock.arrow.circlepath")
+        let history = action(L("打开剪贴板历史"), #selector(showClipboard), symbol: "clock.arrow.circlepath")
         history.isEnabled = cfg.clipboard.enabled
         menu.addItem(history)
-        menu.addItem(action("设置…", #selector(showSettings), key: ",", symbol: "gearshape"))
+        menu.addItem(action(L("设置…"), #selector(showSettings), key: ",", symbol: "gearshape"))
         menu.addItem(.separator())
-        menu.addItem(action("退出 Win顺", #selector(quit), key: "q", symbol: "power"))
+        menu.addItem(action(L("退出 Win顺"), #selector(quit), key: "q", symbol: "power"))
     }
 
     private func toggle(_ title: String, _ on: Bool, _ selector: Selector, symbol: String) -> NSMenuItem {

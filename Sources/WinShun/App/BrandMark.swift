@@ -36,7 +36,7 @@ enum BrandMark {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "Win顺"
+        image.accessibilityDescription = L("Win顺")
         return image
     }
 
