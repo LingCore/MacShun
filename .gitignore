@@ -1,0 +1,27 @@
+# Swift Package Manager / 编译产物
+.build/
+.swiftpm/
+build/
+dist/
+*.app
+*.dmg
+*.zip
+
+# Xcode
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# 证书、密钥、公证凭据：一律不进仓库
+*.p12
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.pem
+*.key
+.env
+sparkle_private_key*

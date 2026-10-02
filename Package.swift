@@ -1,0 +1,30 @@
+// swift-tools-version:6.0
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import PackageDescription
+
+let package = Package(
+    name: "WinShun",
+    platforms: [.macOS(.v14)],
+    targets: [
+        .executableTarget(
+            name: "WinShun",
+            path: "Sources/WinShun",
+            exclude: [],
+            linkerSettings: [
+                .linkedFramework("AppKit"),
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("ServiceManagement"),
+            ]
+        ),
+        .testTarget(
+            name: "WinShunTests",
+            dependencies: ["WinShun"],
+            path: "Tests/WinShunTests"
+        ),
+    ],
+    // 事件拦截在独立线程上运行，和界面线程共享状态时用锁保护；
+    // 暂时使用 Swift 5 语言模式，避免严格并发检查对 AppKit 回调代码的大量误报。
+    swiftLanguageModes: [.v5]
+)
