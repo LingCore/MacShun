@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="252 252 520 520" width="520" height="520">
+  <!-- Win顺 mark without the plate: one-stroke ⌘ in the four Windows colours, the top-right loop is a leaf -->
+  <defs>
+    <linearGradient id="gL" gradientUnits="userSpaceOnUse" x1="372" y1="0" x2="652" y2="0"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mL" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="url(#gL)"/></mask>
+    <linearGradient id="gR" gradientUnits="userSpaceOnUse" x1="652" y1="0" x2="372" y2="0"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mR" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="url(#gR)"/></mask>
+    <linearGradient id="gT" gradientUnits="userSpaceOnUse" x1="0" y1="372" x2="0" y2="652"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mT" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="url(#gT)"/></mask>
+    <linearGradient id="gB" gradientUnits="userSpaceOnUse" x1="0" y1="652" x2="0" y2="372"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mB" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="url(#gB)"/></mask>
+  </defs>
+  <g mask="url(#mL)"><g mask="url(#mT)">
+    <rect x="272" y="272" width="160" height="160" rx="48" fill="#FF5A4A" fill-opacity="0.16"/>
+    <rect x="272" y="592" width="160" height="160" rx="48" fill="#FF5A4A" fill-opacity="0.16"/>
+    <rect x="592" y="592" width="160" height="160" rx="48" fill="#FF5A4A" fill-opacity="0.16"/>
+    <path d="M592 432 L652 432 Q752 432 752 332 L752 272 L692 272 Q592 272 592 372 Z" fill="#FF5A4A" fill-opacity="0.16"/>
+    <path d="M646.4 377.6 L691.2 332.8" stroke="#FF5A4A" stroke-width="14" stroke-linecap="round"/>
+    <path d="M432 432 L432 320 Q432 272 384 272 L320 272 Q272 272 272 320 L272 384 Q272 432 320 432 L652 432 Q752 432 752 332 L752 272 Q752 272 752 272 L692 272 Q592 272 592 372 L592 704 Q592 752 640 752 L704 752 Q752 752 752 704 L752 640 Q752 592 704 592 L320 592 Q272 592 272 640 L272 704 Q272 752 320 752 L384 752 Q432 752 432 704 Z" fill="none" stroke="#FF5A4A" stroke-width="40" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mR)"><g mask="url(#mT)">
+    <rect x="272" y="272" width="160" height="160" rx="48" fill="#33C463" fill-opacity="0.16"/>
+    <rect x="272" y="592" width="160" height="160" rx="48" fill="#33C463" fill-opacity="0.16"/>
+    <rect x="592" y="592" width="160" height="160" rx="48" fill="#33C463" fill-opacity="0.16"/>
+    <path d="M592 432 L652 432 Q752 432 752 332 L752 272 L692 272 Q592 272 592 372 Z" fill="#33C463" fill-opacity="0.16"/>
+    <path d="M646.4 377.6 L691.2 332.8" stroke="#33C463" stroke-width="14" stroke-linecap="round"/>
+    <path d="M432 432 L432 320 Q432 272 384 272 L320 272 Q272 272 272 320 L272 384 Q272 432 320 432 L652 432 Q752 432 752 332 L752 272 Q752 272 752 272 L692 272 Q592 272 592 372 L592 704 Q592 752 640 752 L704 752 Q752 752 752 704 L752 640 Q752 592 704 592 L320 592 Q272 592 272 640 L272 704 Q272 752 320 752 L384 752 Q432 752 432 704 Z" fill="none" stroke="#33C463" stroke-width="40" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mL)"><g mask="url(#mB)">
+    <rect x="272" y="272" width="160" height="160" rx="48" fill="#2D86FF" fill-opacity="0.16"/>
+    <rect x="272" y="592" width="160" height="160" rx="48" fill="#2D86FF" fill-opacity="0.16"/>
+    <rect x="592" y="592" width="160" height="160" rx="48" fill="#2D86FF" fill-opacity="0.16"/>
+    <path d="M592 432 L652 432 Q752 432 752 332 L752 272 L692 272 Q592 272 592 372 Z" fill="#2D86FF" fill-opacity="0.16"/>
+    <path d="M646.4 377.6 L691.2 332.8" stroke="#2D86FF" stroke-width="14" stroke-linecap="round"/>
+    <path d="M432 432 L432 320 Q432 272 384 272 L320 272 Q272 272 272 320 L272 384 Q272 432 320 432 L652 432 Q752 432 752 332 L752 272 Q752 272 752 272 L692 272 Q592 272 592 372 L592 704 Q592 752 640 752 L704 752 Q752 752 752 704 L752 640 Q752 592 704 592 L320 592 Q272 592 272 640 L272 704 Q272 752 320 752 L384 752 Q432 752 432 704 Z" fill="none" stroke="#2D86FF" stroke-width="40" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mR)"><g mask="url(#mB)">
+    <rect x="272" y="272" width="160" height="160" rx="48" fill="#FFBA26" fill-opacity="0.16"/>
+    <rect x="272" y="592" width="160" height="160" rx="48" fill="#FFBA26" fill-opacity="0.16"/>
+    <rect x="592" y="592" width="160" height="160" rx="48" fill="#FFBA26" fill-opacity="0.16"/>
+    <path d="M592 432 L652 432 Q752 432 752 332 L752 272 L692 272 Q592 272 592 372 Z" fill="#FFBA26" fill-opacity="0.16"/>
+    <path d="M646.4 377.6 L691.2 332.8" stroke="#FFBA26" stroke-width="14" stroke-linecap="round"/>
+    <path d="M432 432 L432 320 Q432 272 384 272 L320 272 Q272 272 272 320 L272 384 Q272 432 320 432 L652 432 Q752 432 752 332 L752 272 Q752 272 752 272 L692 272 Q592 272 592 372 L592 704 Q592 752 640 752 L704 752 Q752 752 752 704 L752 640 Q752 592 704 592 L320 592 Q272 592 272 640 L272 704 Q272 752 320 752 L384 752 Q432 752 432 704 Z" fill="none" stroke="#FFBA26" stroke-width="40" stroke-linejoin="round"/>
+  </g></g>
+</svg>

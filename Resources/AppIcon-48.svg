@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Win顺 app icon: ⌘ drawn as one stroke, its loops squared off like Windows tiles, in the four Windows colours;
+       the top-right loop comes to a leaf tip -->
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E9EDF4"/></linearGradient>
+    <linearGradient id="gL" gradientUnits="userSpaceOnUse" x1="17.5" y1="0" x2="30.5" y2="0"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mL" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="url(#gL)"/></mask>
+    <linearGradient id="gR" gradientUnits="userSpaceOnUse" x1="30.5" y1="0" x2="17.5" y2="0"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mR" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="url(#gR)"/></mask>
+    <linearGradient id="gT" gradientUnits="userSpaceOnUse" x1="0" y1="17.5" x2="0" y2="30.5"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mT" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="url(#gT)"/></mask>
+    <linearGradient id="gB" gradientUnits="userSpaceOnUse" x1="0" y1="30.5" x2="0" y2="17.5"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
+    <mask id="mB" maskUnits="userSpaceOnUse" x="0" y="0" width="48" height="48"><rect width="48" height="48" fill="url(#gB)"/></mask>
+  </defs>
+  <rect x="3" y="3" width="42" height="42" rx="10" fill="url(#plate)"/>
+  <rect x="3.5" y="3.5" width="41" height="41" rx="9.5" fill="none" stroke="#D5DBE5" stroke-width="1"/>
+  <g mask="url(#mL)"><g mask="url(#mT)">
+    <rect x="11.5" y="11.5" width="8" height="8" rx="2.5" fill="#FF5A4A" fill-opacity="0.16"/>
+    <rect x="11.5" y="28.5" width="8" height="8" rx="2.5" fill="#FF5A4A" fill-opacity="0.16"/>
+    <rect x="28.5" y="28.5" width="8" height="8" rx="2.5" fill="#FF5A4A" fill-opacity="0.16"/>
+    <path d="M28.5 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 Z" fill="#FF5A4A" fill-opacity="0.16"/>
+    <path d="M31.22 16.78 L33.46 14.54" stroke="#FF5A4A" stroke-width="1" stroke-linecap="round"/>
+    <path d="M19.5 19.5 L19.5 14 Q19.5 11.5 17 11.5 L14 11.5 Q11.5 11.5 11.5 14 L11.5 17 Q11.5 19.5 14 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 Q36.5 11.5 36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 L28.5 34 Q28.5 36.5 31 36.5 L34 36.5 Q36.5 36.5 36.5 34 L36.5 31 Q36.5 28.5 34 28.5 L14 28.5 Q11.5 28.5 11.5 31 L11.5 34 Q11.5 36.5 14 36.5 L17 36.5 Q19.5 36.5 19.5 34 Z" fill="none" stroke="#FF5A4A" stroke-width="3" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mR)"><g mask="url(#mT)">
+    <rect x="11.5" y="11.5" width="8" height="8" rx="2.5" fill="#33C463" fill-opacity="0.16"/>
+    <rect x="11.5" y="28.5" width="8" height="8" rx="2.5" fill="#33C463" fill-opacity="0.16"/>
+    <rect x="28.5" y="28.5" width="8" height="8" rx="2.5" fill="#33C463" fill-opacity="0.16"/>
+    <path d="M28.5 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 Z" fill="#33C463" fill-opacity="0.16"/>
+    <path d="M31.22 16.78 L33.46 14.54" stroke="#33C463" stroke-width="1" stroke-linecap="round"/>
+    <path d="M19.5 19.5 L19.5 14 Q19.5 11.5 17 11.5 L14 11.5 Q11.5 11.5 11.5 14 L11.5 17 Q11.5 19.5 14 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 Q36.5 11.5 36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 L28.5 34 Q28.5 36.5 31 36.5 L34 36.5 Q36.5 36.5 36.5 34 L36.5 31 Q36.5 28.5 34 28.5 L14 28.5 Q11.5 28.5 11.5 31 L11.5 34 Q11.5 36.5 14 36.5 L17 36.5 Q19.5 36.5 19.5 34 Z" fill="none" stroke="#33C463" stroke-width="3" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mL)"><g mask="url(#mB)">
+    <rect x="11.5" y="11.5" width="8" height="8" rx="2.5" fill="#2D86FF" fill-opacity="0.16"/>
+    <rect x="11.5" y="28.5" width="8" height="8" rx="2.5" fill="#2D86FF" fill-opacity="0.16"/>
+    <rect x="28.5" y="28.5" width="8" height="8" rx="2.5" fill="#2D86FF" fill-opacity="0.16"/>
+    <path d="M28.5 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 Z" fill="#2D86FF" fill-opacity="0.16"/>
+    <path d="M31.22 16.78 L33.46 14.54" stroke="#2D86FF" stroke-width="1" stroke-linecap="round"/>
+    <path d="M19.5 19.5 L19.5 14 Q19.5 11.5 17 11.5 L14 11.5 Q11.5 11.5 11.5 14 L11.5 17 Q11.5 19.5 14 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 Q36.5 11.5 36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 L28.5 34 Q28.5 36.5 31 36.5 L34 36.5 Q36.5 36.5 36.5 34 L36.5 31 Q36.5 28.5 34 28.5 L14 28.5 Q11.5 28.5 11.5 31 L11.5 34 Q11.5 36.5 14 36.5 L17 36.5 Q19.5 36.5 19.5 34 Z" fill="none" stroke="#2D86FF" stroke-width="3" stroke-linejoin="round"/>
+  </g></g>
+  <g mask="url(#mR)"><g mask="url(#mB)">
+    <rect x="11.5" y="11.5" width="8" height="8" rx="2.5" fill="#FFBA26" fill-opacity="0.16"/>
+    <rect x="11.5" y="28.5" width="8" height="8" rx="2.5" fill="#FFBA26" fill-opacity="0.16"/>
+    <rect x="28.5" y="28.5" width="8" height="8" rx="2.5" fill="#FFBA26" fill-opacity="0.16"/>
+    <path d="M28.5 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 Z" fill="#FFBA26" fill-opacity="0.16"/>
+    <path d="M31.22 16.78 L33.46 14.54" stroke="#FFBA26" stroke-width="1" stroke-linecap="round"/>
+    <path d="M19.5 19.5 L19.5 14 Q19.5 11.5 17 11.5 L14 11.5 Q11.5 11.5 11.5 14 L11.5 17 Q11.5 19.5 14 19.5 L31.5 19.5 Q36.5 19.5 36.5 14.5 L36.5 11.5 Q36.5 11.5 36.5 11.5 L33.5 11.5 Q28.5 11.5 28.5 16.5 L28.5 34 Q28.5 36.5 31 36.5 L34 36.5 Q36.5 36.5 36.5 34 L36.5 31 Q36.5 28.5 34 28.5 L14 28.5 Q11.5 28.5 11.5 31 L11.5 34 Q11.5 36.5 14 36.5 L17 36.5 Q19.5 36.5 19.5 34 Z" fill="none" stroke="#FFBA26" stroke-width="3" stroke-linejoin="round"/>
+  </g></g>
+</svg>
