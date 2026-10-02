@@ -6,6 +6,7 @@
 # 用法：
 #   scripts/build-app.sh            编译打包
 #   scripts/build-app.sh --install  编译打包，装到“应用程序”文件夹并启动
+#   UNIVERSAL=1 scripts/build-app.sh  同时编译 Apple Silicon 和 Intel 版本，合成一个程序（发布用，见 release.sh）
 
 set -euo pipefail
 
@@ -18,9 +19,15 @@ IDENTITY="WinShun Development"
 KEYCHAIN="$HOME/Library/Keychains/winshun-dev.keychain-db"
 KEYCHAIN_PASSWORD="winshun-dev"
 
+ARCH_FLAGS=()
+if [[ "${UNIVERSAL:-}" == "1" ]]; then
+    ARCH_FLAGS=(--arch arm64 --arch x86_64)
+fi
+
 cd "$ROOT"
-swift build -c "$CONFIGURATION"
-BIN_DIR="$(swift build -c "$CONFIGURATION" --show-bin-path)"
+# macOS 自带的 bash 3.2 里，空数组配 set -u 会报错，所以写成 ${A[@]+"${A[@]}"}
+swift build -c "$CONFIGURATION" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN_DIR="$(swift build -c "$CONFIGURATION" ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -29,6 +36,10 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"   # 图标由 scripts/make-icon.py 生成
 cp "$ROOT/Resources/AppGlyph.svg" "$APP/Contents/Resources/AppGlyph.svg"   # 不带底板的矢量标志，“拾穗计划”页用
 cp "$ROOT/Resources/AuthorAvatar.png" "$APP/Contents/Resources/AuthorAvatar.png"   # 作者头像，“拾穗计划”页用
+# 界面文字：英文译文和中文（中文就是代码里的原文），见 scripts/check-l10n.py
+for lang in en zh-Hans; do
+    cp -R "$ROOT/Resources/$lang.lproj" "$APP/Contents/Resources/$lang.lproj"
+done
 
 if [[ -f "$KEYCHAIN" ]] && security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
     security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"

@@ -1,88 +1,269 @@
-# Win顺
+<p align="center">
+  <img src="docs/images/icon.png" width="128" height="128" alt="Win顺 app icon">
+</p>
 
-让习惯 Windows 的人，在 Mac 上也能顺手操作。
+<h1 align="center">Win顺 · WinShun</h1>
 
-> **当前状态（2026-10-02）**：三个核心功能的第一版已经写完，单元测试和真机自测都通过，还有几项要人工确认。实现细节和待验证的项目见 [docs/architecture.md](docs/architecture.md)。
+<p align="center">
+  <b>让 Mac 像 Windows 一样顺手</b> —— 免费开源的 macOS 菜单栏小工具<br>
+  <b>Use your Mac the Windows way</b> — a free, open-source macOS menu bar app
+</p>
 
-## 核心功能
+<p align="center">
+  <a href="https://github.com/LingCore/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-blue" alt="Apple Silicon and Intel">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0"></a>
+</p>
 
-1. **快捷键像 Windows**：Ctrl+C/V/X/Z/S 等代替 ⌘；Home/End、Ctrl+←/→ 按 Windows 的方式移动光标；
-   支持 Alt+Tab、Alt+F4、Win+E/D/L/S、Win+Space；Finder 里支持 Ctrl+X 剪切、F2 重命名、Enter 打开、Delete 删除；
-   在终端、远程桌面和虚拟机里不改写按键。键盘处于 Win 模式还是 Mac 模式都能用，不用设置。
-2. **鼠标像 Windows**：指针没有加速（线性），速度可以调得比系统设置更快；滚轮方向、按行滚动的手感和 Windows 一致；鼠标侧键可以前进、后退。
-3. **剪贴板历史**：按 Win+V 呼出，支持中文拼音和首字母搜索，内容只保存在本机。
+<p align="center">
+  <a href="#中文">中文</a> · <a href="#english">English</a>
+</p>
 
-以下功能以后再考虑：窗口贴靠、全盘文件名搜索。
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/keyboard-dark.png">
+    <img src="docs/images/keyboard-light.png" width="720" alt="Win顺 设置窗口：键盘页 / WinShun settings window, keyboard page">
+  </picture>
+</p>
 
-需求明细见 [docs/requirements.md](docs/requirements.md)，模块划分见 [docs/architecture.md](docs/architecture.md)。
+---
 
-## 技术
+<a id="中文"></a>
 
-- 语言：Swift。界面用 SwiftUI，配合 AppKit 做成常驻菜单栏的程序。
-- 编译：Swift Package Manager。由 `scripts/` 里的脚本把程序打包成 `.app`，不依赖 Xcode。
-- 最低系统版本：macOS 14。目前只编译本机架构（Apple Silicon）；发布时再出同时支持 Intel 的版本。
+## 中文
 
-## 编译和运行
+**Win顺 是什么？** 一个给“从 Windows 换到 Mac 的人”用的小工具。装上之后，Mac 上的快捷键、鼠标和剪贴板都按 Windows 的习惯工作：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样、Win+V 打开剪贴板历史。不用学新的快捷键，也不用写任何配置。
 
-只需要 Command Line Tools，不需要 Xcode（`xcode-select --install`）。
+它常驻在屏幕顶部的菜单栏，不占程序坞，不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
+
+### 功能
+
+#### ⌨️ 快捷键像 Windows
+
+- **Ctrl 组合键**：Ctrl+C / V / X / Z / S / A / F 等代替 ⌘，Ctrl+Y 重做。
+- **文字光标**：Home / End 到行首行尾，Ctrl+Home / End 到文档首尾，Ctrl+← / → 按词移动，Ctrl+Backspace 删一个词，按住 Shift 同时选中。
+- **系统快捷键**：Alt+Tab 切换程序，Alt+F4 关闭窗口，Win+E 打开访达，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索，Win+Space 切换输入法。
+- **访达（Finder）**：Ctrl+X 再 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级。
+- **聊天软件截图**：微信、QQ 里的 Alt+A、Ctrl+Alt+A 截图照常能用。
+- **不该改的地方不改**：终端里保留原来的 Ctrl 键，远程桌面和虚拟机里不改写任何按键（包括 ToDesk、向日葵、UU 远程）。
+- **两种键盘都能用**：Windows 键盘和 Mac 键盘上 Ctrl、Option、⌘ 的位置不同，Win顺 自动识别，不用设置。
+
+#### 🖱️ 鼠标像 Windows
+
+- **关闭鼠标加速**：指针移动多远只看鼠标移动多远，和 Windows 一样跟手。速度可以调得比系统设置的最快档还快。
+- **滚轮方向和 Windows 一致**：只改鼠标，触控板和妙控鼠标保持苹果的“自然滚动”。
+- **按行滚动**：每格滚动固定行数（默认 3 行），没有滚动加速。
+- **侧键前进、后退**：鼠标第 4、5 键在访达、浏览器等所有程序里都能用。
+- 接了多个鼠标时，可以给每个鼠标单独设置。
+
+所有选项都能用设置窗口顶部的**搜索框**找到（⌘F，支持拼音）。
+
+#### 📋 剪贴板历史（Win+V）
+
+- 按 **Win+V** 弹出最近复制过的内容，选中后直接粘贴。
+- **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
+- 记录文字和图片，常用的内容可以固定在最上面。
+- 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
+    <img src="docs/images/panel-light.png" width="400" alt="Win顺 剪贴板历史面板，支持拼音搜索">
+  </picture>
+  &nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/mouse-dark.png">
+    <img src="docs/images/mouse-light.png" width="420" alt="Win顺 鼠标设置：关闭指针加速、滚轮方向、按行滚动">
+  </picture>
+</p>
+
+### 下载安装
+
+1. 到 [Releases 页面](https://github.com/LingCore/WinShun/releases/latest) 下载 `WinShun-版本号.dmg`。**同一个文件同时支持 Apple 芯片（M1/M2/M3/M4…）和 Intel 芯片的 Mac**，不用挑版本。
+2. 双击打开 dmg，把 **Win顺** 拖进“应用程序”文件夹。
+3. 第一次打开时，macOS 会提示“无法验证开发者”。这是因为作者还没有购买苹果的开发者证书，不是程序有问题。按下面的办法打开一次，以后就不会再问：
+   - 打开“系统设置 → 隐私与安全性”，拉到最下面，点 **“仍要打开”**，输入密码确认。
+   - 或者在“终端”里运行：`xattr -dr com.apple.quarantine "/Applications/Win顺.app"`
+4. 按提示授权（见下一节），菜单栏出现 Win顺 的图标就说明在运行了。
+
+系统要求：macOS 14 Sonoma 或更新版本。
+
+### 需要的权限
+
+改写按键和鼠标需要系统授权。Win顺 的设置窗口会一步一步带你打开对应的设置页，授权后马上生效：
+
+| 权限 | 用来做什么 |
+|---|---|
+| 辅助功能 | 改写按键、粘贴剪贴板内容、找到文字光标的位置 |
+| 输入监控 | 识别是哪个键盘、哪个鼠标在输入（可以给每个设备单独设置） |
+| 剪贴板读取 | 在后台记录剪贴板历史（在系统设置里选“始终允许”） |
+
+### 常见问题
+
+**Mac 上怎么用 Ctrl+C、Ctrl+V 复制粘贴？**
+装上 Win顺 就行。它把 Ctrl+字母自动换成 ⌘+字母，所有程序里都有效；终端里保持原样，不影响命令行。
+
+**Mac 鼠标滚轮方向是反的，怎么只改鼠标、不改触控板？**
+macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的。Win顺 只改鼠标的方向，触控板不受影响。
+
+**Mac 怎么关闭鼠标加速？**
+在 Win顺 的“鼠标”页打开“指针不加速”。指针速度还能调得比系统允许的最快速度更快。
+
+**Mac 有没有像 Windows Win+V 那样的剪贴板历史？**
+有。Win顺 自带剪贴板历史，按 Win+V 弹出，支持拼音搜索。
+
+**和 Karabiner-Elements、LinearMouse、Maccy 有什么区别？**
+这些都是很好的工具，但要分别安装、自己配置。Win顺 把“快捷键 + 鼠标 + 剪贴板”三件事一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+
+**收费吗？会上传我的数据吗？**
+完全免费，源代码公开。Win顺 不联网，剪贴板内容只保存在你自己的电脑上。
+
+**怎么卸载？**
+在菜单栏图标里选“退出”，然后把“应用程序”文件夹里的 Win顺 拖到废纸篓。
+
+### 反馈
+
+遇到问题或有建议，欢迎在 [Issues](https://github.com/LingCore/WinShun/issues) 里提出。
+
+### 从源码编译
+
+只需要 Command Line Tools（`xcode-select --install`），不需要 Xcode。
 
 ```bash
 scripts/dev-cert.sh            # 第一次：生成开发用的签名证书（只需一次）
-scripts/build-app.sh           # 编译并打包成 build/Win顺.app
 scripts/build-app.sh --install # 编译打包，装到“应用程序”文件夹并启动
 scripts/test.sh                # 运行单元测试
-scripts/selftest.sh            # 真机自测（需要先授权；约半分钟，期间不要操作键盘鼠标）
+scripts/check-l10n.py          # 检查界面文字是否都有英文翻译
+scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 + Intel）
 ```
 
-第一次运行要在“系统设置 → 隐私与安全性”里授权：
-- **辅助功能**：改写按键、粘贴、找到文字光标的位置
-- **输入监控**：识别是哪个鼠标在滚动
-- **粘贴**：把 Win顺 设为“始终允许”，剪贴板历史才能在后台记录
+源码结构和设计见 [docs/architecture.md](docs/architecture.md)，需求明细见 [docs/requirements.md](docs/requirements.md)。
 
-Win顺 的设置窗口“通用”页会显示这三项是否已授权。授权后马上生效，不用重启。
+---
 
-查看日志：在“控制台”应用里按子系统 `io.github.bofu.winshun` 过滤。
+<a id="english"></a>
 
-## 目录结构
+## English
 
-```
-winshun/
-├── Sources/WinShun/      程序源码（Swift 编译目标名为 WinShun）
-│   ├── App/              程序入口、菜单栏、设置界面、开机自启
-│   ├── Keyboard/         快捷键：Windows 键位映射，按应用排除
-│   ├── Mouse/            鼠标：指针加速、滚轮、侧键
-│   ├── Clipboard/        剪贴板历史：记录、弹出面板、拼音搜索
-│   └── Shared/           公共部分：权限检查与引导、配置存储、拼音转换、日志
-├── Tests/WinShunTests/   单元测试
-├── Resources/            Info.plist、图标、中英文本地化文件
-├── scripts/              编译、打包 .app、签名、公证的脚本
-├── docs/                 需求和设计文档
-├── LICENSE               GPL-3.0 许可证全文
-└── THIRD_PARTY_NOTICES.md  借用的第三方代码登记
-```
+**What is WinShun?** WinShun (Win顺, "Windows made smooth") is a small macOS menu bar app for people switching from Windows to Mac. It makes your Mac's keyboard shortcuts, mouse and clipboard behave the way Windows does: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction, and Win+V clipboard history. No new shortcuts to learn and no configuration files to write.
 
-目录里的 `.gitkeep` 是空占位文件，用来让空目录能被 git 保留。目录里有了真正的文件后就可以删掉。
+It lives in the menu bar, stays out of the Dock, works offline, needs no account, and is completely free.
 
-## 名称与标识
+The interface is available in **English** and **Simplified Chinese**. It follows your system language, or you can pick one in Settings › General.
 
-| 用途 | 写法 |
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/keyboard-dark-en.png">
+    <img src="docs/images/keyboard-light-en.png" width="720" alt="WinShun settings window: Windows keyboard shortcuts on Mac">
+  </picture>
+</p>
+
+### Features
+
+#### ⌨️ Windows keyboard shortcuts on Mac
+
+- **Ctrl shortcuts**: Ctrl+C / V / X / Z / S / A / F and friends work like ⌘; Ctrl+Y is redo.
+- **Text navigation**: Home / End jump to the start / end of the line, Ctrl+Home / End to the start / end of the document, Ctrl+← / → move by word, Ctrl+Backspace deletes a word; hold Shift to select.
+- **System shortcuts**: Alt+Tab switches apps, Alt+F4 closes the window, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
+- **Finder**: Ctrl+X then Ctrl+V cuts and moves files, F2 renames, Enter opens, Delete moves to Trash, Backspace goes up a folder.
+- **Leaves things alone where it should**: Terminal keeps its Ctrl keys; remote desktop and virtual machine apps are never remapped.
+- **Works with both keyboard types**: Windows and Mac keyboards put Ctrl, Option and ⌘ in different places — WinShun detects which one you are typing on.
+
+#### 🖱️ Windows mouse behavior on Mac
+
+- **Disable mouse acceleration**: pointer movement is linear, just like Windows. Speed can go beyond the fastest system setting.
+- **Windows scroll direction for the mouse only**: the trackpad and Magic Mouse keep Apple's natural scrolling.
+- **Line-by-line scrolling**: a fixed number of lines per notch (3 by default), no scroll acceleration.
+- **Back / forward side buttons** work in Finder, browsers and every other app.
+- Per-device settings when you use more than one mouse.
+
+Every option can be found with the **search box** at the top of the settings window (⌘F).
+
+#### 📋 Clipboard history (Win+V)
+
+- Press **Win+V** to see what you copied recently and paste it with one key.
+- **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
+- Stores text and images; pin the items you use often.
+- Skips content that password managers mark as concealed. Everything stays on your Mac.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark-en.png">
+    <img src="docs/images/panel-light-en.png" width="400" alt="WinShun clipboard history panel (Win+V) with search">
+  </picture>
+  &nbsp;
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/mouse-dark-en.png">
+    <img src="docs/images/mouse-light-en.png" width="420" alt="WinShun mouse settings: disable pointer acceleration, Windows scroll direction, line scrolling">
+  </picture>
+</p>
+
+### Download and install
+
+1. Download `WinShun-<version>.dmg` from the [Releases page](https://github.com/LingCore/WinShun/releases/latest). **One universal file runs natively on both Apple Silicon (M1/M2/M3/M4…) and Intel Macs.**
+2. Open the dmg and drag **Win顺** into Applications.
+3. On first launch macOS says it cannot verify the developer, because the app is not yet signed with a paid Apple Developer ID. Open it once using either method; macOS won't ask again:
+   - Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
+   - Or run in Terminal: `xattr -dr com.apple.quarantine "/Applications/Win顺.app"`
+4. Grant the permissions below. When the WinShun icon appears in the menu bar, it is running.
+
+Requires macOS 14 Sonoma or later.
+
+### Permissions
+
+| Permission | Why |
 |---|---|
-| 程序显示名 | Win顺 |
-| 文件夹、仓库名 | `winshun` |
-| Swift 编译目标 | `WinShun` |
-| 应用标识（Bundle ID） | `io.github.bofu.winshun`（改了它就要重新授权） |
+| Accessibility | Remap keys, paste from history, find the text cursor |
+| Input Monitoring | Tell which keyboard or mouse an event came from (per-device settings) |
+| Pasteboard access | Record clipboard history in the background (choose "Always Allow") |
 
-## 隐私原则
+The settings window walks you through each one, and changes take effect immediately.
 
-- 剪贴板内容只保存在本机，不上传。
-- 除了以后可能加的“检查更新”，不联网。
-- 自动跳过密码管理器标记为隐藏的剪贴板内容。
+### FAQ
 
-## 许可证
+**How do I use Ctrl+C and Ctrl+V on a Mac?**
+Install WinShun. It turns Ctrl+letter into ⌘+letter in every app, except Terminal, where Ctrl keeps its usual meaning.
 
-本项目以 **GPL-3.0-or-later** 发布，全文见 [LICENSE](LICENSE)。
-借用的第三方代码及其原许可证登记在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+**How do I reverse the mouse scroll direction without changing the trackpad?**
+macOS ties the two together. WinShun changes the direction for mice only.
 
-版权所有者：待定。发布前填写作者名或 GitHub 用户名。
+**How do I turn off mouse acceleration on macOS?**
+Enable "linear pointer" on WinShun's Mouse page.
 
-Windows 是微软公司的商标，Mac 是苹果公司的商标。本项目与微软、苹果没有任何关联。
+**Is there a Win+V clipboard history for Mac?**
+Yes — WinShun includes one, with search.
+
+**How is it different from Karabiner-Elements, LinearMouse or Maccy?**
+Those are great tools, but each does one thing and needs setup. WinShun does keyboard, mouse and clipboard together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
+
+**Is it free? Does it collect data?**
+Free and open source. WinShun never connects to the internet; your clipboard history stays on your Mac.
+
+### Feedback
+
+Bug reports and suggestions are welcome in [Issues](https://github.com/LingCore/WinShun/issues).
+
+### Build from source
+
+Only the Command Line Tools are needed (`xcode-select --install`), not Xcode.
+
+```bash
+scripts/dev-cert.sh            # once: create a local code-signing certificate
+scripts/build-app.sh --install # build, install to /Applications and launch
+scripts/test.sh                # run unit tests
+scripts/check-l10n.py          # check that every UI string has an English translation
+scripts/release.sh             # build the universal release dmg (Apple Silicon + Intel)
+```
+
+---
+
+## 许可证 · License
+
+Win顺 以 [GPL-3.0-or-later](LICENSE) 发布。Copyright © 2026 LingCore.
+借用的第三方代码登记在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+WinShun is released under [GPL-3.0-or-later](LICENSE). Copyright © 2026 LingCore.
+
+Windows 是微软公司的商标，Mac 和 macOS 是苹果公司的商标。本项目与微软、苹果没有任何关联。
+Windows is a trademark of Microsoft Corporation. Mac and macOS are trademarks of Apple Inc. This project is not affiliated with Microsoft or Apple.
