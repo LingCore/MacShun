@@ -5,14 +5,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SettingsTab: Hashable, CaseIterable, Identifiable {
-    case keyboard, mouse, clipboard, general
+    case keyboard, mouse, clipboard, display, general
     /// 作者的其他作品，见 Gleaning
     case gleaning
 
     var id: Self { self }
 
     /// 侧栏上半部分的设置项，“拾穗”单独放在下面。
-    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .general]
+    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .display, .general]
 
     /// 侧边栏里的名字
     var title: String {
@@ -20,6 +20,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: L("键盘")
         case .mouse: L("鼠标")
         case .clipboard: L("剪贴板")
+        case .display: L("显示器")
         case .general: L("通用")
         case .gleaning: Gleaning.title
         }
@@ -31,6 +32,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: L("快捷键像 Windows")
         case .mouse: L("鼠标像 Windows")
         case .clipboard: L("剪贴板历史")
+        case .display: L("显示器缩放")
         case .general: L("通用")
         case .gleaning: Gleaning.title
         }
@@ -41,6 +43,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: "keyboard"
         case .mouse: "computermouse.fill"
         case .clipboard: "doc.on.clipboard.fill"
+        case .display: "display"
         case .general: "gearshape.fill"
         case .gleaning: Gleaning.symbol
         }
@@ -51,6 +54,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: .blue
         case .mouse: .indigo
         case .clipboard: .orange
+        case .display: .teal
         case .general: .gray
         case .gleaning: Gleaning.tint
         }
@@ -231,9 +235,14 @@ struct SettingsView: View {
         case .keyboard:
             KeyboardSettings(config: $configStore.config.keyboard, state: state)
         case .mouse:
-            MouseSettings(config: $configStore.config.mouse, mice: state.mice, systemSpeed: state.systemPointerSpeed)
+            MouseSettings(
+                config: $configStore.config.mouse, mice: state.mice,
+                systemSpeed: state.systemPointerSpeed, systemCursorScale: state.systemCursorScale
+            )
         case .clipboard:
             ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
+        case .display:
+            DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
             GeneralSettings(state: state)
         case .gleaning:
@@ -411,6 +420,7 @@ private struct MouseSettings: View {
     @Binding var config: MouseConfig
     let mice: [MouseDevice]
     let systemSpeed: Double
+    let systemCursorScale: Double
 
     var body: some View {
         SearchableForm {
@@ -428,6 +438,28 @@ private struct MouseSettings: View {
             } footer: {
                 Text(L("只影响鼠标，触控板和妙控鼠标不受影响。"))
                     .settingsFooter()
+            }
+            .disabled(!config.enabled)
+
+            Section(L("光标")) {
+                LabeledContent {
+                    HStack(spacing: 8) {
+                        Text(L("小")).font(.caption).foregroundStyle(.secondary)
+                        Slider(value: cursorScale, in: CursorSizeController.range, step: 0.25)
+                            .frame(width: 180)
+                        Text(L("大")).font(.caption).foregroundStyle(.secondary)
+                    }
+                } label: {
+                    Text(L("光标大小"))
+                    HStack(spacing: 6) {
+                        Text(cursorDetail)
+                        if config.cursorScale != nil {
+                            Button(L("恢复成系统的指针大小")) { config.cursorScale = nil }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+                .settingsAnchor(.cursorSize)
             }
             .disabled(!config.enabled)
 
@@ -469,6 +501,21 @@ private struct MouseSettings: View {
             }
             .disabled(!config.enabled)
         }
+    }
+
+    /// 没单独设过时，滑块停在系统设置的指针大小上
+    private var cursorScale: Binding<Double> {
+        Binding(
+            get: { config.cursorScale ?? systemCursorScale },
+            set: { config.cursorScale = abs($0 - systemCursorScale) < 0.01 ? nil : $0 }
+        )
+    }
+
+    private var cursorDetail: String {
+        guard let scale = config.cursorScale else {
+            return L("跟系统的指针大小一样（%@）", PointerSpeed.describe(systemCursorScale))
+        }
+        return PointerSpeed.describe(scale)
     }
 
     private func customBinding(for mouse: MouseDevice) -> Binding<Bool> {
@@ -627,6 +674,79 @@ private struct ClipboardSettings: View {
         if alert.runModal() == .alertFirstButtonReturn {
             store.clearUnpinned()
         }
+    }
+}
+
+// MARK: - 显示器
+
+private struct DisplaySettings: View {
+    @ObservedObject var model: DisplayScalingModel
+
+    var body: some View {
+        SearchableForm {
+            Section {
+                SettingsPageHeader(tab: .display, subtitle: L("每块屏幕单独设置缩放，像 Windows 那样按百分比选"))
+            }
+
+            if model.displays.isEmpty {
+                Section {
+                    Text(L("没有找到显示器")).foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(Array(model.displays.enumerated()), id: \.element.id) { position, display in
+                Section {
+                    Picker(selection: selection(for: display)) {
+                        if display.currentOption == nil {
+                            Text(L("现在：看起来像 %@（不清晰）", Self.size(display.current.width, display.current.height)))
+                                .tag(String?.none)
+                        }
+                        ForEach(display.options) { option in
+                            Text(L("%ld%%（看起来像 %@）", option.percent, Self.size(option.mode.width, option.mode.height)))
+                                .tag(Optional(option.id))
+                        }
+                    } label: {
+                        Text(L("缩放"))
+                        Text(L("越大，文字和图标越大"))
+                    }
+                    .settingsAnchor(position == 0 ? .displayScale : nil)
+                    LabeledContent(L("屏幕分辨率")) {
+                        Text(L("%@，%ld Hz", Self.size(display.nativeWidth, display.nativeHeight), Int(display.current.refreshRate.rounded())))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text(display.isMain ? L("%@（主显示器）", display.name) : display.name)
+                } footer: {
+                    if display.options.count <= 2 {
+                        Text(L("这块屏幕不是高分屏，macOS 只给它 100% 和 200% 两个清晰的档位，其他档位文字会发虚，所以没有列出。"))
+                            .settingsFooter()
+                    }
+                }
+            }
+
+            Section {
+                InfoRow(
+                    symbol: "info.circle",
+                    title: L("和系统设置里改分辨率一样"),
+                    detail: L("只列出文字清晰的档位。改动会一直保留，退出 Win顺 也不会恢复。")
+                )
+            }
+        }
+        .onAppear { model.refresh() }
+    }
+
+    /// 分辨率不加千位分隔符：1920 × 1080
+    private static func size(_ width: Int, _ height: Int) -> String { "\(width) × \(height)" }
+
+    private func selection(for display: DisplayInfo) -> Binding<String?> {
+        Binding(
+            get: { display.currentOption?.id },
+            set: { id in
+                guard let option = display.options.first(where: { $0.id == id }) else { return }
+                model.select(option, for: display)
+            }
+        )
     }
 }
 

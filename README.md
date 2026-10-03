@@ -56,6 +56,7 @@
 - **滚轮方向和 Windows 一致**：只改鼠标，触控板和妙控鼠标保持苹果的“自然滚动”。
 - **按行滚动**：每格滚动固定行数（默认 3 行），没有滚动加速。
 - **侧键前进、后退**：鼠标第 4、5 键在访达、浏览器等所有程序里都能用。
+- **光标大小**：像 Windows 一样在鼠标设置里直接调，1 到 4 倍。退出 Win顺 后恢复原样。
 - 接了多个鼠标时，可以给每个鼠标单独设置。
 
 所有选项都能用设置窗口顶部的**搜索框**找到（⌘F，支持拼音）。
@@ -78,6 +79,11 @@
     <img src="docs/images/mouse-light.png" width="420" alt="Win顺 鼠标设置：关闭指针加速、滚轮方向、按行滚动">
   </picture>
 </p>
+
+#### 🖥️ 显示器缩放
+
+- 每块屏幕单独选缩放，像 Windows 一样按百分比（100%、125%、150%…）选，不用去系统设置里猜“看起来像多少”。
+- 只列出文字清晰的档位。2K 这类非高分屏，macOS 只给 100% 和 200% 两个清晰档位，页面上会说明。
 
 ### 下载安装
 
@@ -116,6 +122,9 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 
 **和 Karabiner-Elements、LinearMouse、Maccy 有什么区别？**
 这些都是很好的工具，但要分别安装、自己配置。Win顺 把“快捷键 + 鼠标 + 剪贴板”三件事一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+
+**Mac 接了两块屏幕，怎么让它们的缩放不一样？**
+macOS 本来就支持每块屏幕单独设置。Win顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
 **收费吗？会上传我的数据吗？**
 完全免费，源代码公开。Win顺 不联网，剪贴板内容只保存在你自己的电脑上。
@@ -177,6 +186,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **Windows scroll direction for the mouse only**: the trackpad and Magic Mouse keep Apple's natural scrolling.
 - **Line-by-line scrolling**: a fixed number of lines per notch (3 by default), no scroll acceleration.
 - **Back / forward side buttons** work in Finder, browsers and every other app.
+- **Cursor size** right in the mouse settings, 1× to 4×, like Windows. Restored when you quit WinShun.
 - Per-device settings when you use more than one mouse.
 
 Every option can be found with the **search box** at the top of the settings window (⌘F).
@@ -199,6 +209,11 @@ Every option can be found with the **search box** at the top of the settings win
     <img src="docs/images/mouse-light-en.png" width="420" alt="WinShun mouse settings: disable pointer acceleration, Windows scroll direction, line scrolling">
   </picture>
 </p>
+
+#### 🖥️ Display scaling
+
+- Pick scaling for each screen in Windows-style percentages (100%, 125%, 150%…) instead of guessing "looks like" resolutions.
+- Only sharp options are listed. For non-Retina screens such as 1440p monitors, macOS only offers 100% and 200% sharply, and the page says so.
 
 ### Download and install
 
@@ -237,6 +252,9 @@ Yes — WinShun includes one, with search.
 
 **How is it different from Karabiner-Elements, LinearMouse or Maccy?**
 Those are great tools, but each does one thing and needs setup. WinShun does keyboard, mouse and clipboard together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
+
+**How do I use different scaling on two monitors?**
+macOS supports per-display scaling; WinShun's Displays page shows it as Windows-style percentages, one menu per screen.
 
 **Is it free? Does it collect data?**
 Free and open source. WinShun never connects to the internet; your clipboard history stays on your Mac.
