@@ -63,7 +63,7 @@
 
 #### 📋 剪贴板历史（Win+V）
 
-- 按 **Win+V** 弹出最近复制过的内容，选中后直接粘贴。
+- 按 **Win+V** 弹出最近复制过的内容，选中后直接粘贴。在文件搜索框里按 Win+V 也行，选中的内容直接填进搜索框。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
 - 记录文字和图片，常用的内容可以固定在最上面。
 - 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
@@ -220,7 +220,7 @@ Every option can be found with the **search box** at the top of the settings win
 
 #### 📋 Clipboard history (Win+V)
 
-- Press **Win+V** to see what you copied recently and paste it with one key.
+- Press **Win+V** to see what you copied recently and paste it with one key. It works inside the file search bar too: the item you pick goes straight into the search field.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
 - Stores text and images; pin the items you use often.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.

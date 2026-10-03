@@ -57,7 +57,44 @@ final class FileSearchController {
     var isVisible: Bool { panel.isVisible }
     /// 自测用
     var currentQuery: String { model.query }
+    var isKey: Bool { panel.isKeyWindow }
     var visibleResults: [FileSearchResult] { model.results }
+
+    /// 在搜索框里按 Win+V：剪贴板面板放在胶囊下面，选中的文字填到光标处，关掉以后回到搜索框。
+    func clipboardHost() -> ClipboardController.Host {
+        let frame = panel.frame
+        let capsuleBottom = frame.maxY - FileSearchView.margin - FileSearchView.capsuleHeight
+        let anchor = NSRect(x: frame.minX + 64, y: capsuleBottom, width: 0, height: FileSearchView.capsuleHeight)
+        return .init(
+            anchor: anchor,
+            insert: { [weak self] text in self?.insert(text) },
+            back: { [weak self] in self?.refocus() },
+            resigned: { [weak self] in
+                // 点回了搜索框就接着用；点了别的程序，搜索框也关掉
+                DispatchQueue.main.async {
+                    guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+                    self.hide()
+                }
+            }
+        )
+    }
+
+    private func refocus() {
+        guard panel.isVisible else { return }
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    /// 剪贴板历史里选的文字插到光标处。搜索框只有一行，换行换成空格。
+    private func insert(_ text: String?) {
+        refocus()
+        let line = (text ?? "").components(separatedBy: .newlines).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        guard !line.isEmpty else { return }
+        if let editor = panel.firstResponder as? NSTextView {
+            editor.insertText(line, replacementRange: editor.selectedRange())
+        } else {
+            model.query += line
+        }
+    }
 
     /// 连按两下 Ctrl：打开。已经开着时不关（多半是想接着输入或粘贴），只放到前面；关用 Esc。
     func summon() {
@@ -134,7 +171,10 @@ final class FileSearchController {
         host.frame = NSRect(origin: .zero, size: panel.frame.size)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
-        panel.onResignKey = { [weak self] in self?.hide() }
+        // 在搜索框里按 Win+V 打开的剪贴板面板叠在上面时不关
+        panel.onResignKey = { [weak self] in
+            if !FrontAppTracker.shared.clipboardPanelActive.get() { self?.hide() }
+        }
         // Ctrl+Enter 是系统“显示快捷菜单”的快捷键：系统在把按键交给窗口之前就处理了，输入框上会弹出右键菜单。
         // 本程序的事件监听在那之前，在这里接住。⌘+Enter 输入框不处理，也在这里接。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in

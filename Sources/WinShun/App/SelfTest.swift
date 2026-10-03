@@ -70,6 +70,7 @@ final class SelfTest {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(savedClipboard, forType: .string)
             }
+            try? FileManager.default.removeItem(at: clipboard.store.directory)
             return finish()
         }
         let savedClipboard = NSPasteboard.general.string(forType: .string)
@@ -268,6 +269,25 @@ final class SelfTest {
         }
         check("按访达里显示的名字（\(shownName)）搜到个人文件夹里的“下载”", byShownName.first?.path == downloads,
               "第一条：\(byShownName.first?.path ?? "无")")
+
+        // 在搜索框里按 Win+V：剪贴板面板叠在上面，搜索框不关；Esc 回到搜索框；选一条填进搜索框
+        if config.clipboard.enabled {
+            clipboard.store.add(ClipboardCapture(kind: .text, text: query, fingerprint: ClipboardStore.fingerprint([Data(query.utf8)])),
+                                maxItems: 50)
+            await press(KeyCode.v, [.win], settle: 500)
+            check("在搜索框里按 Win+V：剪贴板面板打开，搜索框还在", clipboard.isVisible && fileSearch.isVisible,
+                  "剪贴板面板：\(clipboard.isVisible)，搜索框：\(fileSearch.isVisible)")
+            await press(KeyCode.escape, settle: 300)
+            check("Esc 关掉剪贴板面板，回到搜索框", !clipboard.isVisible && fileSearch.isVisible && fileSearch.isKey,
+                  "剪贴板面板：\(clipboard.isVisible)，搜索框：\(fileSearch.isVisible)，在接收按键：\(fileSearch.isKey)")
+            await press(KeyCode.a, [.ctrl], settle: 100)
+            await press(KeyCode.backspace, settle: 300)
+            await press(KeyCode.v, [.win], settle: 500)
+            await press(KeyCode.returnKey, settle: 300)
+            let filled = await waitUntil(timeout: 4) { fileSearch.visibleResults.first?.path == file.path }
+            check("从剪贴板历史选的路径填进搜索框并搜到", filled && !clipboard.isVisible && fileSearch.isKey,
+                  "搜索框里：\(fileSearch.currentQuery.debugDescription)，第一条：\(fileSearch.visibleResults.first?.path ?? "无")")
+        }
 
         menus = 0
         await press(KeyCode.returnKey, [.ctrl], settle: 300)

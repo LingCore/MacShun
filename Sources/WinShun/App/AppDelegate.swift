@@ -165,8 +165,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func run(_ command: SystemCommand) {
         if command == .clipboardHistory {
-            fileSearch.hide()
-            clipboard.toggle()
+            // 文件搜索框开着时，剪贴板面板叠在它上面，选中的直接填进搜索框
+            if clipboard.isVisible {
+                clipboard.close()
+            } else if fileSearch.isVisible {
+                clipboard.show(in: fileSearch.clipboardHost())
+            } else {
+                clipboard.show()
+            }
         } else if command == .fileSearch {
             clipboard.hide()
             fileSearch.summon()

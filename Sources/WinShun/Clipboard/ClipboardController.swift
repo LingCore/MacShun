@@ -13,6 +13,8 @@ final class ClipboardController {
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
     private var keyMonitor: Any?
+    /// 从本程序的文件搜索框里打开时，选中的条目交给它
+    private var host: Host?
     /// 打开面板前的输入法。搜索框只允许英文输入，系统可能因此切换输入法，关闭面板时切回来。
     private var savedInputSource: TISInputSource?
 
@@ -38,21 +40,38 @@ final class ClipboardController {
     /// 面板里当前显示的条目（自测用）。
     var visibleResults: [ClipboardItem] { model.results }
 
-    func toggle() {
-        if panel.isVisible { hide() } else { show() }
+    /// 从文件搜索框里打开（Win+V）时：面板叠在搜索框下面，选中的文字直接填进搜索框，Esc 回到搜索框。
+    struct Host {
+        /// 面板放在这块区域下面（AppKit 坐标）
+        let anchor: NSRect
+        /// 选中的文字（图片是 nil）
+        let insert: (String?) -> Void
+        /// 按 Esc 或再按 Win+V 关掉
+        let back: () -> Void
+        /// 点了别的地方，面板自己关掉
+        let resigned: () -> Void
     }
 
-    func show() {
+    func show(in host: Host? = nil) {
         guard configStore.config.clipboard.enabled else { return }
         model.prepareForShow()
-        position(panel)
+        self.host = host
+        if let host { position(panel, below: host.anchor) } else { position(panel) }
         savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
         FrontAppTracker.shared.clipboardPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
         installKeyMonitor()
     }
 
+    /// Esc、再按一次 Win+V：关掉；从搜索框打开的回到搜索框
+    func close() {
+        let host = self.host
+        hide()
+        host?.back()
+    }
+
     func hide() {
+        host = nil
         removeKeyMonitor()
         FrontAppTracker.shared.clipboardPanelActive.set(false)
         if panel.isVisible { panel.orderOut(nil) }
@@ -70,6 +89,12 @@ final class ClipboardController {
 
     /// 把选中的条目放进剪贴板，再模拟 ⌘V 粘贴到原来的应用里。
     func paste(_ item: ClipboardItem) {
+        if let host {
+            hide()
+            store.markUsed(item.id)
+            host.insert(item.kind == .text ? item.text : nil)
+            return
+        }
         hide()
         guard write(item) else { return }
         store.markUsed(item.id)
@@ -113,14 +138,18 @@ final class ClipboardController {
     private func makeModel() -> ClipboardPanelModel {
         let model = ClipboardPanelModel(store: store)
         model.onPaste = { [weak self] item in self?.paste(item) }
-        model.onClose = { [weak self] in self?.hide() }
+        model.onClose = { [weak self] in self?.close() }
         return model
     }
 
     private func makePanel() -> ClipboardPanel {
         let panel = ClipboardPanel()
         panel.contentView = NSHostingView(rootView: ClipboardPanelView(model: model))
-        panel.onResignKey = { [weak self] in self?.hide() }
+        panel.onResignKey = { [weak self] in
+            let host = self?.host
+            self?.hide()
+            host?.resigned()
+        }
         return panel
     }
 
@@ -149,9 +178,9 @@ final class ClipboardController {
     }
 
     /// 放在文字光标下方；问不到光标位置时放在鼠标指针旁边。
-    private func position(_ panel: NSPanel) {
+    private func position(_ panel: NSPanel, below given: NSRect? = nil) {
         let size = panel.frame.size
-        let anchor = CaretLocator.caretRect() ?? {
+        let anchor = given ?? CaretLocator.caretRect() ?? {
             let mouse = NSEvent.mouseLocation
             return NSRect(x: mouse.x, y: mouse.y, width: 0, height: 0)
         }()
