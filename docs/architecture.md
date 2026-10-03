@@ -9,6 +9,7 @@
 | `App/` | 程序入口、菜单栏图标、设置界面、开机自启、权限引导 | SwiftUI、AppKit、`SMAppService` | 无 |
 | `Keyboard/` | Windows 键位规则（K1–K9）、Win+E/D/L/S 等系统操作 | `CGEventTap`、辅助功能接口（查询焦点） | 辅助功能 |
 | `Mouse/` | 指针加速、滚轮方向和步长、侧键、Ctrl+滚轮、光标大小（M1–M6） | `CGEventTap`、IOKit HID、`CGSSetCursorScale` | 辅助功能、输入监控 |
+| `FileSearch/` | 文件名索引、连按两下 Ctrl 弹出的搜索框（F1） | FSEvents、`FileManager`、`NSPanel` | 首次扫描时系统询问“桌面”“文稿”“下载”的访问权限 |
 | `Display/` | 每块显示器按百分比选缩放（D1） | `CGDisplayCopyAllDisplayModes`、`CGConfigureDisplayWithDisplayMode` | 无 |
 | `Clipboard/` | 记录剪贴板、保存历史、弹出面板、模拟粘贴（C1–C5） | `NSPasteboard`（轮询 `changeCount`）、`NSPanel`、`CGEvent` | 读取剪贴板（“粘贴”设为始终允许）、辅助功能（模拟粘贴、找光标位置） |
 | `Shared/` | 事件拦截线程、配置、权限、拼音、前台应用与输入法、应用名单、日志 | `CFStringTransform`、Text Input Sources | 无 |
@@ -25,6 +26,10 @@
 | `Mouse/MouseDeviceMonitor.swift` | 列出鼠标；记住最近一次是哪个鼠标在滚动，用于按鼠标分别设置 |
 | `Mouse/PointerAcceleration.swift` | 按鼠标关闭指针加速、调指针速度 |
 | `Mouse/CursorSize.swift` | 光标大小 |
+| `Keyboard/CapsLockSwitch.swift` | Caps Lock 只管大写（K10） |
+| `Keyboard/DoubleTapDetector.swift` | 识别连按两下 Ctrl。纯函数 |
+| `FileSearch/FileIndex.swift` | 文件名索引：扫描、FSEvents 增量更新、打分排序（打分是纯函数） |
+| `FileSearch/FileSearchPanel.swift` | 胶囊搜索框 |
 | `Display/DisplayScaling.swift` | 算出每块显示器清晰的缩放档位（纯函数），切换显示模式 |
 | `Clipboard/ClipboardStore.swift` | 历史记录的保存、去重、固定、搜索 |
 | `Clipboard/ClipboardPanel.swift` | Win+V 弹出的面板 |
@@ -51,6 +56,8 @@
 - **指针速度**：没有加速时，系统把鼠标的移动计数直接乘以 `HIDMouseAcceleration`（就是“跟踪速度”，系统滑块最高 3）得到指针移动的点数（见 IOHIDFamily 的 `IOHIDPointerScrollFilter::setupPointerAcceleration` 和 `IOHIDSimpleAccelerator`）。程序按鼠标把这个值设成用户选的倍数（0.25–8 倍），改了马上生效；没调过就跟系统设置一样。只在没有加速时调，有加速时这个值是用来选加速曲线的，交给系统。调过速度后，“系统设置”里的跟踪速度对这个鼠标不再起作用（程序每 30 秒会把它改回来）。
 - **光标大小**：用窗口服务器未公开的 `CGSSetCursorScale` 实时改（1–4 倍，和“辅助功能 → 显示 → 指针大小”同一个东西），不写系统偏好 `com.apple.universalaccess`。退出时恢复成系统偏好里的大小；和指针速度一起每 30 秒检查一次，被系统改回去时重新设置。实测 macOS 27 普通程序可以调用，不需要权限。
 - **显示器缩放**：Windows 的百分比 = 原生宽度 ÷ “看起来像”的宽度。只列出清晰的档位：原生分辨率（100%），以及高分屏模式里渲染像素不少于原生像素的（系统先按 2 倍渲染再缩小，文字清晰）。2K 这类非高分屏，系统给的高分屏模式只有原生像素的一半，所以只有 100% 和 200%。切换用 `CGCompleteDisplayConfiguration(.permanently)`，和系统设置里改一样会一直保留。
+- **Caps Lock 只管大写**：系统设置“使用大写锁定键切换‘ABC’输入法”存在 `com.apple.HIToolbox` 的 `TISRomanSwitchState`。Win顺 运行时写 0，并发 `kTISNotifyEnabledKeyboardInputSourcesChanged` 通知；原值记在本程序设置里，退出或关掉这一项时恢复（原来没有这一项就删掉）。
+- **文件搜索**：Mac 的 APFS 没有 NTFS 那样的文件总表（Everything 快的原因），所以自己扫一遍建索引，之后靠 FSEvents 增量更新。第一轮扫个人文件夹（不含“资源库”）和应用程序（含 Cryptexes 里的 Safari），实测 2.3 万个文件 0.4 秒；第二轮在后台扫外接硬盘，跳过 Windows 系统文件夹（实测 NTFS 只读盘 41 万个文件约 90 秒），扫的时候不耽误搜索。每次搜索遍历全部文件名，按字节查找，43 万个文件约 70 毫秒。应用程序另外收录访达里的本地化名字（“备忘录”），所以能按中文名和拼音搜到。第一次呼出时才开始建索引，让系统询问“桌面”等文件夹权限发生在用户主动打开的时候。
 - **窗口到前台**：macOS 14 起是协作式激活，用户正在用别的程序时，菜单栏程序自己请求激活会被拒绝，设置窗口会被挡在后面（自测复现过）。`App/Foreground.swift` 先正常请求激活并把窗口摆到最上面，没激活成功再用辅助功能接口把本程序设为前台。
 - **读取剪贴板**：从 macOS 15.4 起，程序在后台读剪贴板会触发系统询问。剪贴板历史要求用户在“系统设置 → 隐私与安全性 → 粘贴”里把 Win顺 设为“始终允许”；没设好之前不自动读取，避免每次复制都弹窗。
 - **拼音搜索**：用系统自带的 `CFStringTransform` 逐字转拼音。系统按字取最常见读音，`地`、`长` 的默认读音不对，`银行`、`重新`、`音乐`、`调整` 等多音字词也会转错，所以在 `Pinyin.swift` 里维护了纠正表。搜索框获得焦点时只允许英文输入，直接打 “jtb” 就能搜索。

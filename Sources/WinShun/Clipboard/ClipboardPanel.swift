@@ -247,7 +247,7 @@ struct ClipboardPanelView: View {
 }
 
 /// 底部的按键提示，按键画成键帽的样子。
-private struct KeyHint: View {
+struct KeyHint: View {
     let key: String
     let action: String
 
@@ -435,7 +435,7 @@ private struct RowButton: View {
     }
 }
 
-private struct VisualEffectBackground: NSViewRepresentable {
+struct VisualEffectBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .popover
@@ -449,10 +449,11 @@ private struct VisualEffectBackground: NSViewRepresentable {
 
 /// 搜索框。获得焦点时只允许英文输入，这样直接打 “jtb” 就能搜索，不会先进入中文输入法的候选状态。
 /// 方向键、Enter、Esc 交给面板处理；输入法正在组字时这些键仍归输入法。
-private struct SearchField: NSViewRepresentable {
+struct SearchField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let focusToken: Int
+    var fontSize: CGFloat = 16
     let onMove: (Int) -> Void
     let onSubmit: () -> Void
     let onCancel: () -> Void
@@ -464,7 +465,7 @@ private struct SearchField: NSViewRepresentable {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 16)
+        field.font = .systemFont(ofSize: fontSize)
         field.placeholderString = placeholder
         field.delegate = context.coordinator
         field.cell?.isScrollable = true

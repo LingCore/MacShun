@@ -5,14 +5,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SettingsTab: Hashable, CaseIterable, Identifiable {
-    case keyboard, mouse, clipboard, display, general
+    case keyboard, mouse, clipboard, fileSearch, display, general
     /// 作者的其他作品，见 Gleaning
     case gleaning
 
     var id: Self { self }
 
     /// 侧栏上半部分的设置项，“拾穗”单独放在下面。
-    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .display, .general]
+    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .fileSearch, .display, .general]
 
     /// 侧边栏里的名字
     var title: String {
@@ -20,6 +20,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: L("键盘")
         case .mouse: L("鼠标")
         case .clipboard: L("剪贴板")
+        case .fileSearch: L("文件搜索")
         case .display: L("显示器")
         case .general: L("通用")
         case .gleaning: Gleaning.title
@@ -32,6 +33,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: L("快捷键像 Windows")
         case .mouse: L("鼠标像 Windows")
         case .clipboard: L("剪贴板历史")
+        case .fileSearch: L("文件搜索")
         case .display: L("显示器缩放")
         case .general: L("通用")
         case .gleaning: Gleaning.title
@@ -43,6 +45,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: "keyboard"
         case .mouse: "computermouse.fill"
         case .clipboard: "doc.on.clipboard.fill"
+        case .fileSearch: "doc.text.magnifyingglass"
         case .display: "display"
         case .general: "gearshape.fill"
         case .gleaning: Gleaning.symbol
@@ -54,6 +57,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .keyboard: .blue
         case .mouse: .indigo
         case .clipboard: .orange
+        case .fileSearch: .green
         case .display: .teal
         case .general: .gray
         case .gleaning: Gleaning.tint
@@ -241,6 +245,8 @@ struct SettingsView: View {
             )
         case .clipboard:
             ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
+        case .fileSearch:
+            FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared)
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
@@ -333,6 +339,7 @@ private struct KeyboardSettings: View {
                 rule(L("系统快捷键"), L("Alt+Tab、Alt+F4、Win+E/D/L/S、Win+Space 切换输入法"), $config.systemShortcuts).settingsAnchor(.systemShortcuts)
                 rule("Finder", L("Ctrl+X 剪切移动文件，F2 重命名，Enter 打开，Delete 删除"), $config.finderShortcuts).settingsAnchor(.finderShortcuts)
                 rule(L("微信、QQ 截图"), L("Alt+A、Ctrl+Alt+A 截图"), $config.chatScreenshot).settingsAnchor(.chatScreenshot)
+                rule(L("Caps Lock 只管大写"), L("按一下就是大写锁定，不切换中英文输入法"), $config.capsLockTypesOnly).settingsAnchor(.capsLock)
             }
             .disabled(!config.enabled)
 
@@ -675,6 +682,102 @@ private struct ClipboardSettings: View {
             store.clearUnpinned()
         }
     }
+}
+
+// MARK: - 文件搜索
+
+private struct FileSearchSettings: View {
+    @Binding var config: FileSearchConfig
+    @ObservedObject var index: FileIndex
+
+    var body: some View {
+        SearchableForm {
+            Section {
+                SettingsPageHeader(tab: .fileSearch, subtitle: L("连按两下 Ctrl 搜索电脑里的文件，像 Everything 一样快，支持拼音首字母")) {
+                    Toggle("", isOn: $config.enabled).labelsHidden()
+                }
+                .settingsAnchor(.fileSearchEnabled)
+            }
+
+            Section(L("使用")) {
+                LabeledContent(L("呼出")) {
+                    HStack(spacing: 10) {
+                        Text(L("连按两下 Ctrl")).foregroundStyle(.secondary)
+                        Button(L("现在试试")) {
+                            NotificationCenter.default.post(name: .openFileSearch, object: nil)
+                        }
+                    }
+                }
+                InfoRow(
+                    symbol: "keyboard",
+                    title: L("Enter 打开，Ctrl+Enter 在访达中显示"),
+                    detail: L("用空格分开几个词，可以同时匹配，例如 “报告 2026”。")
+                )
+            }
+            .disabled(!config.enabled)
+
+            Section {
+                LabeledContent(L("已收录")) {
+                    HStack(spacing: 8) {
+                        if index.isIndexing || index.isScanningDrives { ProgressView().controlSize(.small) }
+                        Text(indexSummary).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+                .settingsAnchor(.fileIndex)
+                if !index.deniedFolders.isEmpty {
+                    HStack(alignment: .firstTextBaseline) {
+                        InfoRow(
+                            symbol: "exclamationmark.triangle",
+                            title: L("搜不到“%@”里的文件", index.deniedFolders.joined(separator: L("、"))),
+                            detail: L("系统询问时选了“不允许”。到“隐私与安全性 → 文件与文件夹”里给 Win顺 打开，再重新建立索引。")
+                        )
+                        Spacer()
+                        Button(L("打开系统设置")) {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button(L("重新建立索引")) { index.rebuild() }
+                        .disabled(index.isIndexing || !config.activated)
+                }
+            } header: {
+                Text(L("索引"))
+            }
+            .disabled(!config.enabled)
+
+            Section {
+                InfoRow(
+                    symbol: "folder",
+                    title: L("个人文件夹和应用程序"),
+                    detail: L("不包括“资源库”、隐藏文件和应用程序包里的内容。索引只放在内存里，不联网。")
+                )
+                Toggle(isOn: $config.includeExternalDrives) {
+                    Text(L("包括外接硬盘"))
+                    Text(L("在后台慢慢扫描，不影响搜索。不收录 Windows 的系统文件夹。"))
+                }
+                .settingsAnchor(.externalDrives)
+            } header: {
+                Text(L("搜索范围"))
+            }
+            .disabled(!config.enabled)
+        }
+    }
+
+    private var indexSummary: String {
+        if index.isIndexing { return L("正在建立索引…") }
+        if !config.activated || index.lastIndexed == nil { return L("第一次呼出时开始建立") }
+        let count = L("%ld 个文件和文件夹", index.fileCount)
+        return index.isScanningDrives ? L("%@，正在扫描外接硬盘…", count) : count
+    }
+}
+
+extension Notification.Name {
+    /// 设置里点“现在试试”，打开文件搜索
+    static let openFileSearch = Notification.Name("WinShun.openFileSearch")
 }
 
 // MARK: - 显示器

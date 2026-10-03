@@ -27,6 +27,8 @@ struct KeyboardConfig: Codable, Equatable {
     var finderShortcuts = true
     /// K9：微信、QQ 运行时，Alt+A、Ctrl+Alt+A 换成它们的截图快捷键 ⌃⌘A
     var chatScreenshot = true
+    /// K10：Caps Lock 只管大写，不切换输入法（见 CapsLockSwitchController）
+    var capsLockTypesOnly = true
     /// 每把键盘的布局，键是 InputDevice.key。没识别过的键盘用上面的 `layout`。
     var layouts: [String: KeyboardLayoutKind] = [:]
     /// 从按法自动学习键盘的 Win/Mac 模式（见 LayoutInference）
@@ -53,6 +55,7 @@ struct KeyboardConfig: Codable, Equatable {
         systemShortcuts = c.value(.systemShortcuts, default: d.systemShortcuts)
         finderShortcuts = c.value(.finderShortcuts, default: d.finderShortcuts)
         chatScreenshot = c.value(.chatScreenshot, default: d.chatScreenshot)
+        capsLockTypesOnly = c.value(.capsLockTypesOnly, default: d.capsLockTypesOnly)
         layouts = c.value(.layouts, default: d.layouts)
         autoDetectLayout = c.value(.autoDetectLayout, default: d.autoDetectLayout)
         excludedApps = c.value(.excludedApps, default: d.excludedApps)
@@ -157,10 +160,31 @@ struct ClipboardConfig: Codable, Equatable {
     }
 }
 
+struct FileSearchConfig: Codable, Equatable {
+    /// F1：连按两下 Ctrl 呼出文件搜索
+    var enabled = true
+    /// 用过一次文件搜索之后才在启动时建立索引：第一次扫描“桌面”“文稿”“下载”时系统会询问权限，
+    /// 放在用户自己打开文件搜索的时候问，而不是一启动就弹出来。
+    var activated = false
+    /// 也搜索外接硬盘
+    var includeExternalDrives = true
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = FileSearchConfig()
+        enabled = c.value(.enabled, default: d.enabled)
+        activated = c.value(.activated, default: d.activated)
+        includeExternalDrives = c.value(.includeExternalDrives, default: d.includeExternalDrives)
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var keyboard = KeyboardConfig()
     var mouse = MouseConfig()
     var clipboard = ClipboardConfig()
+    var fileSearch = FileSearchConfig()
 
     init() {}
 
@@ -169,6 +193,7 @@ struct AppConfig: Codable, Equatable {
         keyboard = c.value(.keyboard, default: KeyboardConfig())
         mouse = c.value(.mouse, default: MouseConfig())
         clipboard = c.value(.clipboard, default: ClipboardConfig())
+        fileSearch = c.value(.fileSearch, default: FileSearchConfig())
     }
 }
 

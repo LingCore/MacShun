@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private let pointer = PointerAccelerationController()
     private let cursor = CursorSizeController()
+    private let capsLock = CapsLockSwitchController()
+    private lazy var fileSearch = FileSearchController(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
     private var statusMenu: StatusMenu!
@@ -57,13 +59,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.clipboard.applyConfig()
+                self?.fileSearch.applyConfig()
                 self?.applyPointer()
+                self?.applyCapsLock()
             }
             .store(in: &subscriptions)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil
         )
+        NotificationCenter.default.addObserver(forName: .openFileSearch, object: nil, queue: .main) { [weak self] _ in
+            self?.clipboard.hide()
+            self?.fileSearch.show()
+        }
 
         clipboard.applyConfig()
         startEventTapsIfPossible()
@@ -113,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         pointer.restore()
         cursor.restore()
+        capsLock.restore()
         if !SelfTest.isRequested { clipboard.store.saveNow() }
     }
 
@@ -152,7 +161,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func run(_ command: SystemCommand) {
         if command == .clipboardHistory {
+            fileSearch.hide()
             clipboard.toggle()
+        } else if command == .fileSearch {
+            clipboard.hide()
+            fileSearch.toggle()
         } else {
             SystemActions.run(command)
         }
@@ -176,6 +189,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.state.systemPointerSpeed = speed
             }
         }
+    }
+
+    /// K10：键盘功能和这一项都打开时，Caps Lock 只管大写。自测时不动系统设置。
+    private func applyCapsLock() {
+        guard !SelfTest.isRequested, !GuideTest.isRequested else { return }
+        var keyboard = configStore.config.keyboard
+        keyboard.capsLockTypesOnly = keyboard.enabled && keyboard.capsLockTypesOnly
+        capsLock.apply(keyboard)
     }
 
     @objc private func didWake() {

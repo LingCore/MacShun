@@ -15,6 +15,8 @@ final class FrontAppTracker {
     let inputSourceID = Locked<String?>(nil)
     /// 本程序的剪贴板面板是否正在接收键盘输入。面板不会把本程序切到前台，所以要单独记。
     let clipboardPanelActive = Locked(false)
+    /// 本程序的文件搜索框是否正在接收键盘输入，同上。
+    let fileSearchPanelActive = Locked(false)
 
     private var observers: [NSObjectProtocol] = []
 

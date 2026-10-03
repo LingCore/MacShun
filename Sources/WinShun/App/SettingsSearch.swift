@@ -8,7 +8,8 @@ import SwiftUI
 struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
-        case chatScreenshot, terminal, remoteDesktop, excludedApps
+        case chatScreenshot, capsLock, terminal, remoteDesktop, excludedApps
+        case fileSearchEnabled, fileIndex, externalDrives
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale
@@ -63,6 +64,8 @@ extension SettingsItem {
               keywords: "访达 文件 剪切 移动 重命名 删除 f2 files rename move"),
         .init(id: .chatScreenshot, tab: .keyboard, title: "微信、QQ 截图",
               keywords: "wechat qq screenshot 截屏 alt+a"),
+        .init(id: .capsLock, tab: .keyboard, title: "Caps Lock 只管大写",
+              keywords: "大写 大写锁定 中英文 切换输入法 capslock caps lock uppercase abc"),
         .init(id: .terminal, tab: .keyboard, title: "终端",
               keywords: "terminal iterm 命令行 ctrl+shift+c"),
         .init(id: .remoteDesktop, tab: .keyboard, title: "远程桌面、虚拟机",
@@ -90,6 +93,14 @@ extension SettingsItem {
               keywords: "缩放 放大 缩小 zoom"),
         .init(id: .cursorSize, tab: .mouse, title: "光标大小",
               keywords: "指针大小 鼠标指针 光标 箭头 变大 cursor pointer size bigger"),
+
+        .init(id: .fileSearchEnabled, tab: .fileSearch, title: "文件搜索",
+              keywords: "everything 搜索文件 查找 找文件 ctrl 连按 双击 file search find spotlight"),
+        .init(id: .fileIndex, tab: .fileSearch, title: "重新建立索引",
+              keywords: "索引 收录 权限 桌面 文稿 下载 index rebuild permission"),
+
+        .init(id: .externalDrives, tab: .fileSearch, title: "包括外接硬盘",
+              keywords: "硬盘 移动硬盘 u盘 外接 ntfs drive volume external usb"),
 
         .init(id: .displayScale, tab: .display, title: "显示器缩放",
               keywords: "缩放 分辨率 文字大小 放大 屏幕 显示器 双屏 高分屏 scale scaling resolution text size monitor screen hidpi retina dpi"),

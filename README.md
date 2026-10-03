@@ -48,6 +48,7 @@
 - **访达（Finder）**：Ctrl+X 再 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级。
 - **聊天软件截图**：微信、QQ 里的 Alt+A、Ctrl+Alt+A 截图照常能用。
 - **不该改的地方不改**：终端里保留原来的 Ctrl 键，远程桌面和虚拟机里不改写任何按键（包括 ToDesk、向日葵、UU 远程）。
+- **Caps Lock 只管大写**：按一下就是大写锁定，不会像 Mac 默认那样切换中英文输入法。退出 Win顺 后恢复系统原来的设置。
 - **两种键盘都能用**：Windows 键盘和 Mac 键盘上 Ctrl、Option、⌘ 的位置不同，Win顺 自动识别，不用设置。
 
 #### 🖱️ 鼠标像 Windows
@@ -79,6 +80,13 @@
     <img src="docs/images/mouse-light.png" width="420" alt="Win顺 鼠标设置：关闭指针加速、滚轮方向、按行滚动">
   </picture>
 </p>
+
+#### 🔍 文件搜索（像 Everything）
+
+- **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。
+- **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
+- Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
+- 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。索引只放在内存里，不联网。
 
 #### 🖥️ 显示器缩放
 
@@ -122,6 +130,12 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 
 **和 Karabiner-Elements、LinearMouse、Maccy 有什么区别？**
 这些都是很好的工具，但要分别安装、自己配置。Win顺 把“快捷键 + 鼠标 + 剪贴板”三件事一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+
+**Mac 上有没有像 Everything 那样快速搜索文件的工具？**
+装上 Win顺，连按两下 Ctrl 就能搜，支持拼音首字母，不用记完整文件名。
+
+**Mac 按 Caps Lock 总是切换输入法，怎么改成只管大写？**
+在 Win顺 的“键盘”页打开“Caps Lock 只管大写”（默认就是打开的）。
 
 **Mac 接了两块屏幕，怎么让它们的缩放不一样？**
 macOS 本来就支持每块屏幕单独设置。Win顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
@@ -178,6 +192,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **System shortcuts**: Alt+Tab switches apps, Alt+F4 closes the window, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
 - **Finder**: Ctrl+X then Ctrl+V cuts and moves files, F2 renames, Enter opens, Delete moves to Trash, Backspace goes up a folder.
 - **Leaves things alone where it should**: Terminal keeps its Ctrl keys; remote desktop and virtual machine apps are never remapped.
+- **Caps Lock just types capitals**: one press locks capitals instead of switching input sources as macOS does by default. The system setting is restored when you quit WinShun.
 - **Works with both keyboard types**: Windows and Mac keyboards put Ctrl, Option and ⌘ in different places — WinShun detects which one you are typing on.
 
 #### 🖱️ Windows mouse behavior on Mac
@@ -209,6 +224,13 @@ Every option can be found with the **search box** at the top of the settings win
     <img src="docs/images/mouse-light-en.png" width="420" alt="WinShun mouse settings: disable pointer acceleration, Windows scroll direction, line scrolling">
   </picture>
 </p>
+
+#### 🔍 File search (like Everything)
+
+- **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files.
+- **Pinyin search** for Chinese file and app names.
+- Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
+- Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The index stays in memory and never goes online.
 
 #### 🖥️ Display scaling
 
@@ -252,6 +274,12 @@ Yes — WinShun includes one, with search.
 
 **How is it different from Karabiner-Elements, LinearMouse or Maccy?**
 Those are great tools, but each does one thing and needs setup. WinShun does keyboard, mouse and clipboard together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
+
+**Is there an Everything-like file search for Mac?**
+WinShun includes one: press Ctrl twice and start typing.
+
+**How do I stop Caps Lock from switching input sources?**
+Turn on "Caps Lock only types capitals" on WinShun's Keyboard page (on by default).
 
 **How do I use different scaling on two monitors?**
 macOS supports per-display scaling; WinShun's Displays page shows it as Windows-style percentages, one menu per screen.

@@ -191,3 +191,36 @@
 "这块屏幕不是高分屏，macOS 只给它 100% 和 200% 两个清晰的档位，其他档位文字会发虚，所以没有列出。" = "This isn't a high-resolution (Retina) screen, so macOS only offers two sharp options for it: 100% and 200%. Other sizes look blurry and aren't listed.";
 "和系统设置里改分辨率一样" = "Same as changing resolution in System Settings";
 "只列出文字清晰的档位。改动会一直保留，退出 Win顺 也不会恢复。" = "Only sharp options are listed. Changes stay in effect, even after you quit WinShun.";
+
+/* Caps Lock、文件搜索 */
+"Caps Lock 只管大写" = "Caps Lock only types capitals";
+"按一下就是大写锁定，不切换中英文输入法" = "One press locks capitals, without switching input sources";
+"文件搜索" = "File Search";
+"重新建立索引" = "Rebuild Index";
+"连按两下 Ctrl 搜索电脑里的文件，像 Everything 一样快，支持拼音首字母" = "Press Ctrl twice to search files on your Mac, as fast as Everything, with pinyin support";
+"使用" = "Usage";
+"呼出" = "Open with";
+"连按两下 Ctrl" = "Press Ctrl twice";
+"现在试试" = "Try It";
+"Enter 打开，Ctrl+Enter 在访达中显示" = "Enter opens, Ctrl+Enter shows in Finder";
+"用空格分开几个词，可以同时匹配，例如 “报告 2026”。" = "Separate words with spaces to match them all, e.g. “report 2026”.";
+"已收录" = "Indexed";
+"搜不到“%@”里的文件" = "Files in “%@” can't be found";
+"、" = ", ";
+"系统询问时选了“不允许”。到“隐私与安全性 → 文件与文件夹”里给 Win顺 打开，再重新建立索引。" = "Access was denied when macOS asked. Allow WinShun in Privacy & Security › Files and Folders, then rebuild the index.";
+"打开系统设置" = "Open System Settings";
+"索引" = "Index";
+"不包括“资源库”、隐藏文件和应用程序包里的内容。索引只放在内存里，不联网。" = "Excludes Library, hidden files and the inside of app bundles. The index stays in memory and never goes online.";
+"搜索范围" = "Search Scope";
+"正在建立索引…" = "Indexing…";
+"第一次呼出时开始建立" = "Built the first time you open it";
+"%ld 个文件和文件夹" = "%ld files and folders";
+"搜索文件，支持拼音和首字母" = "Search files";
+"打开" = "Open";
+"在访达中显示" = "Show in Finder";
+"正在建立索引，马上就好…" = "Indexing, almost there…";
+"没有找到，换个关键词或试试拼音首字母" = "Nothing found. Try another word.";
+"个人文件夹和应用程序" = "Home folder and Applications";
+"包括外接硬盘" = "Include external drives";
+"在后台慢慢扫描，不影响搜索。不收录 Windows 的系统文件夹。" = "Scanned slowly in the background without slowing searches. Windows system folders are skipped.";
+"%@，正在扫描外接硬盘…" = "%@, scanning external drives…";

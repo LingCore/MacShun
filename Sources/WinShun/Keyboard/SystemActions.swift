@@ -12,7 +12,7 @@ enum SystemActions {
         case .lockScreen: lockScreen()
         case .spotlight: openSpotlight()
         case .switchInputSource: switchInputSource()
-        case .clipboardHistory: break  // 由剪贴板模块处理
+        case .clipboardHistory, .fileSearch: break  // 由剪贴板、文件搜索模块处理
         }
     }
 

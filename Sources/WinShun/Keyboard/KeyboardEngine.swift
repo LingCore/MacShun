@@ -28,11 +28,29 @@ final class KeyboardEngine {
     private var switcherAltFlag: CGEventFlags = .maskAlternate
     /// Finder 里按 Ctrl+X 之后剪贴板的变化计数，用来判断随后的 Ctrl+V 是不是“移动”。
     private let finderCutChangeCount = Locked<Int?>(nil)
+    /// 连按两下 Ctrl 呼出文件搜索（F1）
+    private var doubleControl = DoubleTapDetector()
 
     init(config: Locked<AppConfig>, environment: FrontAppTracker, onCommand: @escaping (SystemCommand) -> Void) {
         self.config = config
         self.environment = environment
         self.onCommand = onCommand
+    }
+
+    /// 只看不改：连按两下 Ctrl 时通知主线程打开文件搜索。远程桌面、虚拟机里不响应，Ctrl 留给里面的系统。
+    private func watchDoubleControl(_ event: CGEvent) {
+        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        guard keyCode == KeyCode.control || keyCode == KeyCode.rightControl else {
+            _ = doubleControl.feed(.other, at: 0)
+            return
+        }
+        let input = DoubleTapDetector.Input.control(down: event.flags.contains(.maskControl), flags: event.flags)
+        guard doubleControl.feed(input, at: ProcessInfo.processInfo.systemUptime) else { return }
+        let cfg = config.get()
+        guard cfg.fileSearch.enabled,
+              AppCatalog.kind(of: environment.current.get(), userExcluded: cfg.keyboard.excludedApps) != .excluded
+        else { return }
+        DispatchQueue.main.async { [onCommand] in onCommand(.fileSearch) }
     }
 
     /// 当前这把键盘的布局（任何线程都可以调用，自测用）。
@@ -52,6 +70,7 @@ final class KeyboardEngine {
         }
 
         if type == .flagsChanged {
+            watchDoubleControl(event)
             if switcherOpen {
                 // 切换器开着时按 Shift（Alt+Shift+Tab）：保持 ⌘、去掉 Alt，免得系统以为 ⌘ 松开了。
                 event.flags = Self.switcherFlags(event.flags, altFlag: switcherAltFlag)
@@ -61,6 +80,7 @@ final class KeyboardEngine {
 
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let isDown = type == .keyDown
+        if isDown { _ = doubleControl.feed(.other, at: 0) }
 
         if switcherOpen {
             return handleWhileSwitcherOpen(keyCode: keyCode, isDown: isDown, event: event, proxy: proxy)
@@ -85,8 +105,8 @@ final class KeyboardEngine {
             action = previous
         } else {
             let context: KeyContext
-            if environment.clipboardPanelActive.get() {
-                // 剪贴板面板开着时，按键在本程序的搜索框里，不按后面那个应用的规则处理。
+            if environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get() {
+                // 剪贴板面板或文件搜索框开着时，按键在本程序的搜索框里，不按后面那个应用的规则处理。
                 context = KeyContext(
                     appKind: .normal, isBrowser: false,
                     clipboardEnabled: config.get().clipboard.enabled,

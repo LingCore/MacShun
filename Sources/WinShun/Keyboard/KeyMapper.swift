@@ -20,6 +20,8 @@ enum SystemCommand: Equatable {
     case clipboardHistory
     /// Win+Space：切换输入法
     case switchInputSource
+    /// 连按两下 Ctrl：文件搜索（F1）
+    case fileSearch
 }
 
 /// 对一次按键的处理结果。

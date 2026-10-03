@@ -63,6 +63,7 @@ enum KeyCode {
     static let capsLock: CGKeyCode = 0x39
     static let option: CGKeyCode = 0x3A
     static let control: CGKeyCode = 0x3B
+    static let rightControl: CGKeyCode = 0x3E
     static let keypadEnter: CGKeyCode = 0x4C
     static let f5: CGKeyCode = 0x60
     static let f6: CGKeyCode = 0x61
