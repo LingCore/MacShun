@@ -4,28 +4,7 @@ import AppKit
 import Combine
 import CoreServices
 
-/// 用来匹配的一个名字。
-struct MatchText {
-    /// 小写后的 UTF-8 字节，按字节查找比 String.contains 快得多
-    let lower: [UInt8]
-    /// 去掉扩展名后的长度（字节）。没有扩展名时等于全长
-    let stemLength: Int
-    /// 名字里有汉字时，每个字的拼音，用来按拼音、首字母搜
-    let syllables: [[Character]]?
-
-    init(_ text: String) {
-        lower = Array(text.lowercased().utf8)
-        if let dot = lower.lastIndex(of: 0x2E), dot > 0 { stemLength = dot } else { stemLength = lower.count }
-        let chars = Array(text.prefix(PinyinIndex.maxIndexedCharacters))
-        if chars.contains(where: { !$0.isASCII }) {
-            syllables = Pinyin.syllables(of: chars.filter { !$0.isWhitespace }).map { Array($0) }
-        } else {
-            syllables = nil
-        }
-    }
-}
-
-/// 索引里的一个文件或文件夹。
+/// 一个文件或文件夹。扫描时先这样拿到，再存进 FolderEntries；测试打分时也用它。
 struct FileEntry {
     let name: String
     let isDirectory: Bool
@@ -33,19 +12,146 @@ struct FileEntry {
     let isPackage: Bool
     /// 访达里显示的名字和文件名不一样时（应用程序的中文名，例如 Notes.app 显示成“备忘录”）
     let displayName: String?
-    let text: MatchText
-    let displayText: MatchText?
 
     init(name: String, isDirectory: Bool, isPackage: Bool, displayName: String? = nil) {
         self.name = name
         self.isDirectory = isDirectory
         self.isPackage = isPackage
         self.displayName = displayName
-        text = MatchText(name)
-        displayText = displayName.map(MatchText.init)
+    }
+}
+
+/// 一个文件夹里的文件名，紧凑存放：名字、小写后的名字、拼音都放在一块连续的字节里，每个文件只另占一个 24 字节的 Item。
+/// 每个文件各用一个 String 和几个数组时，光对象头就要几百字节（实测 43 万个文件占了 150 MB）。
+struct FolderEntries {
+    struct Item {
+        var nameStart: UInt32
+        var lowerStart: UInt32
+        var pinyinStart: UInt32
+        var nameLength: UInt16
+        var lowerLength: UInt16
+        /// 去掉扩展名后的长度（字节）
+        var stemLength: UInt16
+        /// 逐字拼音的长度。名字全是 ASCII 时为 0，不按拼音搜
+        var pinyinLength: UInt16
+        var flags: UInt8
     }
 
-    var isApp: Bool { isPackage && name.hasSuffix(".app") }
+    static let directoryFlag: UInt8 = 1
+    static let packageFlag: UInt8 = 2
+    /// 下一个 Item 是这个文件在访达里显示的名字
+    static let hasDisplayNameFlag: UInt8 = 4
+    /// 这个 Item 是上一个文件的显示名字，不单独算一个文件
+    static let displayNameFlag: UInt8 = 8
+
+    private(set) var bytes: [UInt8] = []
+    private(set) var items: [Item] = []
+    /// 文件和文件夹的个数（不算显示名字）
+    private(set) var count = 0
+
+    init() {}
+
+    init(_ entries: [FileEntry]) {
+        entries.forEach { append($0) }
+    }
+
+    mutating func reserveCapacity(_ count: Int) {
+        items.reserveCapacity(count)
+    }
+
+    mutating func append(_ entry: FileEntry) {
+        var flags: UInt8 = 0
+        if entry.isDirectory { flags |= Self.directoryFlag }
+        if entry.isPackage { flags |= Self.packageFlag }
+        if entry.displayName != nil { flags |= Self.hasDisplayNameFlag }
+        items.append(store(entry.name, flags: flags))
+        count += 1
+        if let display = entry.displayName { items.append(store(display, flags: Self.displayNameFlag)) }
+    }
+
+    /// 存完以后去掉多预留的空间（数组按两倍增长，最多会空一半）。从切片建数组才会真的复制成刚好大小
+    mutating func compact() {
+        if bytes.capacity > bytes.count + 64 { bytes = Array(bytes[...]) }
+        if items.capacity > items.count + 4 { items = Array(items[...]) }
+    }
+
+    func name(at index: Int) -> String {
+        let item = items[index]
+        let start = Int(item.nameStart)
+        return String(decoding: bytes[start ..< start + Int(item.nameLength)], as: UTF8.self)
+    }
+
+    func displayName(at index: Int) -> String? {
+        items[index].flags & Self.hasDisplayNameFlag != 0 ? name(at: index + 1) : nil
+    }
+
+    func isDirectory(at index: Int) -> Bool { items[index].flags & Self.directoryFlag != 0 }
+
+    /// 每个文件（不含显示名字）的位置
+    var indices: [Int] {
+        var result: [Int] = []
+        result.reserveCapacity(count)
+        var i = 0
+        while i < items.count {
+            result.append(i)
+            i += items[i].flags & Self.hasDisplayNameFlag != 0 ? 2 : 1
+        }
+        return result
+    }
+
+    /// 和查询匹配的文件，回调位置和得分。
+    func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, _ body: (Int, Double) -> Void) {
+        bytes.withUnsafeBufferPointer { buffer in
+            var i = 0
+            while i < items.count {
+                let hasDisplay = items[i].flags & Self.hasDisplayNameFlag != 0
+                let score = FileMatcher.score(query: terms, item: items[i], display: hasDisplay ? items[i + 1] : nil,
+                                              in: buffer, depth: depth)
+                if score > 0 { body(i, score) }
+                i += hasDisplay ? 2 : 1
+            }
+        }
+    }
+
+    private mutating func store(_ text: String, flags: UInt8) -> Item {
+        let limit = Int(UInt16.max)
+        let name = Array(text.utf8.prefix(limit))
+        let nameStart = bytes.count
+        bytes.append(contentsOf: name)
+        let lower = Array(text.lowercased().utf8.prefix(limit))
+        var lowerStart = nameStart
+        if lower != name {
+            lowerStart = bytes.count
+            bytes.append(contentsOf: lower)
+        }
+        var stem = lower.count
+        if let dot = lower.lastIndex(of: 0x2E), dot > 0 { stem = dot }
+        var pinyinStart = 0, pinyinLength = 0
+        if name.contains(where: { $0 >= 0x80 }) {
+            let pinyin = Self.encodePinyin(text).prefix(limit)
+            pinyinStart = bytes.count
+            pinyinLength = pinyin.count
+            bytes.append(contentsOf: pinyin)
+        }
+        return Item(nameStart: UInt32(nameStart), lowerStart: UInt32(lowerStart), pinyinStart: UInt32(pinyinStart),
+                    nameLength: UInt16(name.count), lowerLength: UInt16(lower.count), stemLength: UInt16(stem),
+                    pinyinLength: UInt16(pinyinLength), flags: flags)
+    }
+
+    /// 逐字的拼音，字之间用 0 隔开：汉字是拼音，ASCII 字符是它自己（小写），其他字符记成 0xFF（对不上任何 ASCII 查询）。
+    static func encodePinyin(_ text: String) -> [UInt8] {
+        let chars = Array(text.prefix(PinyinIndex.maxIndexedCharacters)).filter { !$0.isWhitespace }
+        var out: [UInt8] = []
+        for (position, syllable) in Pinyin.syllables(of: chars).enumerated() {
+            if position > 0 { out.append(0) }
+            if syllable.utf8.allSatisfy({ $0 < 0x80 }) {
+                out.append(contentsOf: syllable.utf8)
+            } else {
+                out.append(0xFF)
+            }
+        }
+        return out
+    }
 }
 
 /// 一条搜索结果。
@@ -63,53 +169,71 @@ struct FileSearchResult: Identifiable, Equatable {
 
 /// 打分和排序。纯函数，方便测试。
 enum FileMatcher {
-    /// 一个搜索词和文件名的匹配程度，0 表示不匹配。
+    /// 一个搜索词和一个名字的匹配程度，0 表示不匹配。
     /// 全名一样 > 去掉扩展名后一样 > 开头一样 > 某个词的开头 > 名字里包含 > 拼音或首字母。
-    static func score(term: [UInt8], termCharacters: [Character], isASCII: Bool, text: MatchText) -> Double {
-        let name = text.lower
-        if name == term { return 100 }
-        if let position = find(term, in: name) {
-            if position == 0 { return term.count == text.stemLength ? 95 : 80 }
-            return isWordStart(name, at: position) ? 60 : 40
+    static func score(term: Term, lower: UnsafeBufferPointer<UInt8>, stemLength: Int,
+                      pinyin: UnsafeBufferPointer<UInt8>) -> Double {
+        if lower.count == term.bytes.count && lower.elementsEqual(term.bytes) { return 100 }
+        if let position = find(term.bytes, in: lower) {
+            if position == 0 { return term.bytes.count == stemLength ? 95 : 80 }
+            return isWordStart(lower, at: position) ? 60 : 40
         }
-        if isASCII, let syllables = text.syllables, PinyinIndex.syllableMatch(termCharacters, syllables) {
+        if term.isASCII, !pinyin.isEmpty, PinyinIndex.syllableMatch(term.bytes, encoded: pinyin) {
             return 30
         }
         return 0
     }
 
     /// 文件名和显示的名字，取匹配得好的那个。
-    static func score(term: [UInt8], termCharacters: [Character], isASCII: Bool, entry: FileEntry) -> Double {
-        let byName = score(term: term, termCharacters: termCharacters, isASCII: isASCII, text: entry.text)
-        guard let display = entry.displayText else { return byName }
-        return max(byName, score(term: term, termCharacters: termCharacters, isASCII: isASCII, text: display))
+    private static func score(term: Term, item: FolderEntries.Item, display: FolderEntries.Item?,
+                              in buffer: UnsafeBufferPointer<UInt8>) -> Double {
+        func one(_ item: FolderEntries.Item) -> Double {
+            let lower = UnsafeBufferPointer(rebasing: buffer[Int(item.lowerStart) ..< Int(item.lowerStart) + Int(item.lowerLength)])
+            let pinyin = UnsafeBufferPointer(rebasing: buffer[Int(item.pinyinStart) ..< Int(item.pinyinStart) + Int(item.pinyinLength)])
+            return score(term: term, lower: lower, stemLength: Int(item.stemLength), pinyin: pinyin)
+        }
+        let byName = one(item)
+        guard let display else { return byName }
+        return max(byName, one(display))
     }
 
     /// 整个查询（空格分开的几个词都要匹配）的得分，再加上类型、长度、深度的微调。0 表示不匹配。
-    static func score(query terms: [Term], entry: FileEntry, depth: Int) -> Double {
+    static func score(query terms: [Term], item: FolderEntries.Item, display: FolderEntries.Item?,
+                      in buffer: UnsafeBufferPointer<UInt8>, depth: Int) -> Double {
         var total = 0.0
         for term in terms {
-            let s = score(term: term.bytes, termCharacters: term.characters, isASCII: term.isASCII, entry: entry)
+            let s = score(term: term, item: item, display: display, in: buffer)
             if s == 0 { return 0 }
             total += s
         }
-        if entry.isApp { total += 8 }
-        else if entry.isDirectory { total += 2 }
-        total -= Double(min(entry.name.count, 80)) * 0.05
+        let lower = UnsafeBufferPointer(rebasing: buffer[Int(item.lowerStart) ..< Int(item.lowerStart) + Int(item.lowerLength)])
+        if item.flags & FolderEntries.packageFlag != 0 && lower.count > 4 && lower.suffix(4).elementsEqual(".app".utf8) {
+            total += 8
+        } else if item.flags & FolderEntries.directoryFlag != 0 {
+            total += 2
+        }
+        // 名字的字数：数一下不是 UTF-8 后续字节的字节
+        let characters = lower.reduce(0) { $1 & 0xC0 == 0x80 ? $0 : $0 + 1 }
+        total -= Double(min(characters, 80)) * 0.05
         total -= Double(min(depth, 12)) * 0.4
         return total
     }
 
+    /// 测试用：给一个文件打分
+    static func score(query terms: [Term], entry: FileEntry, depth: Int) -> Double {
+        let folder = FolderEntries([entry])
+        var result = 0.0
+        folder.forEachMatch(terms, depth: depth) { _, score in result = score }
+        return result
+    }
+
     struct Term {
         let bytes: [UInt8]
-        let characters: [Character]
         let isASCII: Bool
 
         init(_ text: String) {
-            let lower = text.lowercased()
-            bytes = Array(lower.utf8)
-            characters = Array(lower)
-            isASCII = lower.allSatisfy(\.isASCII)
+            bytes = Array(text.lowercased().utf8)
+            isASCII = bytes.allSatisfy { $0 < 0x80 }
         }
     }
 
@@ -118,14 +242,14 @@ enum FileMatcher {
     }
 
     /// 前一个字符是分隔符，这里算一个词的开头（“my-report” 里的 “report”）。
-    private static func isWordStart(_ name: [UInt8], at position: Int) -> Bool {
+    private static func isWordStart(_ name: UnsafeBufferPointer<UInt8>, at position: Int) -> Bool {
         let previous = name[position - 1]
         return previous == 0x20 || previous == 0x2D || previous == 0x5F || previous == 0x2E
             || previous == 0x28 || previous == 0x5B || previous == 0xE3  // 空格 - _ . ( [，以及中文标点的开头字节
     }
 
     /// 子串第一次出现的位置。
-    static func find(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
+    static func find(_ needle: [UInt8], in haystack: UnsafeBufferPointer<UInt8>) -> Int? {
         let n = needle.count, h = haystack.count
         guard n > 0, n <= h else { return n == 0 ? 0 : nil }
         let first = needle[0]
@@ -139,6 +263,10 @@ enum FileMatcher {
             i += 1
         }
         return nil
+    }
+
+    static func find(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
+        haystack.withUnsafeBufferPointer { find(needle, in: $0) }
     }
 }
 
@@ -177,7 +305,7 @@ final class FileIndex: ObservableObject {
 
     /// 以下只在 queue 上读写
     /// 文件夹路径 → 里面的文件
-    private var folders: [String: [FileEntry]] = [:]
+    private var folders: [String: FolderEntries] = [:]
     /// 这次扫描的位置（判断 FSEvents 的变化在不在范围里时用）
     private var scannedRoots: [String] = []
     /// 第几次建立索引。重新建立后，上一次还没扫完的结果作废
@@ -275,7 +403,7 @@ final class FileIndex: ObservableObject {
 
         scanQueue.async {
             let begin = Date()
-            var result: [String: [FileEntry]] = [:]
+            var result: [String: FolderEntries] = [:]
             var denied: [String] = []
             for root in mainRoots { Self.scanTree(root, into: &result, denied: &denied) }
             Log.app.notice("文件索引：第一轮 \(result.values.reduce(0) { $0 + $1.count }, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 2), privacy: .public) 秒")
@@ -284,6 +412,7 @@ final class FileIndex: ObservableObject {
                 self.folders = result
                 self.scannedRoots = mainRoots
                 self.sendContent(result, scopes: mainRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
+                malloc_zone_pressure_relief(nil, 0)
                 self.publishCount { count in
                     self.isIndexing = false
                     self.lastIndexed = Date()
@@ -344,17 +473,19 @@ final class FileIndex: ObservableObject {
     ]
 
     /// 把这些文件夹里要读内容的文件交给内容索引（在 queue 上）。
-    private func sendContent(_ folders: [String: [FileEntry]], scopes: [ContentIndex.Scope]) {
+    private func sendContent(_ folders: [String: FolderEntries], scopes: [ContentIndex.Scope]) {
         guard let contentIndex else { return }
         var files: [String] = []
         for (folder, entries) in folders { Self.collectContentFiles(folder, entries, into: &files) }
         contentIndex.sync(files: files, scopes: scopes)
     }
 
-    private static func collectContentFiles(_ folder: String, _ entries: [FileEntry], into files: inout [String]) {
+    private static func collectContentFiles(_ folder: String, _ entries: FolderEntries, into files: inout [String]) {
         guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) }) else { return }
-        for entry in entries where !entry.isDirectory && ContentExtractor.kind(ofFileNamed: entry.name) != nil {
-            files.append(folder == "/" ? "/" + entry.name : folder + "/" + entry.name)
+        for index in entries.indices where !entries.isDirectory(at: index) {
+            let name = entries.name(at: index)
+            guard ContentExtractor.kind(ofFileNamed: name) != nil else { continue }
+            files.append(folder == "/" ? "/" + name : folder + "/" + name)
         }
     }
 
@@ -377,13 +508,12 @@ final class FileIndex: ObservableObject {
         queue.async {
             var matches: [FileSearchResult] = []
             for (folder, entries) in self.folders {
-                let depth = folder.reduce(0) { $1 == "/" ? $0 + 1 : $0 }
-                for entry in entries {
-                    let score = FileMatcher.score(query: terms, entry: entry, depth: depth)
-                    guard score > 0 else { continue }
-                    let path = folder == "/" ? "/" + entry.name : folder + "/" + entry.name
-                    matches.append(FileSearchResult(path: path, name: entry.displayName ?? entry.name,
-                                                    isDirectory: entry.isDirectory, score: score))
+                let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
+                entries.forEachMatch(terms, depth: depth) { index, score in
+                    let name = entries.name(at: index)
+                    let path = folder == "/" ? "/" + name : folder + "/" + name
+                    matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
+                                                    isDirectory: entries.isDirectory(at: index), score: score))
                 }
             }
             matches.sort { $0.score != $1.score ? $0.score > $1.score : $0.path < $1.path }
@@ -397,14 +527,14 @@ final class FileIndex: ObservableObject {
     private static let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]
 
     /// 列出一个文件夹，返回里面的文件和要继续往下扫描的子文件夹。读不了时返回 nil。
-    private static func list(_ folder: String) -> (entries: [FileEntry], subfolders: [String])? {
+    private static func list(_ folder: String) -> (entries: FolderEntries, subfolders: [String])? {
         if folder.hasPrefix("/Volumes/") { return listDrive(folder) }
         let url = URL(fileURLWithPath: folder, isDirectory: true)
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
         ) else { return nil }
         let onDrive = folder.hasPrefix("/Volumes/")
-        var entries: [FileEntry] = []
+        var entries = FolderEntries()
         var subfolders: [String] = []
         entries.reserveCapacity(urls.count)
         for child in urls {
@@ -427,6 +557,7 @@ final class FileIndex: ObservableObject {
                 subfolders.append(path)
             }
         }
+        entries.compact()
         return (entries, subfolders)
     }
 
@@ -438,10 +569,10 @@ final class FileIndex: ObservableObject {
 
     /// 外接硬盘上列一个文件夹：只读目录项（名字和类型），不查文件属性；文件夹查一下隐藏标记，
     /// 隐藏的（ProgramData、Default 用户、目录联接）和 Windows 系统文件夹一样整个跳过。
-    private static func listDrive(_ folder: String) -> (entries: [FileEntry], subfolders: [String])? {
+    private static func listDrive(_ folder: String) -> (entries: FolderEntries, subfolders: [String])? {
         guard let dir = opendir(folder) else { return nil }
         defer { closedir(dir) }
-        var entries: [FileEntry] = []
+        var entries = FolderEntries()
         var subfolders: [String] = []
         while let item = readdir(dir) {
             let name = withUnsafePointer(to: item.pointee.d_name) {
@@ -469,17 +600,18 @@ final class FileIndex: ObservableObject {
                 entries.append(FileEntry(name: name, isDirectory: false, isPackage: false))
             }
         }
+        entries.compact()
         return (entries, subfolders)
     }
 
     /// 几个线程一起扫这些位置（外接硬盘）。每个线程攒够一批（或者过了一秒）就交给 onBatch，可能在不同线程上调用。
     private static func scanTreesInParallel(_ roots: [String], threads: Int,
-                                            onBatch: @escaping ([String: [FileEntry]]) -> Void) {
+                                            onBatch: @escaping ([String: FolderEntries]) -> Void) {
         let lock = NSLock()
         var pending = roots
         var busy = 0
         DispatchQueue.concurrentPerform(iterations: threads) { _ in
-            var local: [String: [FileEntry]] = [:]
+            var local: [String: FolderEntries] = [:]
             var lastFlush = Date()
             while true {
                 if !local.isEmpty && (local.count >= 2000 || Date().timeIntervalSince(lastFlush) > 1) {
@@ -510,10 +642,11 @@ final class FileIndex: ObservableObject {
         }
     }
 
-    private static func scanTree(_ root: String, into result: inout [String: [FileEntry]], denied: inout [String]) {
+    private static func scanTree(_ root: String, into result: inout [String: FolderEntries], denied: inout [String]) {
         var stack = [root]
         while let folder = stack.popLast() {
-            guard let (entries, subfolders) = list(folder) else {
+            // 每个文件夹读完就释放 FileManager 产生的临时对象，不然要等整个扫描结束，峰值高、留下很多内存碎片
+            guard let (entries, subfolders) = autoreleasepool(invoking: { list(folder) }) else {
                 // 个人文件夹下第一层读不了，多半是没给权限（桌面、文稿、下载）
                 if (folder as NSString).deletingLastPathComponent == home {
                     denied.append(FileManager.default.displayName(atPath: folder))
@@ -576,7 +709,7 @@ final class FileIndex: ObservableObject {
             touched = true
             // 系统说要整个重新扫描时，先把这个文件夹下面的全部去掉
             if recursive { removeSubtree(folder) }
-            guard let (entries, subfolders) = Self.list(folder) else {
+            guard let (entries, subfolders) = autoreleasepool(invoking: { Self.list(folder) }) else {
                 removeSubtree(folder)   // 文件夹被删了
                 contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
                 continue
@@ -586,7 +719,7 @@ final class FileIndex: ObservableObject {
             contentScopes.append(ContentIndex.Scope(folder: folder, recursive: recursive))
             var denied: [String] = []
             for sub in subfolders where folders[sub] == nil {
-                var scanned: [String: [FileEntry]] = [:]
+                var scanned: [String: FolderEntries] = [:]
                 Self.scanTree(sub, into: &scanned, denied: &denied)
                 folders.merge(scanned) { _, new in new }
                 for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }

@@ -104,3 +104,47 @@ struct FileMatcherTests {
         #expect(FileMatcher.find(Array("xyz".utf8), in: Array("hello".utf8)) == nil)
     }
 }
+
+@Suite("F1 紧凑存放的文件名")
+struct FolderEntriesTests {
+    @Test func namesAndFlagsRoundTrip() {
+        let folder = FolderEntries([
+            FileEntry(name: "Report.PDF", isDirectory: false, isPackage: false),
+            FileEntry(name: "Notes.app", isDirectory: true, isPackage: true, displayName: "备忘录"),
+            FileEntry(name: "年度报告", isDirectory: true, isPackage: false),
+        ])
+        #expect(folder.count == 3)
+        #expect(folder.indices.map { folder.name(at: $0) } == ["Report.PDF", "Notes.app", "年度报告"])
+        #expect(folder.indices.map { folder.displayName(at: $0) } == [nil, "备忘录", nil])
+        #expect(folder.indices.map { folder.isDirectory(at: $0) } == [false, true, true])
+    }
+
+    @Test func byteSyllableMatchAgreesWithCharacterVersion() {
+        let names = ["年度报告.docx", "剪贴板", "绿色", "Win顺 设置", "（草稿）合同"]
+        let queries = ["bg", "baogao", "ndbg", "jiantb", "jtb", "lv", "lu", "ls", "wins", "sz", "cght", "xyz", "nd"]
+        for name in names {
+            let chars = Array(name).filter { !$0.isWhitespace }
+            let syllables = Pinyin.syllables(of: chars).map { Array($0) }
+            let encoded = FolderEntries.encodePinyin(name)
+            for query in queries {
+                let expected = PinyinIndex.syllableMatch(Array(query), syllables)
+                let actual = encoded.withUnsafeBufferPointer { PinyinIndex.syllableMatch(Array(query.utf8), encoded: $0) }
+                #expect(actual == expected, "\(name) / \(query)")
+            }
+        }
+    }
+
+    @Test func searchFindsByNameAndPinyin() {
+        let folder = FolderEntries([
+            FileEntry(name: "年度报告.docx", isDirectory: false, isPackage: false),
+            FileEntry(name: "readme.md", isDirectory: false, isPackage: false),
+        ])
+        var found: [String] = []
+        folder.forEachMatch(FileMatcher.terms(of: "ndbg"), depth: 2) { index, _ in found.append(folder.name(at: index)) }
+        #expect(found == ["年度报告.docx"])
+        found = []
+        folder.forEachMatch(FileMatcher.terms(of: "README"), depth: 2) { index, _ in found.append(folder.name(at: index)) }
+        #expect(found == ["readme.md"])
+    }
+}
+

@@ -198,4 +198,45 @@ struct PinyinIndex {
     private static func charMatches(_ q: Character, _ s: Character) -> Bool {
         q == s || (s == "v" && q == "u")
     }
+
+    /// 和上面一样，只是查询和拼音都是字节：拼音逐字存成 ASCII，字之间用 0 隔开（文件名索引的存法）。
+    /// 用临时缓冲区代替二维数组，搜几十万个文件名时少分配很多内存。
+    static func syllableMatch(_ q: [UInt8], encoded s: UnsafeBufferPointer<UInt8>) -> Bool {
+        let n = q.count
+        guard n > 0 else { return true }
+        guard !s.isEmpty else { return false }
+        var m = 1
+        for byte in s where byte == 0 { m += 1 }
+        return withUnsafeTemporaryAllocation(of: Int.self, capacity: m + 1) { starts in
+            // 第 si 个字的拼音是 s[starts[si] ..< starts[si + 1] - 1]
+            var k = 0
+            starts[0] = 0
+            for (i, byte) in s.enumerated() where byte == 0 {
+                k += 1
+                starts[k] = i + 1
+            }
+            starts[m] = s.count + 1
+            let width = m + 1
+            return withUnsafeTemporaryAllocation(of: Bool.self, capacity: (n + 1) * width) { can in
+                can.initialize(repeating: false)
+                for si in 0...m { can[n * width + si] = true }
+                for qi in stride(from: n - 1, through: 0, by: -1) {
+                    for si in stride(from: m - 1, through: 0, by: -1) {
+                        let start = starts[si], end = starts[si + 1] - 1
+                        var k = 0
+                        while start + k < end && qi + k < n
+                                && (q[qi + k] == s[start + k] || (s[start + k] == 0x76 && q[qi + k] == 0x75)) {
+                            k += 1
+                            if can[(qi + k) * width + si + 1] {
+                                can[qi * width + si] = true
+                                break
+                            }
+                        }
+                    }
+                }
+                for si in 0 ..< m where can[si] { return true }
+                return false
+            }
+        }
+    }
 }
