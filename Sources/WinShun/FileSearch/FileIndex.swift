@@ -514,6 +514,8 @@ final class FileIndex: ObservableObject {
     /// 内容索引不读的文件夹：程序的依赖包，成千上万个 json、txt，都不是用户自己的文件
     private static let skippedForContent: Set<String> = [
         "node_modules", "site-packages", "dist-packages", "__pycache__", "bower_components", "Pods", "DerivedData",
+        // 编译、打包、测试覆盖率生成的文件，和第三方依赖
+        "dist", "build", "coverage", "vendor", "venv", "target", "Carthage",
     ]
 
     /// 把这些文件夹里要读内容的文件交给内容索引（在 queue 上）。

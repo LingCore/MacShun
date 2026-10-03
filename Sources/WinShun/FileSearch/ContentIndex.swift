@@ -80,7 +80,7 @@ final class ContentIndex: ObservableObject {
     /// 正在读的文件。读的时候程序崩了（文件损坏），下次启动跳过它，免得一启动就崩
     private var readingMarker: URL { directory.appendingPathComponent("reading") }
     /// 改了存储格式或分词方式就加一，旧索引会删掉重建
-    private static let schemaVersion: Int32 = 2   // 2：标点处加分隔记号
+    private static let schemaVersion: Int32 = 3   // 3：两个汉字之间隔着标点时加分隔记号
 
     private let workQueue = DispatchQueue(label: "WinShun.ContentIndex", qos: .utility, autoreleaseFrequency: .workItem)
     private let searchQueue = DispatchQueue(label: "WinShun.ContentIndex.search", qos: .userInitiated)
@@ -619,25 +619,26 @@ final class ContentIndex: ObservableObject {
         }
     }
 
-    /// 标点处放的分隔记号（私用区字符，分词器会把它当成一个词）：搜“合同”时，“符合。同时”里隔着句号的两个字连不起来。
-    /// 空格、换行不算：英文词组本来就隔着空格，中文硬换行也可能把一个词断开。
+    /// 两个汉字之间隔着标点时放的分隔记号（私用区字符，分词器会把它当成一个词）：
+    /// 搜“合同”时，“符合。同时”里隔着句号的两个字连不起来。
+    /// 空格、换行不算（中文硬换行也可能把一个词断开）；英文本来按词分，隔着标点也没关系，不加（代码里标点很多，加了索引会大很多）。
     static let boundary: Unicode.Scalar = "\u{E000}"
 
-    /// 交给 FTS5 的文字：每个汉字前后加空格，英文、数字不变，两个字之间隔着标点时加一个分隔记号。
+    /// 交给 FTS5 的文字：每个汉字前后加空格，英文、数字不变，两个汉字之间隔着标点时加一个分隔记号。
     static func ftsText(_ text: String) -> String {
         var out = String.UnicodeScalarView()
-        var sawWord = false
+        var lastWasCJK = false
         var punctuation = false
         for scalar in text.unicodeScalars {
             let cjk = isCJK(scalar)
             if cjk || isWordCharacter(scalar) {
-                if punctuation && sawWord {
+                if cjk && lastWasCJK && punctuation {
                     out.append(" ")
                     out.append(boundary)
                     out.append(" ")
                 }
                 punctuation = false
-                sawWord = true
+                lastWasCJK = cjk
                 if cjk {
                     out.append(" ")
                     out.append(scalar)

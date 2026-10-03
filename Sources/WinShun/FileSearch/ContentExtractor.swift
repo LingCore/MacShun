@@ -5,7 +5,8 @@ import PDFKit
 
 /// 从文件里读出纯文本，给内容索引（F2）用。哪个线程都可以调用。
 ///
-/// - txt、md、csv、json：直接读，依次试 UTF-8、UTF-16（有 BOM 时）、GB18030（Windows 上存的中文文件多半是 GBK）；
+/// - txt、md、csv、json、代码、配置、字幕：直接读，依次试 UTF-8、UTF-16（有 BOM 时）、GB18030（Windows 上存的中文文件多半是 GBK）；
+///   网页去掉标签、脚本和样式，只留文字；
 /// - docx、xlsx、pptx：自己解 zip，读里面 XML 的文字；xlsx 只读文字格子，不读数字；
 /// - pdf：系统的 PDFKit，只读前面若干页。扫描件没有文字层，读不出东西。
 ///   放在子进程里读：图片多的 PDF 解析时会占几百 MB 内存，损坏的 PDF 还可能让 PDFKit 崩溃，
@@ -27,9 +28,29 @@ enum ContentExtractor {
         }
     }
 
-    static let kinds: [String: Kind] = [
-        "txt": .text, "text": .text, "md": .text, "markdown": .text, "csv": .text, "tsv": .text, "json": .text,
-        "docx": .docx, "pptx": .pptx, "xlsx": .xlsx, "pdf": .pdf,
+    /// 按文本读的扩展名：文档、代码、配置、字幕。日志不读：一直在写，会反复重读
+    static let textExtensions: Set<String> = [
+        // 文档和数据
+        "txt", "text", "md", "markdown", "csv", "tsv", "json", "rst", "tex", "org", "adoc",
+        // 代码
+        "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "vue", "svelte", "py", "pyi", "swift", "m", "mm",
+        "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "cs", "java", "kt", "kts", "scala", "groovy", "gradle", "go", "rs",
+        "rb", "php", "lua", "pl", "r", "dart", "sql", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+        // 网页和样式
+        "html", "htm", "css", "scss", "sass", "less",
+        // 配置
+        "xml", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "plist",
+        // 字幕和歌词
+        "srt", "vtt", "ass", "ssa", "lrc", "sub",
+    ]
+
+    static let kinds: [String: Kind] = Dictionary(uniqueKeysWithValues: textExtensions.map { ($0, Kind.text) })
+        .merging(["docx": .docx, "pptx": .pptx, "xlsx": .xlsx, "pdf": .pdf]) { _, new in new }
+
+    /// 程序生成的文件：压缩过的脚本、依赖的锁文件，内容对人没用
+    private static let generatedNames: Set<String> = [
+        "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "npm-shrinkwrap.json", "composer.lock", "Podfile.lock",
+        "Cargo.lock", "Gemfile.lock", "poetry.lock", "Package.resolved",
     ]
 
     /// 每个文件最多收录多少文字（UTF-8 字节）。再长的部分搜不到，换来索引不至于太大
@@ -41,9 +62,10 @@ enum ContentExtractor {
     /// Office 文件里所有部分加起来最多解压多少，防止由大量页面组成的“zip 炸弹”
     static let maxUnzippedBytes = 256 << 20
 
-    /// 这个文件要不要读内容。Office 打开文件时生成的 “~$xxx.docx” 临时文件不读。
+    /// 这个文件要不要读内容。Office 打开文件时生成的 “~$xxx.docx” 临时文件、压缩过的 xxx.min.js、锁文件不读。
     static func kind(ofFileNamed name: String) -> Kind? {
-        guard let dot = name.lastIndex(of: "."), !name.hasPrefix("~$") else { return nil }
+        guard let dot = name.lastIndex(of: "."), !name.hasPrefix("~$"), !name.contains(".min."),
+              !generatedNames.contains(name) else { return nil }
         return kinds[name[name.index(after: dot)...].lowercased()]
     }
 
@@ -60,7 +82,9 @@ enum ContentExtractor {
                   let data = try? handle.read(upToCount: limit * 2) else { return nil }
             try? handle.close()
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? data.count
+            let ext = (path as NSString).pathExtension.lowercased()
             text = decodeText(data, truncated: data.count < size)
+                .map { ext == "html" || ext == "htm" ? htmlText($0) : $0 }
                 .map { truncated($0, maxBytes: limit) }
                 .map { isJSON ? unescapeJSON($0) : $0 }
         case .docx:
@@ -143,6 +167,36 @@ enum ContentExtractor {
             i += 1
         }
         return String(out)
+    }
+
+    /// 网页里的文字：去掉脚本、样式、注释和标签，段落处换行，换回常见的字符实体。
+    static func htmlText(_ html: String) -> String {
+        var text = html
+        for pattern in ["<script\\b[^>]*>.*?</script\\s*>", "<style\\b[^>]*>.*?</style\\s*>", "<!--.*?-->"] {
+            text = text.replacingOccurrences(of: pattern, with: " ", options: [.regularExpression, .caseInsensitive])
+        }
+        text = text.replacingOccurrences(of: "<(br|/p|/div|/li|/tr|/h[1-6]|/title)\\b[^>]*>", with: "\n",
+                                         options: [.regularExpression, .caseInsensitive])
+        text = text.replacingOccurrences(of: "<[^>]*>", with: " ", options: .regularExpression)
+        for (entity, character) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
+            text = text.replacingOccurrences(of: entity, with: character)
+        }
+        // &#20013; &#x4e2d; 这类写法的字
+        if text.contains("&#") {
+            let regex = try? NSRegularExpression(pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
+            let ns = text as NSString
+            var out = ""
+            var last = 0
+            for match in regex?.matches(in: text, range: NSRange(location: 0, length: ns.length)) ?? [] {
+                out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+                let code = ns.substring(with: match.range(at: 1))
+                let value = code.hasPrefix("x") ? UInt32(code.dropFirst(), radix: 16) : UInt32(code)
+                out += value.flatMap(Unicode.Scalar.init).map { String($0) } ?? ns.substring(with: match.range)
+                last = match.range.location + match.range.length
+            }
+            text = out + ns.substring(from: last)
+        }
+        return text.replacingOccurrences(of: "&amp;", with: "&")
     }
 
     /// 截到不超过 maxBytes 字节，不切断一个字符。

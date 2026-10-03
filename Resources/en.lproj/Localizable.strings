@@ -219,7 +219,7 @@
 
 /* 文件内容搜索 */
 "搜索文件内容" = "Search file contents";
-"txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字" = "Text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files";
+"文本、代码、配置、字幕，以及 Word、Excel、PowerPoint、PDF 里的文字" = "Text in plain text, code, config and subtitle files, plus Word, Excel, PowerPoint and PDF";
 "已读取" = "Read";
 "内容索引只保存在这台电脑上" = "The content index stays on this Mac";
 "每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file (128 KB for JSON) and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";

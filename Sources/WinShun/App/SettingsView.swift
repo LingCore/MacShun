@@ -758,7 +758,7 @@ private struct FileSearchSettings: View {
             Section {
                 Toggle(isOn: $config.searchContents) {
                     Text(L("搜索文件内容"))
-                    Text(L("txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字"))
+                    Text(L("文本、代码、配置、字幕，以及 Word、Excel、PowerPoint、PDF 里的文字"))
                 }
                 .settingsAnchor(.fileContents)
                 if config.searchContents {

@@ -158,7 +158,7 @@ struct ContentIndexTests {
         #expect(ContentIndex.matchExpression(for: "合同") == "\" 合  同 \"")
         #expect(ContentIndex.matchExpression(for: "inv") == "\"inv\" *")
         #expect(ContentIndex.matchExpression(for: "合同 2026") == "\" 合  同 \" AND \"2026\" *")
-        #expect(ContentIndex.matchExpression(for: "a\"bc") == "\"a\"\" \u{E000} bc\" *")   // 引号要转义，也是标点
+        #expect(ContentIndex.matchExpression(for: "a\"bc") == "\"a\"\"bc\" *")
         #expect(ContentIndex.matchExpression(for: "的") == nil)
         // 单个字母不参与（以它开头的词太多）；结尾只有一个字母时不按前缀
         #expect(ContentIndex.matchExpression(for: "合同 a") == "\" 合  同 \"")
@@ -172,7 +172,31 @@ struct ContentIndexTests {
         #expect(ContentIndex.ftsText("合\n同") == " 合 \n 同 ")          // 换行不隔开
         #expect(ContentIndex.ftsText("annual report") == "annual report")   // 空格不隔开
         #expect(ContentIndex.ftsText("合同。") == " 合  同 。")             // 末尾的标点不加
-        #expect(ContentIndex.ftsText("e-mail") == "e- \(b) mail")
+        #expect(ContentIndex.ftsText("e-mail") == "e-mail")                 // 英文不加
+        #expect(ContentIndex.ftsText("合同, Contract") == " 合  同 , Contract")
+    }
+
+    @Test func codeAndSubtitleFilesAreRead() {
+        #expect(ContentExtractor.kind(ofFileNamed: "auth.ts") == .text)
+        #expect(ContentExtractor.kind(ofFileNamed: "main.py") == .text)
+        #expect(ContentExtractor.kind(ofFileNamed: "电影.srt") == .text)
+        #expect(ContentExtractor.kind(ofFileNamed: "app.min.js") == nil)          // 压缩过的
+        #expect(ContentExtractor.kind(ofFileNamed: "package-lock.json") == nil)   // 锁文件
+        #expect(ContentExtractor.kind(ofFileNamed: "server.log") == nil)          // 日志一直在写，不读
+    }
+
+    @Test func htmlKeepsOnlyText() {
+        let html = """
+            <html><head><title>报价单</title><style>p { color: red }</style><script>var a = "<b>";</script></head>
+            <body><p>合同金额&nbsp;128&#44;000 元</p><!-- 备注 --><div>&#x4e2d;文 &amp; English</div></body></html>
+            """
+        let text = ContentExtractor.htmlText(html)
+        #expect(text.contains("报价单"))
+        #expect(text.contains("合同金额 128,000 元"))
+        #expect(text.contains("中文 & English"))
+        #expect(!text.contains("color"))
+        #expect(!text.contains("var a"))
+        #expect(!text.contains("备注"))
     }
 
     @Test func nulCharactersDoNotCutText() throws {
