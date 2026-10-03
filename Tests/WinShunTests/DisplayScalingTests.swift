@@ -70,6 +70,53 @@ struct DisplayScalingTests {
         #expect(DisplayScaling.nativeSize(of: list)! == (2560, 1440))
     }
 
+    /// 2K 144Hz 屏真实读到的 2560×1440 和 1280×720@2x 模式：144Hz 各有两个，其中 2560×1440 有一个标着默认
+    private var screen2KRefresh: [DisplayScaling.ModeSpec] {
+        func mode(_ w: Int, _ h: Int, _ pw: Int, _ ph: Int, _ hz: Double, isDefault: Bool = false) -> DisplayScaling.ModeSpec {
+            DisplayScaling.ModeSpec(width: w, height: h, pixelWidth: pw, pixelHeight: ph, refreshRate: hz, isDefault: isDefault)
+        }
+        return [
+            mode(1280, 720, 2560, 1440, 144), mode(1280, 720, 2560, 1440, 144), mode(1280, 720, 2560, 1440, 120),
+            mode(1280, 720, 2560, 1440, 60), mode(1280, 720, 1280, 720, 50),
+            mode(2560, 1440, 2560, 1440, 144), mode(2560, 1440, 2560, 1440, 144, isDefault: true),
+            mode(2560, 1440, 2560, 1440, 120), mode(2560, 1440, 2560, 1440, 60),
+        ]
+    }
+
+    @Test func refreshRatesForCurrentSizeHighestFirst() {
+        let list = screen2KRefresh
+        let options = DisplayScaling.refreshOptions(from: list, current: list[0])
+        #expect(options.map(\.rate) == [144, 120, 60])            // 不混进 1280×720 1 倍模式的 50Hz
+        #expect(options.map(\.label) == ["144 Hz", "120 Hz", "60 Hz"])
+    }
+
+    @Test func duplicateRefreshPrefersDefaultThenLater() {
+        let list = screen2KRefresh
+        // 都不是默认：用后面那个（系统自己选的也是它）
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[0]).first?.index == 1)
+        // 有默认的用默认的，不管前后
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[5]).first?.index == 6)
+        var swapped = list
+        swapped.swapAt(5, 6)
+        #expect(DisplayScaling.refreshOptions(from: swapped, current: swapped[6]).first?.index == 5)
+    }
+
+    @Test func scalingKeepsRefreshAndPrefersDefaultMode() {
+        let options = DisplayScaling.options(from: screen2KRefresh, preferredRefresh: 144)
+        #expect(options.map(\.percent) == [100, 200])
+        #expect(options.map(\.mode.refreshRate) == [144, 144])
+        #expect(options.first?.index == 6)
+    }
+
+    @Test func fractionalRatesAreSeparate() {
+        var list = modes(["3024x1964@3024x1964"], refresh: 120)
+        list += modes(["3024x1964@3024x1964"], refresh: 60)
+        list += modes(["3024x1964@3024x1964"], refresh: 59.94)
+        list += modes(["3024x1964@3024x1964"], refresh: 0)       // 读不到刷新率的不列出
+        let options = DisplayScaling.refreshOptions(from: list, current: list[0])
+        #expect(options.map(\.label) == ["120 Hz", "60 Hz", "59.94 Hz"])
+    }
+
     @Test func skipsOtherAspectRatios() {
         let list = modes(["2560x1440@2560x1440", "1280x1024@2560x2048"])
         #expect(DisplayScaling.options(from: list, preferredRefresh: 60).map(\.mode.width) == [2560])

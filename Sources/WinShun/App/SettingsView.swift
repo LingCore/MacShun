@@ -34,7 +34,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .mouse: L("鼠标像 Windows")
         case .clipboard: L("剪贴板历史")
         case .fileSearch: L("文件搜索")
-        case .display: L("显示器缩放")
+        case .display: L("显示器缩放和刷新率")
         case .general: L("通用")
         case .gleaning: Gleaning.title
         }
@@ -787,7 +787,7 @@ private struct DisplaySettings: View {
     var body: some View {
         SearchableForm {
             Section {
-                SettingsPageHeader(tab: .display, subtitle: L("每块屏幕单独设置缩放，像 Windows 那样按百分比选"))
+                SettingsPageHeader(tab: .display, subtitle: L("每块屏幕单独设置缩放和刷新率，缩放像 Windows 那样按百分比选"))
             }
 
             if model.displays.isEmpty {
@@ -812,10 +812,31 @@ private struct DisplaySettings: View {
                         Text(L("越大，文字和图标越大"))
                     }
                     .settingsAnchor(position == 0 ? .displayScale : nil)
+                    if display.refreshOptions.count > 1 {
+                        Picker(selection: refreshSelection(for: display)) {
+                            if display.currentRefresh == nil {
+                                Text(verbatim: DisplayScaling.label(forRefresh: display.current.refreshRate)).tag(String?.none)
+                            }
+                            ForEach(display.refreshOptions) { option in
+                                Text(verbatim: option.label).tag(Optional(option.id))
+                            }
+                        } label: {
+                            Text(L("刷新率"))
+                            Text(L("越高，画面和鼠标越流畅"))
+                        }
+                        .settingsAnchor(position == 0 ? .refreshRate : nil)
+                    }
                     LabeledContent(L("屏幕分辨率")) {
-                        Text(L("%@，%ld Hz", Self.size(display.nativeWidth, display.nativeHeight), Int(display.current.refreshRate.rounded())))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                        Group {
+                            if display.refreshOptions.count == 1, let only = display.refreshOptions.first {
+                                // 只有一个刷新率，不给选，顺便写在这里
+                                Text(L("%@，%@", Self.size(display.nativeWidth, display.nativeHeight), only.label))
+                            } else {
+                                Text(verbatim: Self.size(display.nativeWidth, display.nativeHeight))
+                            }
+                        }
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text(display.isMain ? L("%@（主显示器）", display.name) : display.name)
@@ -830,7 +851,7 @@ private struct DisplaySettings: View {
             Section {
                 InfoRow(
                     symbol: "info.circle",
-                    title: L("和系统设置里改分辨率一样"),
+                    title: L("和系统设置里改分辨率、刷新率一样"),
                     detail: L("只列出文字清晰的档位。改动会一直保留，退出 Win顺 也不会恢复。")
                 )
             }
@@ -846,6 +867,16 @@ private struct DisplaySettings: View {
             get: { display.currentOption?.id },
             set: { id in
                 guard let option = display.options.first(where: { $0.id == id }) else { return }
+                model.select(option, for: display)
+            }
+        )
+    }
+
+    private func refreshSelection(for display: DisplayInfo) -> Binding<String?> {
+        Binding(
+            get: { display.currentRefresh?.id },
+            set: { id in
+                guard let option = display.refreshOptions.first(where: { $0.id == id }) else { return }
                 model.select(option, for: display)
             }
         )

@@ -4,7 +4,8 @@ import AppKit
 import Combine
 import CoreGraphics
 
-/// 显示器缩放（D1）：每块屏幕像 Windows 那样按百分比选缩放，背后就是“系统设置 → 显示器”里的分辨率。
+/// 显示器缩放（D1）和刷新率（D2）：每块屏幕像 Windows 那样按百分比选缩放、单独选刷新率，
+/// 背后就是“系统设置 → 显示器”里的分辨率和刷新率。
 ///
 /// 只列出清晰的档位：
 /// - 100%：按屏幕原生分辨率显示；
@@ -23,6 +24,8 @@ enum DisplayScaling {
         var pixelHeight: Int
         var refreshRate: Double
         var isNative = false
+        /// 系统标的默认模式。同一个大小和刷新率有时有两个模式（时序不同，看不出区别），优先用默认的
+        var isDefault = false
 
         var isHiDPI: Bool { pixelWidth == width * 2 && pixelHeight == height * 2 }
     }
@@ -36,6 +39,22 @@ enum DisplayScaling {
         var index: Int
 
         var id: String { "\(mode.width)x\(mode.height)" }
+    }
+
+    /// 一个刷新率档位。
+    struct RefreshOption: Identifiable, Equatable {
+        var rate: Double
+        /// 在模式列表里的位置，切换时用
+        var index: Int
+
+        /// 按两位小数区分，59.94 和 60 是两个档位
+        var id: String { String(format: "%.2f", rate) }
+        /// 144 Hz；不是整数时带小数：59.94 Hz
+        var label: String { DisplayScaling.label(forRefresh: rate) }
+    }
+
+    static func label(forRefresh rate: Double) -> String {
+        abs(rate - rate.rounded()) < 0.005 ? "\(Int(rate.rounded())) Hz" : String(format: "%.2f Hz", rate)
     }
 
     /// 屏幕原生分辨率：标着原生的模式；没有标记时取最大的 1 倍模式。
@@ -66,11 +85,32 @@ enum DisplayScaling {
         return best.values.sorted { $0.percent < $1.percent }
     }
 
+    /// 和 current 一样大小的模式能用哪些刷新率，从高到低。只有一个时界面上不给选。
+    static func refreshOptions(from modes: [ModeSpec], current: ModeSpec) -> [RefreshOption] {
+        var best: [String: RefreshOption] = [:]
+        for (index, mode) in modes.enumerated() {
+            // 有的内建屏幕读不到刷新率，是 0
+            guard mode.refreshRate > 0, mode.width == current.width, mode.height == current.height,
+                  mode.pixelWidth == current.pixelWidth, mode.pixelHeight == current.pixelHeight else { continue }
+            let option = RefreshOption(rate: mode.refreshRate, index: index)
+            if let existing = best[option.id], !preferred(mode, over: modes[existing.index]) { continue }
+            best[option.id] = option
+        }
+        return best.values.sorted { $0.rate > $1.rate }
+    }
+
     private static func better(_ a: Option, than b: Option, preferredRefresh: Double) -> Bool {
         let aMatches = abs(a.mode.refreshRate - preferredRefresh) < 0.5
         let bMatches = abs(b.mode.refreshRate - preferredRefresh) < 0.5
         if aMatches != bMatches { return aMatches }
-        return a.mode.refreshRate > b.mode.refreshRate
+        if abs(a.mode.refreshRate - b.mode.refreshRate) >= 0.005 { return a.mode.refreshRate > b.mode.refreshRate }
+        return preferred(a.mode, over: b.mode)
+    }
+
+    /// 大小和刷新率都一样的两个模式选哪个（a 在列表里排在 b 后面）：先选系统标的默认模式，
+    /// 都不是就选后面那个。在 2K 144Hz 屏上看到系统自己选的也是后面那个。
+    private static func preferred(_ a: ModeSpec, over b: ModeSpec) -> Bool {
+        a.isDefault || !b.isDefault
     }
 }
 
@@ -82,15 +122,20 @@ struct DisplayInfo: Identifiable {
     let nativeWidth: Int
     let nativeHeight: Int
     let options: [DisplayScaling.Option]
+    /// 现在这个大小能用的刷新率，从高到低
+    let refreshOptions: [DisplayScaling.RefreshOption]
     /// 现在用的模式
     let current: DisplayScaling.ModeSpec
     /// 现在用的是哪个清晰档位；现在的模式不在清晰档位里时为 nil
     var currentOption: DisplayScaling.Option? {
         options.first { $0.mode.width == current.width && $0.mode.height == current.height && $0.mode.isHiDPI == current.isHiDPI }
     }
+    var currentRefresh: DisplayScaling.RefreshOption? {
+        refreshOptions.first { abs($0.rate - current.refreshRate) < 0.005 }
+    }
 }
 
-/// 读取显示器、切换缩放。显示器接上、拔掉或者分辨率变了会自动刷新。只在主线程上使用。
+/// 读取显示器、切换缩放和刷新率。显示器接上、拔掉或者分辨率变了会自动刷新。只在主线程上使用。
 final class DisplayScalingModel: ObservableObject {
     static let shared = DisplayScalingModel()
 
@@ -120,6 +165,7 @@ final class DisplayScalingModel: ObservableObject {
             let list = ((CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []).filter { $0.isUsableForDesktopGUI() }
             let specs = list.map(Self.spec)
             guard let native = DisplayScaling.nativeSize(of: specs) else { continue }
+            let currentSpec = Self.spec(current)
             allModes[id] = list
             result.append(DisplayInfo(
                 id: id,
@@ -128,7 +174,8 @@ final class DisplayScalingModel: ObservableObject {
                 nativeWidth: native.width,
                 nativeHeight: native.height,
                 options: DisplayScaling.options(from: specs, preferredRefresh: current.refreshRate),
-                current: Self.spec(current)
+                refreshOptions: DisplayScaling.refreshOptions(from: specs, current: currentSpec),
+                current: currentSpec
             ))
         }
         modes = allModes
@@ -136,18 +183,29 @@ final class DisplayScalingModel: ObservableObject {
         displays = result.sorted { $0.isMain && !$1.isMain }
     }
 
-    /// 切换到某个档位。和系统设置里改分辨率一样，会一直保留。
+    /// 切换到某个缩放档位。和系统设置里改分辨率一样，会一直保留。
     func select(_ option: DisplayScaling.Option, for display: DisplayInfo) {
-        guard let list = modes[display.id], list.indices.contains(option.index) else { return }
+        apply(modeAt: option.index, to: display)
+    }
+
+    /// 切换刷新率，大小不变。和系统设置里改一样，会一直保留。
+    func select(_ option: DisplayScaling.RefreshOption, for display: DisplayInfo) {
+        apply(modeAt: option.index, to: display)
+    }
+
+    private func apply(modeAt index: Int, to display: DisplayInfo) {
+        guard let list = modes[display.id], list.indices.contains(index) else { return }
+        let mode = list[index]
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
-        let error = CGConfigureDisplayWithDisplayMode(config, display.id, list[option.index], nil)
+        let error = CGConfigureDisplayWithDisplayMode(config, display.id, mode, nil)
         if error == .success {
             let done = CGCompleteDisplayConfiguration(config, .permanently)
-            if done != .success { Log.app.error("切换显示器缩放失败：\(done.rawValue, privacy: .public)") }
+            if done != .success { Log.app.error("切换显示模式失败：\(done.rawValue, privacy: .public)") }
+            else { Log.app.notice("显示器 \(display.id, privacy: .public) 切换到 \(mode.width, privacy: .public)×\(mode.height, privacy: .public) \(mode.refreshRate, privacy: .public)Hz") }
         } else {
             CGCancelDisplayConfiguration(config)
-            Log.app.error("切换显示器缩放失败：\(error.rawValue, privacy: .public)")
+            Log.app.error("切换显示模式失败：\(error.rawValue, privacy: .public)")
         }
         refresh()
     }
@@ -157,7 +215,8 @@ final class DisplayScalingModel: ObservableObject {
             width: mode.width, height: mode.height,
             pixelWidth: mode.pixelWidth, pixelHeight: mode.pixelHeight,
             refreshRate: mode.refreshRate,
-            isNative: mode.ioFlags & 0x0200_0000 != 0   // kDisplayModeNativeFlag
+            isNative: mode.ioFlags & 0x0200_0000 != 0,  // kDisplayModeNativeFlag
+            isDefault: mode.ioFlags & 0x4 != 0          // kDisplayModeDefaultFlag
         )
     }
 

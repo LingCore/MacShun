@@ -12,7 +12,7 @@ struct SettingsItem: Identifiable {
         case fileSearchEnabled, fileIndex, externalDrives
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
-        case displayScale
+        case displayScale, refreshRate
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, relaunch, launchAtLogin, language, version
         case works, feedback
@@ -102,6 +102,8 @@ extension SettingsItem {
 
         .init(id: .displayScale, tab: .display, title: "显示器缩放",
               keywords: "缩放 分辨率 文字大小 放大 屏幕 显示器 双屏 高分屏 scale scaling resolution text size monitor screen hidpi retina dpi"),
+        .init(id: .refreshRate, tab: .display, title: "刷新率",
+              keywords: "赫兹 hz 高刷 144 120 60 流畅 帧率 refresh rate fps monitor screen"),
 
         .init(id: .clipboardEnabled, tab: .clipboard, title: "剪贴板历史",
               keywords: "win+v clipboard history 历史 复制记录"),

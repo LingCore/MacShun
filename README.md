@@ -87,10 +87,11 @@
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。索引只放在内存里，不联网。
 
-#### 🖥️ 显示器缩放
+#### 🖥️ 显示器缩放和刷新率
 
 - 每块屏幕单独选缩放，像 Windows 一样按百分比（100%、125%、150%…）选，不用去系统设置里猜“看起来像多少”。
 - 只列出文字清晰的档位。2K 这类非高分屏，macOS 只给 100% 和 200% 两个清晰档位，页面上会说明。
+- 每块屏幕单独选刷新率（144 Hz、120 Hz、60 Hz…），高刷屏不用再去系统设置里找。
 
 ### 下载安装
 
@@ -227,10 +228,11 @@ Every option can be found with the **search box** at the top of the settings win
 - Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The index stays in memory and never goes online.
 
-#### 🖥️ Display scaling
+#### 🖥️ Display scaling and refresh rate
 
 - Pick scaling for each screen in Windows-style percentages (100%, 125%, 150%…) instead of guessing "looks like" resolutions.
 - Only sharp options are listed. For non-Retina screens such as 1440p monitors, macOS only offers 100% and 200% sharply, and the page says so.
+- Pick the refresh rate for each screen (144 Hz, 120 Hz, 60 Hz…) right next to scaling.
 
 ### Download and install
 
