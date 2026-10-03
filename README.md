@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-blue" alt="Apple Silicon and Intel">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0"></a>
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA%20Community-1f1f1f" alt="LINUX DO 社区"></a>
 </p>
 
 <p align="center">
@@ -257,6 +258,12 @@ scripts/release.sh             # build the universal release dmg (Apple Silicon 
 ```
 
 ---
+
+## LINUX DO
+
+本项目积极参与并认可 [LINUX DO 社区](https://linux.do)。
+
+WinShun is proud to be part of the [LINUX DO community](https://linux.do).
 
 ## 许可证 · License
 
