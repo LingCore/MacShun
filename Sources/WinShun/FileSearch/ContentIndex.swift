@@ -158,11 +158,16 @@ final class ContentIndex: ObservableObject {
         database = db
         known = loaded
         textCount = texts
-        // 上次读这个文件时程序崩了：记成“没有内容”，文件改过之后才会再读
-        if let crashed = try? String(contentsOf: readingMarker, encoding: .utf8), !crashed.isEmpty,
-           let info = Self.fileInfo(crashed) {
-            Log.app.error("内容索引：上次读 \(crashed, privacy: .public) 时退出了，跳过这个文件")
-            transaction { upsert(crashed, mtime: info.mtime, size: info.size, text: nil) }
+        // 上次读这一批文件时程序崩了：都记成“没有内容”，文件改过之后才会再读
+        let crashed = ((try? String(contentsOf: readingMarker, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        if !crashed.isEmpty {
+            Log.app.error("内容索引：上次读这些文件时退出了，跳过：\(crashed.joined(separator: ", "), privacy: .public)")
+            transaction {
+                for path in crashed {
+                    guard let info = Self.fileInfo(path) else { continue }
+                    upsert(path, mtime: info.mtime, size: info.size, compressed: nil, body: nil)
+                }
+            }
         }
         try? FileManager.default.removeItem(at: readingMarker)
     }
@@ -176,11 +181,14 @@ final class ContentIndex: ObservableObject {
             guard self.database != nil else { return }
             var present = Set<String>()
             present.reserveCapacity(files.count)
-            for path in files {
-                present.insert(path)
-                guard let kind = ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent),
-                      let info = Self.fileInfo(path)
-                else { continue }
+            // 外接硬盘上查一个文件的大小和修改时间要零点几毫秒，几个线程一起查
+            let candidates = files.compactMap { path in
+                ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent).map { (path, $0) }
+            }
+            let infos = Self.fileInfos(candidates.map(\.0))
+            present.formUnion(files)
+            for ((path, kind), info) in zip(candidates, infos) {
+                guard let info else { continue }
                 // iCloud 里还没下载到这台电脑的文件，读一下就会开始下载，不读
                 if info.isDataless { continue }
                 if info.size == 0 || info.size > kind.maxFileSize {
@@ -202,6 +210,21 @@ final class ContentIndex: ObservableObject {
             if !gone.isEmpty { self.transaction { gone.forEach(self.remove) } }
             self.publish(force: !gone.isEmpty)
             self.scheduleWork()
+        }
+    }
+
+    /// 去掉 scopes 范围里、不在 present 里的文件（全部扫完以后调用，前面分批 sync 时只增不删）。
+    func removeMissing(present: Set<String>, scopes: [Scope]) {
+        workQueue.async {
+            guard self.database != nil else { return }
+            var gone: [String] = []
+            for scope in scopes {
+                for path in self.known.keys where !present.contains(path) && scope.contains(path) { gone.append(path) }
+                for path in self.todo.keys where !present.contains(path) && scope.contains(path) { self.todo[path] = nil }
+            }
+            guard !gone.isEmpty else { return }
+            self.transaction { gone.forEach(self.remove) }
+            self.publish(force: true)
         }
     }
 
@@ -232,48 +255,89 @@ final class ContentIndex: ObservableObject {
         workQueue.async { self.workBatch() }
     }
 
-    /// 读一批文件：先读快的（文本，再 Word、PowerPoint、Excel，最后 PDF），读满半秒就提交一次，
-    /// 让排在后面的文件变化先处理，搜索也能尽早搜到。
+    /// 读一批文件：先读快的（文本，再 Word、PowerPoint、Excel，最后 PDF）。一批里的文件几个核同时读，
+    /// 读完在一个事务里写进数据库；读满半秒就让出队列，让排在后面的文件变化先处理，搜索也能尽早搜到。
     private func workBatch() {
         working = false
         guard database != nil, !todo.isEmpty else { return }
         let begin = Date()
-        transaction {
-            while Date().timeIntervalSince(begin) < 0.5, let task = nextTask() {
-                todo[task.path] = nil
-                index(task.path, kind: task.kind)
+        while Date().timeIntervalSince(begin) < 0.5 {
+            let tasks = nextTasks()
+            guard !tasks.isEmpty else { break }
+            tasks.forEach { todo[$0.path] = nil }
+            try? Data(tasks.map(\.path).joined(separator: "\n").utf8).write(to: readingMarker)
+            let results = Self.read(tasks)
+            transaction {
+                for (task, result) in zip(tasks, results) {
+                    switch result {
+                    case .missing: remove(task.path)
+                    case .skipped: break
+                    case let .read(info, compressed, body):
+                        upsert(task.path, mtime: info.mtime, size: info.size, compressed: compressed, body: body)
+                    }
+                }
             }
         }
         try? FileManager.default.removeItem(at: readingMarker)
         publish(force: todo.isEmpty)
         if todo.isEmpty {
             Log.app.notice("内容索引：读完了，共 \(self.textCount, privacy: .public) 个文件有内容")
+            // 并行读文件时用过的大块内存，系统分配器会留着备用，读完了就还给系统
+            malloc_zone_pressure_relief(nil, 0)
         } else {
             scheduleWork()
         }
     }
 
-    private func nextTask() -> (path: String, kind: ContentExtractor.Kind)? {
-        for rank in buckets.indices {
-            while let path = buckets[rank].popLast() {
-                if let kind = todo[path], kind.rawValue == rank { return (path, kind) }
-            }
-        }
-        return nil
+    private struct Task {
+        let path: String
+        let kind: ContentExtractor.Kind
     }
 
-    private func index(_ path: String, kind: ContentExtractor.Kind) {
-        guard let info = Self.fileInfo(path) else {
-            remove(path)
-            return
+    /// 下一批：同一种文件取十几个；PDF 在子进程里读，个别图片多的会占几百 MB 内存，一次只取四个
+    private func nextTasks() -> [Task] {
+        for rank in buckets.indices {
+            let limit = rank == ContentExtractor.Kind.pdf.rawValue ? 4 : 16
+            var tasks: [Task] = []
+            var seen = Set<String>()
+            while tasks.count < limit, let path = buckets[rank].popLast() {
+                if let kind = todo[path], kind.rawValue == rank, seen.insert(path).inserted {
+                    tasks.append(Task(path: path, kind: kind))
+                }
+            }
+            if !tasks.isEmpty { return tasks }
         }
-        guard !info.isDataless else { return }
-        try? Data(path.utf8).write(to: readingMarker)
-        // 每个文件读完就释放临时对象，不然一批文件的 Data、XML 解析器会堆在一起
-        autoreleasepool {
-            let text = ContentExtractor.extract(path: path, kind: kind)
-            upsert(path, mtime: info.mtime, size: info.size, text: text)
+        return []
+    }
+
+    private enum ReadResult {
+        /// 文件没了
+        case missing
+        /// iCloud 里还没下载的，先不读
+        case skipped
+        /// 读完了：压缩好的原文和交给全文索引的文字（没有文字时都是 nil）
+        case read(FileInfo, Data?, String?)
+    }
+
+    /// 几个核同时读一批文件（哪个线程都可以）。解析、压缩、分词都在这里做，写数据库的线程只管写。
+    private static func read(_ tasks: [Task]) -> [ReadResult] {
+        var results = [ReadResult](repeating: .skipped, count: tasks.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: tasks.count) { index in
+            // 每个文件读完就释放临时对象，不然 Data、XML 解析器会堆在一起
+            let result: ReadResult = autoreleasepool {
+                let task = tasks[index]
+                guard let info = fileInfo(task.path) else { return .missing }
+                guard !info.isDataless else { return .skipped }
+                guard let text = ContentExtractor.extract(path: task.path, kind: task.kind) else { return .read(info, nil, nil) }
+                let compressed = try? (Data(text.utf8) as NSData).compressed(using: .zlib) as Data
+                return .read(info, compressed, compressed == nil ? nil : ftsText(text))
+            }
+            lock.lock()
+            results[index] = result
+            lock.unlock()
         }
+        return results
     }
 
     // MARK: - 数据库读写（workQueue 上）
@@ -285,9 +349,8 @@ final class ContentIndex: ObservableObject {
         database.execute("COMMIT")
     }
 
-    private func upsert(_ path: String, mtime: Double, size: Int, text: String?) {
+    private func upsert(_ path: String, mtime: Double, size: Int, compressed: Data?, body: String?) {
         guard let database else { return }
-        let compressed = text.flatMap { try? (Data($0.utf8) as NSData).compressed(using: .zlib) as Data }
         let id: Int64
         if let old = known[path] {
             deleteFromFTS(old)
@@ -308,10 +371,10 @@ final class ContentIndex: ObservableObject {
             _ = statement.step()
             id = database.lastInsertID
         }
-        let hasText = compressed != nil
-        if let text, hasText, let statement = database.prepare("INSERT INTO docs_fts (rowid, body) VALUES (?, ?)") {
+        let hasText = compressed != nil && body != nil
+        if hasText, let body, let statement = database.prepare("INSERT INTO docs_fts (rowid, body) VALUES (?, ?)") {
             statement.bind(1, id)
-            statement.bind(2, Self.ftsText(text))
+            statement.bind(2, body)
             _ = statement.step()
             textCount += 1
         }
@@ -361,6 +424,20 @@ final class ContentIndex: ObservableObject {
         let mtime: Double
         let size: Int
         let isDataless: Bool
+    }
+
+    private static func fileInfos(_ paths: [String]) -> [FileInfo?] {
+        var infos = [FileInfo?](repeating: nil, count: paths.count)
+        let chunks = 8
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: chunks) { chunk in
+            let range = stride(from: chunk, to: paths.count, by: chunks)
+            let local = range.map { (index: $0, info: fileInfo(paths[$0])) }
+            lock.lock()
+            for item in local { infos[item.index] = item.info }
+            lock.unlock()
+        }
+        return infos
     }
 
     /// 只要普通文件（不跟着替身走，免得同一个文件收录两遍）

@@ -146,7 +146,9 @@ enum FileMatcher {
 ///
 /// 搜索范围：个人文件夹（不含“资源库”）、应用程序、系统自带的应用程序、共享文件夹，以及外接硬盘。
 /// 不收录隐藏文件、应用程序包里的内容；外接硬盘上不收录 Windows 的系统文件夹。
-/// 外接硬盘可能很大、读起来很慢（例如 macOS 只读挂载的 NTFS 盘），放在第二轮后台慢慢扫，不耽误搜索。
+/// 外接硬盘可能很大、读起来很慢（例如 macOS 只读挂载的 NTFS 盘），放在第二轮后台扫，不耽误搜索。
+/// NTFS 驱动（FSKit）查每个文件的属性很慢，而且一次只处理一个，所以外接硬盘只读目录（readdir），
+/// 只给文件夹查隐藏标记，几块盘一起用几个线程扫：实测 6 万个文件从 10 秒降到 0.5 秒。
 ///
 /// 索引数据只在 queue 上读写（搜索、合并扫描结果、处理 FSEvents）；扫描在别的队列上做；状态在主线程上发布给界面。
 final class FileIndex: ObservableObject {
@@ -294,24 +296,32 @@ final class FileIndex: ObservableObject {
         }
     }
 
-    /// 第二轮：一块一块扫外接硬盘，每扫完一块就并进索引。
+    /// 第二轮：几块外接硬盘一起扫。边扫边并进索引、交给内容索引去读，不用等全部扫完。
     private func scanDrives(_ drives: [String], generation gen: Int) {
-        for (position, drive) in drives.enumerated() {
-            let begin = Date()
-            var result: [String: [FileEntry]] = [:]
-            var denied: [String] = []
-            Self.scanTree(drive, into: &result, denied: &denied)
-            Log.app.notice("文件索引：\(drive, privacy: .public) \(result.values.reduce(0) { $0 + $1.count }, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 1), privacy: .public) 秒")
-            let last = position == drives.count - 1
-            queue.async {
+        let begin = Date()
+        Self.scanTreesInParallel(drives, threads: 4) { batch in
+            self.queue.async {
                 guard gen == self.activeGeneration else { return }
-                self.folders.merge(result) { _, new in new }
-                self.scannedRoots.append(drive)
-                self.sendContent(result, scopes: [ContentIndex.Scope(folder: drive, recursive: true)])
-                self.publishCount { _ in
-                    if last { self.isScanningDrives = false }
-                }
+                self.folders.merge(batch) { _, new in new }
+                // 只增不删：还没扫到的文件不能当成删掉了
+                self.sendContent(batch, scopes: [])
+                self.publishCount()
             }
+        }
+        queue.async {
+            guard gen == self.activeGeneration else { return }
+            self.scannedRoots.append(contentsOf: drives)
+            // 全部扫完，再把内容索引里已经不存在的文件去掉
+            let scopes = drives.map { ContentIndex.Scope(folder: $0, recursive: true) }
+            var files: [String] = []
+            for (folder, entries) in self.folders where scopes.contains(where: { $0.folder == folder || $0.contains(folder) }) {
+                Self.collectContentFiles(folder, entries, into: &files)
+            }
+            self.contentIndex?.removeMissing(present: Set(files), scopes: scopes)
+            let count = self.folders.values.reduce(0) { $0 + $1.count }
+            Log.app.notice("文件索引：外接硬盘扫完，共 \(count, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 1), privacy: .public) 秒")
+            malloc_zone_pressure_relief(nil, 0)
+            self.publishCount { _ in self.isScanningDrives = false }
         }
     }
 
@@ -388,6 +398,7 @@ final class FileIndex: ObservableObject {
 
     /// 列出一个文件夹，返回里面的文件和要继续往下扫描的子文件夹。读不了时返回 nil。
     private static func list(_ folder: String) -> (entries: [FileEntry], subfolders: [String])? {
+        if folder.hasPrefix("/Volumes/") { return listDrive(folder) }
         let url = URL(fileURLWithPath: folder, isDirectory: true)
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
@@ -417,6 +428,86 @@ final class FileIndex: ObservableObject {
             }
         }
         return (entries, subfolders)
+    }
+
+    /// Windows 的隐藏系统文件。外接硬盘上不查每个文件的隐藏标记（太慢），按名字跳过
+    private static let windowsHiddenFiles: Set<String> = [
+        "desktop.ini", "thumbs.db", "ehthumbs.db", "pagefile.sys", "hiberfil.sys", "swapfile.sys",
+        "dumpstack.log", "dumpstack.log.tmp", "bootmgr", "bootnxt", "ntuser.ini", "ntuser.pol",
+    ]
+
+    /// 外接硬盘上列一个文件夹：只读目录项（名字和类型），不查文件属性；文件夹查一下隐藏标记，
+    /// 隐藏的（ProgramData、Default 用户、目录联接）和 Windows 系统文件夹一样整个跳过。
+    private static func listDrive(_ folder: String) -> (entries: [FileEntry], subfolders: [String])? {
+        guard let dir = opendir(folder) else { return nil }
+        defer { closedir(dir) }
+        var entries: [FileEntry] = []
+        var subfolders: [String] = []
+        while let item = readdir(dir) {
+            let name = withUnsafePointer(to: item.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            if name.hasPrefix(".") || name.hasPrefix("$") { continue }
+            let path = folder + "/" + name
+            var type = item.pointee.d_type
+            var info = stat()
+            if type == DT_UNKNOWN {
+                guard lstat(path, &info) == 0 else { continue }
+                type = info.st_mode & S_IFMT == S_IFDIR ? UInt8(DT_DIR) : UInt8(DT_REG)
+            }
+            if type == DT_DIR {
+                if windowsSystemFolders.contains(name) || excluded.contains(path) { continue }
+                if lstat(path, &info) == 0 && info.st_flags & UInt32(UF_HIDDEN) != 0 { continue }
+                // 只有带扩展名的文件夹可能是“包”（例如 .app），这种很少，单独问一下系统
+                let isPackage = name.contains(".")
+                    && (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isPackageKey]).isPackage) == true
+                entries.append(FileEntry(name: name, isDirectory: true, isPackage: isPackage))
+                if !isPackage { subfolders.append(path) }
+            } else {
+                if name.hasPrefix("~$") || windowsHiddenFiles.contains(name.lowercased())
+                    || name.lowercased().hasPrefix("ntuser.dat") { continue }
+                entries.append(FileEntry(name: name, isDirectory: false, isPackage: false))
+            }
+        }
+        return (entries, subfolders)
+    }
+
+    /// 几个线程一起扫这些位置（外接硬盘）。每个线程攒够一批（或者过了一秒）就交给 onBatch，可能在不同线程上调用。
+    private static func scanTreesInParallel(_ roots: [String], threads: Int,
+                                            onBatch: @escaping ([String: [FileEntry]]) -> Void) {
+        let lock = NSLock()
+        var pending = roots
+        var busy = 0
+        DispatchQueue.concurrentPerform(iterations: threads) { _ in
+            var local: [String: [FileEntry]] = [:]
+            var lastFlush = Date()
+            while true {
+                if !local.isEmpty && (local.count >= 2000 || Date().timeIntervalSince(lastFlush) > 1) {
+                    onBatch(local)
+                    local = [:]
+                    lastFlush = Date()
+                }
+                lock.lock()
+                guard let folder = pending.popLast() else {
+                    let done = busy == 0
+                    lock.unlock()
+                    if done { break }
+                    usleep(500)
+                    continue
+                }
+                busy += 1
+                lock.unlock()
+                let listed = autoreleasepool { list(folder) }
+                lock.lock()
+                if let (entries, subfolders) = listed {
+                    local[folder] = entries
+                    pending.append(contentsOf: subfolders)
+                }
+                busy -= 1
+                lock.unlock()
+            }
+            if !local.isEmpty { onBatch(local) }
+        }
     }
 
     private static func scanTree(_ root: String, into result: inout [String: [FileEntry]], denied: inout [String]) {
