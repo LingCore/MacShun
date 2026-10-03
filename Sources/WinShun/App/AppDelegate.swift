@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ClipboardController(configStore: configStore, store: ClipboardStore(directory: dir))
     }()
     private let pointer = PointerAccelerationController()
+    private let cursor = CursorSizeController()
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
     private var statusMenu: StatusMenu!
@@ -111,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         pointer.restore()
+        cursor.restore()
         if !SelfTest.isRequested { clipboard.store.saveNow() }
     }
 
@@ -158,8 +160,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var pointerApplyScheduled = false
 
-    /// 设置指针加速和速度。短时间内的多次调用（例如几个鼠标接口同时连上）合并成一次。
+    /// 设置指针加速、速度和光标大小。短时间内的多次调用（例如几个鼠标接口同时连上）合并成一次。
     private func applyPointer() {
+        // 光标大小不需要权限
+        cursor.apply(configStore.config.mouse)
+        let cursorScale = cursor.systemScale()
+        if cursorScale != state.systemCursorScale { state.systemCursorScale = cursorScale }
         guard state.inputMonitoringGranted || state.accessibilityGranted, !pointerApplyScheduled else { return }
         pointerApplyScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in

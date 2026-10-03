@@ -118,6 +118,8 @@ struct MouseConfig: Codable, Equatable {
     var sideButtons = true
     /// M5：Ctrl+滚轮缩放
     var ctrlWheelZoom = true
+    /// M6：光标大小，1 到 4 倍。nil 表示和“系统设置 → 辅助功能 → 显示 → 指针大小”一样。
+    var cursorScale: Double?
 
     func settings(forDevice key: String?) -> MouseDeviceSettings {
         guard let key, let s = devices[key] else { return defaults }
@@ -134,6 +136,7 @@ struct MouseConfig: Codable, Equatable {
         devices = c.value(.devices, default: d.devices)
         sideButtons = c.value(.sideButtons, default: d.sideButtons)
         ctrlWheelZoom = c.value(.ctrlWheelZoom, default: d.ctrlWheelZoom)
+        cursorScale = c.value(.cursorScale, default: d.cursorScale)
     }
 }
 

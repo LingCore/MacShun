@@ -11,6 +11,8 @@ final class AppState: ObservableObject {
     @Published var mice: [MouseDevice] = []
     /// “系统设置 → 鼠标 → 跟踪速度”，指针速度没有单独调过时用它。
     @Published var systemPointerSpeed = 1.0
+    /// “系统设置 → 辅助功能 → 显示 → 指针大小”，光标大小没单独调过时用它。
+    @Published var systemCursorScale = 1.0
     /// 设置里列出的键盘：这次运行中打过字的，或者以前用过的。
     @Published var keyboards: [InputDevice] = []
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
