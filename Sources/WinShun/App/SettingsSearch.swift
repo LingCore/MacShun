@@ -9,7 +9,7 @@ struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
         case chatScreenshot, terminal, remoteDesktop, excludedApps
-        case fileSearchEnabled, fileIndex, externalDrives, fileContents
+        case fileSearchEnabled, fileIndex, externalDrives, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
@@ -100,6 +100,8 @@ extension SettingsItem {
 
         .init(id: .fileContents, tab: .fileSearch, title: "搜索文件内容",
               keywords: "内容 全文 正文 文字 word excel ppt pdf csv json txt markdown 文档 表格 content full text"),
+        .init(id: .imageText, tab: .fileSearch, title: "认图片里的文字",
+              keywords: "图片 截图 照片 识别 文字识别 ocr 扫描 扫描件 image screenshot photo scan"),
         .init(id: .externalDrives, tab: .fileSearch, title: "包括外接硬盘",
               keywords: "硬盘 移动硬盘 u盘 外接 ntfs drive volume external usb"),
 

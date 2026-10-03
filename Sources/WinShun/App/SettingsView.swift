@@ -762,6 +762,11 @@ private struct FileSearchSettings: View {
                 }
                 .settingsAnchor(.fileContents)
                 if config.searchContents {
+                    Toggle(isOn: $config.searchImageText) {
+                        Text(L("认图片里的文字"))
+                        Text(L("截图、照片和扫描版 PDF 里的字也能搜到，在后台慢慢认，第一次要一会儿"))
+                    }
+                    .settingsAnchor(.imageText)
                     LabeledContent(L("已读取")) {
                         HStack(spacing: 8) {
                             if config.activated && contentIndex.pendingCount > 0 { ProgressView().controlSize(.small) }
@@ -771,7 +776,7 @@ private struct FileSearchSettings: View {
                     InfoRow(
                         symbol: "lock",
                         title: L("内容索引只保存在这台电脑上"),
-                        detail: L("每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。")
+                        detail: L("每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件、缓存文件夹和 iCloud 里还没下载的文件不读。关掉后索引会删除。")
                     )
                 }
             } header: {

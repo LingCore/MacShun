@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Foundation
+import ImageIO
 import PDFKit
+import Vision
 
 /// 从文件里读出纯文本，给内容索引（F2）用。哪个线程都可以调用。
 ///
 /// - txt、md、csv、json、代码、配置、字幕：直接读，依次试 UTF-8、UTF-16（有 BOM 时）、GB18030（Windows 上存的中文文件多半是 GBK）；
 ///   网页去掉标签、脚本和样式，只留文字；
 /// - docx、xlsx、pptx：自己解 zip，读里面 XML 的文字；xlsx 只读文字格子，不读数字；
-/// - pdf：系统的 PDFKit，只读前面若干页。扫描件没有文字层，读不出东西。
-///   放在子进程里读：图片多的 PDF 解析时会占几百 MB 内存，损坏的 PDF 还可能让 PDFKit 崩溃，
+/// - pdf：系统的 PDFKit，只读前面若干页。扫描件没有文字层，改用系统的文字识别（Vision）认前面几页；
+/// - 图片（截图、照片）：系统的文字识别，认简体、繁体中文和英文，跟聚焦一样。太小的图（图标）不认。
+///   PDF 和图片放在子进程里读：图片多的 PDF 解析时会占几百 MB 内存，文字识别要加载模型，损坏的文件还可能让系统框架崩溃，
 ///   子进程退出后内存就还回去了，崩了也只是这个文件读不出来，不会连累键盘映射。
 enum ContentExtractor {
     enum Kind: Int, Comparable {
         // 按读取的快慢排，建索引时先读快的
-        case text, docx, pptx, xlsx, pdf
+        case text, docx, pptx, xlsx, pdf, image
 
         static func < (a: Kind, b: Kind) -> Bool { a.rawValue < b.rawValue }
 
@@ -24,6 +27,7 @@ enum ContentExtractor {
             case .text: 64 << 20
             case .docx, .pptx, .xlsx: 32 << 20
             case .pdf: 64 << 20
+            case .image: 50 << 20
             }
         }
     }
@@ -44,8 +48,15 @@ enum ContentExtractor {
         "srt", "vtt", "ass", "ssa", "lrc", "sub",
     ]
 
+    /// 认里面文字的图片
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "heif", "webp", "tiff", "tif", "bmp"]
+
     static let kinds: [String: Kind] = Dictionary(uniqueKeysWithValues: textExtensions.map { ($0, Kind.text) })
+        .merging(Dictionary(uniqueKeysWithValues: imageExtensions.map { ($0, Kind.image) })) { _, new in new }
         .merging(["docx": .docx, "pptx": .pptx, "xlsx": .xlsx, "pdf": .pdf]) { _, new in new }
+
+    /// 认不认图片里的文字（设置里可以关掉，省电）。哪个线程都可以读
+    static let readsImages = Locked(true)
 
     /// 程序生成的文件：压缩过的脚本、依赖的锁文件，内容对人没用
     private static let generatedNames: Set<String> = [
@@ -55,25 +66,27 @@ enum ContentExtractor {
 
     /// 每个文件最多收录多少文字（UTF-8 字节）。再长的部分搜不到，换来索引不至于太大
     static let maxTextBytes = 512 << 10
-    /// 大的 json 多半是程序的数据和配置，收录得少一些（实测软件盘上 json 占了索引的一大半）
-    static let maxJSONTextBytes = 128 << 10
     /// PDF 最多读多少页
     static let maxPDFPages = 100
+    /// 扫描版 PDF 最多认前面几页
+    static let maxOCRPages = 20
+    /// 比这还小的图片（图标、缩略图）不认字
+    static let minImageSide = 200
     /// Office 文件里所有部分加起来最多解压多少，防止由大量页面组成的“zip 炸弹”
     static let maxUnzippedBytes = 256 << 20
 
     /// 这个文件要不要读内容。Office 打开文件时生成的 “~$xxx.docx” 临时文件、压缩过的 xxx.min.js、锁文件不读。
     static func kind(ofFileNamed name: String) -> Kind? {
         guard let dot = name.lastIndex(of: "."), !name.hasPrefix("~$"), !name.contains(".min."),
-              !generatedNames.contains(name) else { return nil }
-        return kinds[name[name.index(after: dot)...].lowercased()]
+              !generatedNames.contains(name), let kind = kinds[name[name.index(after: dot)...].lowercased()] else { return nil }
+        return kind == .image && !readsImages.get() ? nil : kind
     }
 
     /// 读出文字。读不了、没有文字时返回 nil。
     static func extract(path: String, kind: Kind) -> String? {
         let url = URL(fileURLWithPath: path)
         let isJSON = path.lowercased().hasSuffix(".json")
-        let limit = isJSON ? maxJSONTextBytes : maxTextBytes
+        let limit = maxTextBytes
         let text: String?
         switch kind {
         case .text:
@@ -96,7 +109,9 @@ enum ContentExtractor {
         case .xlsx:
             text = ZipReader(url: url).flatMap(xlsxText)
         case .pdf:
-            text = pdfText(url)
+            text = helperText(.pdf, url)
+        case .image:
+            text = hasTextSizedPixels(url) ? helperText(.image, url) : nil
         }
         guard var text, text.contains(where: { !$0.isWhitespace }) else { return nil }
         // SQLite 按 C 字符串收文字，遇到 0 就停了，后面的搜不到（JSON 里的 \u0000、文本文件后面夹的 0）
@@ -299,19 +314,22 @@ enum ContentExtractor {
         }
     }
 
-    // MARK: - PDF
+    // MARK: - PDF 和图片（子进程）
 
-    static let pdfHelperArgument = "--extract-pdf-text"
+    static let helperArguments: [Kind: String] = [.pdf: "--extract-pdf-text", .image: "--extract-image-text"]
 
-    /// 是读 PDF 的子进程时，返回要读的文件
-    static func pdfHelperPath(in arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: pdfHelperArgument), index + 1 < arguments.count else { return nil }
-        return arguments[index + 1]
+    /// 是读 PDF 或认图片文字的子进程时，返回要读的种类和文件
+    static func helperRequest(in arguments: [String]) -> (kind: Kind, path: String)? {
+        for (kind, argument) in helperArguments {
+            if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count { return (kind, arguments[index + 1]) }
+        }
+        return nil
     }
 
     /// 子进程：把文字写到标准输出后退出。
-    static func runPDFHelper(path: String) -> Never {
-        guard let text = pdfTextInProcess(URL(fileURLWithPath: path)) else { exit(1) }
+    static func runHelper(kind: Kind, path: String) -> Never {
+        let url = URL(fileURLWithPath: path)
+        guard let text = kind == .pdf ? pdfTextInProcess(url) : imageTextInProcess(url) else { exit(1) }
         FileHandle.standardOutput.write(Data(text.utf8))
         exit(0)
     }
@@ -320,16 +338,20 @@ enum ContentExtractor {
     private static let helperExecutable: URL? =
         Bundle.main.bundleIdentifier == "io.github.lingcore.winshun" ? Bundle.main.executableURL : nil
 
-    private static func pdfText(_ url: URL) -> String? {
-        guard let executable = helperExecutable else { return pdfTextInProcess(url) }
+    private static func helperText(_ kind: Kind, _ url: URL) -> String? {
+        guard let executable = helperExecutable, let argument = helperArguments[kind] else {
+            return kind == .pdf ? pdfTextInProcess(url) : imageTextInProcess(url)
+        }
         let process = Process()
         process.executableURL = executable
-        process.arguments = [pdfHelperArgument, url.path]
+        process.arguments = [argument, url.path]
+        // 认图片文字不急，让给前台的程序
+        process.qualityOfService = kind == .image ? .background : .utility
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
-        // 卡住的 PDF 最多等 30 秒；不理 SIGTERM 时再过 3 秒强制结束
+        // 卡住的文件最多等一分钟（扫描版 PDF 要认好几页）；不理 SIGTERM 时再过 3 秒强制结束
         let pid = process.processIdentifier
         let timeout = DispatchWorkItem {
             guard process.isRunning else { return }
@@ -338,12 +360,12 @@ enum ContentExtractor {
                 if process.isRunning { kill(pid, SIGKILL) }
             }
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: timeout)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60, execute: timeout)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         timeout.cancel()
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
-            Log.app.notice("内容索引：读不了 PDF \(url.path, privacy: .public)")
+            Log.app.notice("内容索引：读不了 \(url.path, privacy: .public)")
             return nil
         }
         return String(decoding: data, as: UTF8.self)
@@ -363,7 +385,61 @@ enum ContentExtractor {
                 if text.utf8.count > maxTextBytes { break }
             }
             // PDFKit 用 U+FFFC 表示图片
-            return text.replacingOccurrences(of: "\u{FFFC}", with: "")
+            text = text.replacingOccurrences(of: "\u{FFFC}", with: "")
+            guard !text.contains(where: { !$0.isWhitespace }) else { return text }
+            // 没有文字层：扫描件，把前面几页画出来认字
+            var recognized = ""
+            for index in 0 ..< min(document.pageCount, maxOCRPages) {
+                autoreleasepool {
+                    guard let page = document.page(at: index), let image = render(page) else { return }
+                    recognized += recognizeText(in: image) + "\n"
+                }
+                if recognized.utf8.count > maxTextBytes { break }
+            }
+            return recognized
         }
+    }
+
+    /// 把一页画成图片，长边大约 2000 像素（字够清楚，又不会太慢）
+    private static func render(_ page: PDFPage) -> CGImage? {
+        let bounds = page.bounds(for: .mediaBox)
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let scale = min(2000 / max(bounds.width, bounds.height), 4)
+        let width = Int(bounds.width * scale), height = Int(bounds.height * scale)
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.scaleBy(x: scale, y: scale)
+        page.draw(with: .mediaBox, to: context)
+        return context.makeImage()
+    }
+
+    /// 图片够大才可能有能认的字。只读文件头，很快
+    private static func hasTextSizedPixels(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else { return false }
+        return min(width, height) >= minImageSide / 2 && max(width, height) >= minImageSide
+    }
+
+    private static func imageTextInProcess(_ url: URL) -> String? {
+        autoreleasepool {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+            return recognizeText(in: image)
+        }
+    }
+
+    /// 系统的文字识别：简体、繁体中文和英文，一行一段
+    static func recognizeText(in image: CGImage) -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+        request.usesLanguageCorrection = true
+        try? VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 }

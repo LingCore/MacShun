@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Compression
+import CoreText
+import ImageIO
 import Foundation
 import Testing
 @testable import WinShun
@@ -134,7 +136,7 @@ struct ContentExtractorTests {
         #expect(ContentExtractor.kind(ofFileNamed: "报告.DOCX") == .docx)
         #expect(ContentExtractor.kind(ofFileNamed: "data.csv") == .text)
         #expect(ContentExtractor.kind(ofFileNamed: "~$报告.docx") == nil)   // Office 的临时文件
-        #expect(ContentExtractor.kind(ofFileNamed: "photo.jpg") == nil)
+        #expect(ContentExtractor.kind(ofFileNamed: "movie.mp4") == nil)
         #expect(ContentExtractor.kind(ofFileNamed: "README") == nil)
     }
 }
@@ -369,5 +371,88 @@ struct FileSearchScopeTests {
         model.scope = .files
         model.query = "合"
         #expect(!model.needsLongerQuery)
+    }
+}
+
+@Suite("F2 图片文字和常用排序")
+struct ImageTextAndHistoryTests {
+    /// 画一张白底黑字的图
+    private func textImage(_ text: String) -> CGImage {
+        let width = 1200, height = 300
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let font = CTFontCreateWithName("PingFang SC" as CFString, 96, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0, alpha: 1),
+        ]))
+        context.textPosition = CGPoint(x: 60, y: 110)
+        CTLineDraw(line, context)
+        return context.makeImage()!
+    }
+
+    @Test func imagesAreReadUnlessTurnedOff() {
+        #expect(ContentExtractor.kind(ofFileNamed: "截图 2026-10-03.png") == .image)
+        #expect(ContentExtractor.kind(ofFileNamed: "照片.HEIC") == .image)
+        ContentExtractor.readsImages.set(false)
+        defer { ContentExtractor.readsImages.set(true) }
+        #expect(ContentExtractor.kind(ofFileNamed: "截图.png") == nil)
+    }
+
+    @Test func recognizesTextInScreenshotsAndScannedPDFs() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("WinShunOCR-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = textImage("合同金额 Invoice")
+
+        // 截图
+        let png = folder.appendingPathComponent("截图.png")
+        let destination = CGImageDestinationCreateWithURL(png as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        let fromImage = ContentExtractor.extract(path: png.path, kind: .image)
+        #expect(fromImage?.contains("合同") == true, "\(fromImage ?? "nil")")
+        #expect(fromImage?.contains("Invoice") == true)
+
+        // 扫描版 PDF：页面上只有一张图，没有文字层
+        let pdf = folder.appendingPathComponent("扫描件.pdf")
+        var box = CGRect(x: 0, y: 0, width: 600, height: 150)
+        let pdfContext = CGContext(pdf as CFURL, mediaBox: &box, nil)!
+        pdfContext.beginPDFPage(nil)
+        pdfContext.draw(image, in: box)
+        pdfContext.endPDFPage()
+        pdfContext.closePDF()
+        let fromPDF = ContentExtractor.extract(path: pdf.path, kind: .pdf)
+        #expect(fromPDF?.contains("合同") == true, "\(fromPDF ?? "nil")")
+
+        // 图标这种小图不认
+        let icon = folder.appendingPathComponent("icon.png")
+        let small = textImage("合同").cropping(to: CGRect(x: 0, y: 0, width: 64, height: 64))!
+        let iconDestination = CGImageDestinationCreateWithURL(icon as CFURL, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(iconDestination, small, nil)
+        CGImageDestinationFinalize(iconDestination)
+        #expect(ContentExtractor.extract(path: icon.path, kind: .image) == nil)
+    }
+
+    @Test func openedFilesRankHigher() {
+        let defaults = UserDefaults(suiteName: "WinShunTests-\(UUID().uuidString)")!
+        let history = OpenHistory(defaults: defaults)
+        let now = Date()
+        history.record("/a.txt", at: now)
+        history.record("/a.txt", at: now)
+        history.record("/old.txt", at: now.addingTimeInterval(-30 * 86400))
+        let boosts = history.boosts(now: now)
+        #expect(boosts["/a.txt"] == 12)      // 两次 + 一周内打开过
+        #expect(boosts["/old.txt"] == 3)     // 一次，很久以前
+        #expect(boosts["/never.txt"] == nil)
+        // 存下来了，重新打开还在
+        #expect(OpenHistory(defaults: defaults).boosts(now: now)["/a.txt"] == 12)
+        // 加满也排不过“包含”和“开头一样”之间的差距
+        for _ in 0 ..< 20 { history.record("/a.txt", at: now) }
+        #expect(history.boosts(now: now)["/a.txt"] == 24)
+        history.clear()
+        #expect(OpenHistory(defaults: defaults).boosts(now: now).isEmpty)
     }
 }

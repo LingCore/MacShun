@@ -222,7 +222,7 @@
 "文本、代码、配置、字幕，以及 Word、Excel、PowerPoint、PDF 里的文字" = "Text in plain text, code, config and subtitle files, plus Word, Excel, PowerPoint and PDF";
 "已读取" = "Read";
 "内容索引只保存在这台电脑上" = "The content index stays on this Mac";
-"每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file (128 KB for JSON) and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
+"每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件、缓存文件夹和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file and the first 100 pages of a PDF. Very large files, cache folders and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
 "文件内容" = "File contents";
 "搜索框默认只搜文件名，在右边选“全部”或“内容”（或按 Tab）才按内容搜。要搜中文，切换到中文输入法就能打字；至少输入两个汉字或三个字母才会搜内容。" = "The search bar looks at file names by default. Choose All or Contents on the right (or press Tab) to search inside files. To search Chinese text, switch to a Chinese input source; contents are searched once you type at least two Chinese characters or three letters.";
 "第一次呼出时开始读取" = "Starts the first time you open file search";
@@ -274,3 +274,5 @@
 "切换范围" = "Switch scope";
 "至少输入两个汉字或三个字母才搜内容" = "Type at least two Chinese characters or three letters to search contents";
 "正在读取文件内容，结果可能还不全…" = "Still reading file contents, results may be incomplete…";
+"认图片里的文字" = "Recognize Text in Images";
+"截图、照片和扫描版 PDF 里的字也能搜到，在后台慢慢认，第一次要一会儿" = "Find text in screenshots, photos and scanned PDFs. Recognition runs in the background; the first pass takes a while";

@@ -8,6 +8,7 @@ import SwiftUI
 /// 文件搜索（F1、F2）：连按两下 Ctrl 弹出胶囊形的搜索框，边打字边出结果，按文件名和文件内容搜。只在主线程上使用。
 final class FileSearchController {
     private let configStore: ConfigStore
+    private let history = OpenHistory()
     private let index = FileIndex.shared
     private let contentIndex = ContentIndex.shared
     private lazy var model = makeModel()
@@ -32,6 +33,12 @@ final class FileSearchController {
         } else if !cfg.enabled {
             index.stop()
             hide()
+            history.clear()
+        }
+        // 认不认图片文字变了：重新扫一遍，把图片交给内容索引，或者从内容索引里去掉
+        if ContentExtractor.readsImages.get() != cfg.searchImageText {
+            ContentExtractor.readsImages.set(cfg.searchImageText)
+            if cfg.enabled && cfg.activated && (index.isIndexing || index.lastIndexed != nil) { index.rebuild() }
         }
         // 内容索引里有文件的原文，不用了就删掉
         let searchesContent = cfg.enabled && cfg.activated && cfg.searchContents
@@ -91,6 +98,7 @@ final class FileSearchController {
 
     private func open(_ result: FileSearchResult, reveal: Bool) {
         hide()
+        history.record(result.path)
         let url = URL(fileURLWithPath: result.path)
         if reveal {
             NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -103,6 +111,7 @@ final class FileSearchController {
 
     private func makeModel() -> FileSearchModel {
         let model = FileSearchModel(index: index, contentIndex: contentIndex)
+        model.history = history
         model.onOpen = { [weak self] result, reveal in self?.open(result, reveal: reveal) }
         model.onClose = { [weak self] in self?.hide() }
         // 结果多少变了，面板跟着变高变矮
@@ -221,6 +230,8 @@ final class FileSearchModel: ObservableObject {
 
     let index: FileIndex
     let contentIndex: ContentIndex
+    /// 打开过的文件排在前面
+    var history: OpenHistory?
     var onOpen: (FileSearchResult, Bool) -> Void = { _, _ in }
     var onClose: () -> Void = {}
 
@@ -294,7 +305,7 @@ final class FileSearchModel: ObservableObject {
         generation += 1
         let current = generation
         let q = query
-        index.search(q) { [weak self] found in
+        index.search(q, boosts: history?.boosts() ?? [:]) { [weak self] found in
             guard let self, current == self.generation else { return }
             self.nameResults = found
             self.merge(resetSelection: resetSelection)
@@ -320,10 +331,13 @@ final class FileSearchModel: ObservableObject {
             guard let self else { return }
             self.contentIndex.search(q) { [weak self] hits in
                 guard let self, current == self.generation else { return }
-                self.contentResults = hits.map { hit in
+                // 打开过的文件往前放，其余按相关程度
+                let boosts = self.history?.boosts() ?? [:]
+                self.contentResults = hits.enumerated().map { position, hit in
                     FileSearchResult(path: hit.path, name: (hit.path as NSString).lastPathComponent,
-                                     isDirectory: false, score: 0, snippet: hit.snippet)
+                                     isDirectory: false, score: (boosts[hit.path] ?? 0) - Double(position) * 0.01, snippet: hit.snippet)
                 }
+                .sorted { $0.score > $1.score }
                 self.searchingContent = false
                 self.merge(resetSelection: false)
             }

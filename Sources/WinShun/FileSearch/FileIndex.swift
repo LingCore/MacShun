@@ -527,7 +527,9 @@ final class FileIndex: ObservableObject {
     }
 
     private static func collectContentFiles(_ folder: String, _ entries: FolderEntries, into files: inout [String]) {
-        guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) }) else { return }
+        // 缓存文件夹里是程序生成的东西（例如成千上万张缩略图），不读
+        guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) || $0.lowercased().contains("cache") })
+        else { return }
         for index in entries.indices where !entries.isDirectory(at: index) {
             let name = entries.name(at: index)
             guard ContentExtractor.kind(ofFileNamed: name) != nil else { continue }
@@ -544,8 +546,9 @@ final class FileIndex: ObservableObject {
         }
     }
 
-    /// 搜索，结果在主线程上回调。
-    func search(_ query: String, limit: Int = 60, completion: @escaping ([FileSearchResult]) -> Void) {
+    /// 搜索，结果在主线程上回调。boosts：常打开的文件加的分（见 OpenHistory）
+    func search(_ query: String, limit: Int = 60, boosts: [String: Double] = [:],
+                completion: @escaping ([FileSearchResult]) -> Void) {
         let terms = FileMatcher.terms(of: query)
         guard !terms.isEmpty else {
             completion([])
@@ -565,7 +568,7 @@ final class FileIndex: ObservableObject {
                     let name = entries.name(at: index)
                     let path = folder == "/" ? "/" + name : folder + "/" + name
                     matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
-                                                    isDirectory: entries.isDirectory(at: index), score: score))
+                                                    isDirectory: entries.isDirectory(at: index), score: score + (boosts[path] ?? 0)))
                 }
             }
             matches.sort { $0.score != $1.score ? $0.score > $1.score : $0.path < $1.path }

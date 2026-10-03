@@ -80,7 +80,7 @@ final class ContentIndex: ObservableObject {
     /// 正在读的文件。读的时候程序崩了（文件损坏），下次启动跳过它，免得一启动就崩
     private var readingMarker: URL { directory.appendingPathComponent("reading") }
     /// 改了存储格式或分词方式就加一，旧索引会删掉重建
-    private static let schemaVersion: Int32 = 3   // 3：两个汉字之间隔着标点时加分隔记号
+    private static let schemaVersion: Int32 = 4   // 3：两个汉字之间隔着标点时加分隔记号；4：JSON 也收 512 KB
 
     private let workQueue = DispatchQueue(label: "WinShun.ContentIndex", qos: .utility, autoreleaseFrequency: .workItem)
     private let searchQueue = DispatchQueue(label: "WinShun.ContentIndex.search", qos: .userInitiated)
@@ -359,10 +359,15 @@ final class ContentIndex: ObservableObject {
         let kind: ContentExtractor.Kind
     }
 
-    /// 下一批：同一种文件取十几个；PDF 在子进程里读，个别图片多的会占几百 MB 内存，一次只取四个
+    /// 下一批：同一种文件取十几个；PDF 在子进程里读，个别图片多的会占几百 MB 内存，一次只取四个；
+    /// 认图片文字最慢，放在最后，一次两张，不抢电脑
     private func nextTasks() -> [Task] {
         for rank in buckets.indices {
-            let limit = rank == ContentExtractor.Kind.pdf.rawValue ? 4 : 16
+            let limit = switch ContentExtractor.Kind(rawValue: rank) {
+            case .pdf: 4
+            case .image: 2
+            default: 16
+            }
             var tasks: [Task] = []
             var seen = Set<String>()
             var later: [String] = []
