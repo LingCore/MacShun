@@ -265,6 +265,46 @@ enum FileMatcher {
         query.split(whereSeparator: { $0.isWhitespace }).map { Term(String($0)) }
     }
 
+    /// 一次搜索。查询里带 /（或 Windows 的 \）就当成路径：最后一段按名字搜，前面的部分要出现在文件所在文件夹的路径里，
+    /// 例如 “art/gpt/style_reference.png”。“~/” 换成个人文件夹；Windows 的盘符（“D:\”）去掉，旧硬盘上的路径照样找得到。
+    struct Query {
+        let terms: [Term]
+        /// 文件所在文件夹的路径（比较用的形式，后面加 /）里要有这一段，前后都是完整的文件夹名：“/art/gpt/”
+        let folder: [UInt8]?
+        /// 写的是完整路径（/ 开头）：存在的话直接放在最前面，没收录的位置（例如“资源库”里）也能打开
+        let absolutePath: String?
+
+        init(_ query: String) {
+            var text = query.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\\", with: "/")
+            guard text.contains("/") else {
+                (terms, folder, absolutePath) = (FileMatcher.terms(of: query), nil, nil)
+                return
+            }
+            if text.hasPrefix("~/") { text = NSHomeDirectory() + text.dropFirst() }
+            let chars = Array(text.prefix(3))
+            if chars.count == 3, chars[0].isASCII, chars[0].isLetter, chars[1] == ":", chars[2] == "/" { text.removeFirst(2) }
+            if text.hasPrefix("./") { text.removeFirst(2) }
+            while text.count > 1 && text.hasSuffix("/") { text.removeLast() }
+            absolutePath = text.hasPrefix("/") && text.count > 1 ? text : nil
+            guard let slash = text.lastIndex(of: "/") else {
+                (terms, folder) = (FileMatcher.terms(of: text), nil)
+                return
+            }
+            let path = String(text[..<slash])
+            terms = FileMatcher.terms(of: String(text[text.index(after: slash)...]))
+            let form = FolderEntries.matchForm(path, isASCII: path.utf8.allSatisfy { $0 < 0x80 })
+            folder = path.isEmpty ? nil : Array(((form.hasPrefix("/") ? "" : "/") + form + "/").utf8)
+        }
+
+        /// 文件夹符合时额外加的分，不符合时 nil：正好在这个文件夹里的排在更深一层的前面。
+        func folderBonus(_ folder: String) -> Double? {
+            guard let wanted = self.folder else { return 0 }
+            let path = Array((FolderEntries.matchForm(folder, isASCII: folder.utf8.allSatisfy { $0 < 0x80 }) + "/").utf8)
+            guard FileMatcher.find(wanted, in: path) != nil else { return nil }
+            return path.count >= wanted.count && path.suffix(wanted.count).elementsEqual(wanted) ? 20 : 0
+        }
+    }
+
     /// 前一个字符是分隔符，这里算一个词的开头（“my-report” 里的 “report”）。
     private static func isWordStart(_ name: UnsafeBufferPointer<UInt8>, at position: Int) -> Bool {
         let previous = name[position - 1]
@@ -549,8 +589,9 @@ final class FileIndex: ObservableObject {
     /// 搜索，结果在主线程上回调。boosts：常打开的文件加的分（见 OpenHistory）
     func search(_ query: String, limit: Int = 60, boosts: [String: Double] = [:],
                 completion: @escaping ([FileSearchResult]) -> Void) {
-        let terms = FileMatcher.terms(of: query)
-        guard !terms.isEmpty else {
+        let parsed = FileMatcher.Query(query)
+        let terms = parsed.terms
+        guard !terms.isEmpty || parsed.absolutePath != nil else {
             completion([])
             return
         }
@@ -562,19 +603,37 @@ final class FileIndex: ObservableObject {
             // 已经有更新的搜索了：这次的结果反正用不上
             guard self.latestSearch.get() == token else { return }
             var matches: [FileSearchResult] = []
-            for (folder, entries) in self.folders {
+            for (folder, entries) in self.folders where !terms.isEmpty {
+                guard let bonus = parsed.folderBonus(folder) else { continue }
                 let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
                 entries.forEachMatch(terms, depth: depth) { index, score in
                     let name = entries.name(at: index)
                     let path = folder == "/" ? "/" + name : folder + "/" + name
                     matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
-                                                    isDirectory: entries.isDirectory(at: index), score: score + (boosts[path] ?? 0)))
+                                                    isDirectory: entries.isDirectory(at: index),
+                                                    score: score + bonus + (boosts[path] ?? 0)))
                 }
+            }
+            if let path = parsed.absolutePath, let hit = Self.existingFile(path, among: &matches) {
+                matches.append(hit)
             }
             matches.sort { $0.score != $1.score ? $0.score > $1.score : $0.path < $1.path }
             let top = Array(matches.prefix(limit))
             DispatchQueue.main.async { completion(top) }
         }
+    }
+
+    /// 写的是完整路径而且存在：放在最前面。索引里已经搜到的（大小写可能和写的不一样）拿出来，用索引里的写法。
+    static func existingFile(_ path: String, among matches: inout [FileSearchResult]) -> FileSearchResult? {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
+        let key = FolderEntries.matchForm(path, isASCII: false)
+        if let i = matches.firstIndex(where: { FolderEntries.matchForm($0.path, isASCII: false) == key }) {
+            let found = matches.remove(at: i)
+            return FileSearchResult(path: found.path, name: found.name, isDirectory: found.isDirectory, score: 1000)
+        }
+        return FileSearchResult(path: path, name: (path as NSString).lastPathComponent,
+                                isDirectory: isDirectory.boolValue, score: 1000)
     }
 
     // MARK: - 扫描（不碰索引数据，哪个队列都可以）

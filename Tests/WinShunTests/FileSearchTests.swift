@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import CoreGraphics
+import Foundation
 import Testing
 @testable import WinShun
 
@@ -180,3 +181,73 @@ struct FolderEntriesTests {
     }
 }
 
+
+@Suite("F1 按路径搜")
+struct FilePathQueryTests {
+    private func folder(_ query: String) -> String? {
+        FileMatcher.Query(query).folder.map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    private func names(_ query: String) -> [String] {
+        FileMatcher.Query(query).terms.map { String(decoding: $0.bytes, as: UTF8.self) }
+    }
+
+    @Test func splitsFolderAndName() {
+        #expect(folder("art/gpt/style_reference.png") == "/art/gpt/")
+        #expect(names("art/gpt/style_reference.png") == ["style_reference.png"])
+        #expect(FileMatcher.Query("art/gpt/style_reference.png").absolutePath == nil)
+    }
+
+    @Test func plainQueryHasNoFolder() {
+        let query = FileMatcher.Query("q3 report")
+        #expect(query.folder == nil && query.absolutePath == nil)
+        #expect(names("q3 report") == ["q3", "report"])
+    }
+
+    @Test func windowsPathsAndTrailingSlash() {
+        #expect(folder(#"D:\资料\合同\2026.docx"#) == "/资料/合同/")
+        #expect(names(#"D:\资料\合同\2026.docx"#) == ["2026.docx"])
+        // 最后带 / 的是文件夹本身
+        #expect(folder("art/gpt/") == "/art/")
+        #expect(names("art/gpt/") == ["gpt"])
+        #expect(folder("./src/Main.swift") == "/src/")
+        // 名字里有空格：路径整个当一个，名字照样按空格分开匹配
+        #expect(folder("My Docs/Q3 report.pdf") == "/my docs/")
+        #expect(names("My Docs/Q3 report.pdf") == ["q3", "report.pdf"])
+    }
+
+    @Test func absoluteAndHomePaths() {
+        #expect(FileMatcher.Query("/Users/me/a.txt").absolutePath == "/Users/me/a.txt")
+        let home = FileMatcher.Query("~/Desktop/a.txt")
+        #expect(home.absolutePath == NSHomeDirectory() + "/Desktop/a.txt")
+        #expect(folder("~/Desktop/a.txt") == (NSHomeDirectory() + "/Desktop/").lowercased())
+    }
+
+    @Test func folderMustContainThePathAndExactFolderRanksHigher() {
+        let query = FileMatcher.Query("art/gpt/style_reference.png")
+        let exact = query.folderBonus("/Users/me/Desktop/塔防游戏/Art/GPT")
+        let deeper = query.folderBonus("/Users/me/Desktop/塔防游戏/art/gpt/old")
+        #expect(exact != nil && deeper != nil)
+        #expect(exact! > deeper!)
+        #expect(query.folderBonus("/Users/me/Desktop/塔防游戏/art") == nil)
+        // 前后都要是完整的文件夹名
+        #expect(query.folderBonus("/Users/me/Desktop/塔防游戏/art/gpt_old") == nil)
+        #expect(query.folderBonus("/Users/me/smart/gpt") == nil)
+        #expect(FileMatcher.Query("style_reference").folderBonus("/anywhere") == 0)
+    }
+
+    @Test func existingAbsolutePathComesFirst() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("winshun-path-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("Note.txt").path
+        FileManager.default.createFile(atPath: file, contents: Data())
+        // 索引里搜到的，用索引里的写法，不重复
+        var matches = [FileSearchResult(path: file, name: "Note.txt", isDirectory: false, score: 120)]
+        let hit = FileIndex.existingFile(file.replacingOccurrences(of: "Note.txt", with: "note.txt"), among: &matches)
+        #expect(hit?.path == file && hit?.score == 1000)
+        #expect(matches.isEmpty)
+        var none: [FileSearchResult] = []
+        #expect(FileIndex.existingFile(dir.appendingPathComponent("missing.txt").path, among: &none) == nil)
+    }
+}

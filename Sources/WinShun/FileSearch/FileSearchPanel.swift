@@ -129,6 +129,7 @@ final class FileSearchController {
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         panel.onResignKey = { [weak self] in self?.hide() }
+        panel.onReveal = { [weak self] in self?.model.openSelected(reveal: true) }
         return panel
     }
 
@@ -159,6 +160,8 @@ final class FileSearchPanel: NSPanel {
     static let width: CGFloat = 640
 
     var onResignKey: (() -> Void)?
+    /// Ctrl+Enter、⌘+Enter：在访达中显示
+    var onReveal: (() -> Void)?
 
     init() {
         super.init(
@@ -184,6 +187,18 @@ final class FileSearchPanel: NSPanel {
     override func resignKey() {
         super.resignKey()
         onResignKey?()
+    }
+
+    /// 输入框会把 Ctrl+Enter 当成插入换行、⌘+Enter 什么也不做，到不了“打开”，所以在面板这一层先接住。
+    /// 输入法还在拼字时不接，回车留给输入法。
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 36 || event.keyCode == 76,
+           !event.modifierFlags.intersection([.control, .command]).isEmpty,
+           (firstResponder as? NSTextView)?.hasMarkedText() != true, let onReveal {
+            onReveal()
+            return
+        }
+        super.sendEvent(event)
     }
 }
 
@@ -390,9 +405,13 @@ final class FileSearchModel: ObservableObject {
 
     /// Enter 打开；按着 Ctrl 或 ⌘ 时在访达中显示。
     func openSelected() {
-        guard let result = selectedResult else { return }
         let flags = NSApp.currentEvent?.modifierFlags ?? []
-        onOpen(result, flags.contains(.control) || flags.contains(.command))
+        openSelected(reveal: flags.contains(.control) || flags.contains(.command))
+    }
+
+    func openSelected(reveal: Bool) {
+        guard let result = selectedResult else { return }
+        onOpen(result, reveal)
     }
 
     func icon(for result: FileSearchResult) -> NSImage {
