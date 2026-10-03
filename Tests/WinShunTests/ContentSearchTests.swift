@@ -158,12 +158,21 @@ struct ContentIndexTests {
         #expect(ContentIndex.matchExpression(for: "合同") == "\" 合  同 \"")
         #expect(ContentIndex.matchExpression(for: "inv") == "\"inv\" *")
         #expect(ContentIndex.matchExpression(for: "合同 2026") == "\" 合  同 \" AND \"2026\" *")
-        #expect(ContentIndex.matchExpression(for: "a\"bc") == "\"a\"\"bc\" *")
+        #expect(ContentIndex.matchExpression(for: "a\"bc") == "\"a\"\" \u{E000} bc\" *")   // 引号要转义，也是标点
         #expect(ContentIndex.matchExpression(for: "的") == nil)
         // 单个字母不参与（以它开头的词太多）；结尾只有一个字母时不按前缀
         #expect(ContentIndex.matchExpression(for: "合同 a") == "\" 合  同 \"")
         #expect(ContentIndex.matchExpression(for: "a b c") == nil)
         #expect(ContentIndex.matchExpression(for: "合同a") == "\" 合  同 a\"")
+    }
+
+    @Test func phrasesDoNotSpanPunctuation() {
+        let b = String(ContentIndex.boundary)
+        #expect(ContentIndex.ftsText("符合。同时") == " 符  合 。 \(b)  同  时 ")
+        #expect(ContentIndex.ftsText("合\n同") == " 合 \n 同 ")          // 换行不隔开
+        #expect(ContentIndex.ftsText("annual report") == "annual report")   // 空格不隔开
+        #expect(ContentIndex.ftsText("合同。") == " 合  同 。")             // 末尾的标点不加
+        #expect(ContentIndex.ftsText("e-mail") == "e- \(b) mail")
     }
 
     @Test func nulCharactersDoNotCutText() throws {

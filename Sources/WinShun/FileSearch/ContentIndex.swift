@@ -80,7 +80,7 @@ final class ContentIndex: ObservableObject {
     /// 正在读的文件。读的时候程序崩了（文件损坏），下次启动跳过它，免得一启动就崩
     private var readingMarker: URL { directory.appendingPathComponent("reading") }
     /// 改了存储格式或分词方式就加一，旧索引会删掉重建
-    private static let schemaVersion: Int32 = 1
+    private static let schemaVersion: Int32 = 2   // 2：标点处加分隔记号
 
     private let workQueue = DispatchQueue(label: "WinShun.ContentIndex", qos: .utility, autoreleaseFrequency: .workItem)
     private let searchQueue = DispatchQueue(label: "WinShun.ContentIndex.search", qos: .userInitiated)
@@ -619,19 +619,49 @@ final class ContentIndex: ObservableObject {
         }
     }
 
-    /// 交给 FTS5 的文字：每个汉字前后加空格，英文、数字不变。
+    /// 标点处放的分隔记号（私用区字符，分词器会把它当成一个词）：搜“合同”时，“符合。同时”里隔着句号的两个字连不起来。
+    /// 空格、换行不算：英文词组本来就隔着空格，中文硬换行也可能把一个词断开。
+    static let boundary: Unicode.Scalar = "\u{E000}"
+
+    /// 交给 FTS5 的文字：每个汉字前后加空格，英文、数字不变，两个字之间隔着标点时加一个分隔记号。
     static func ftsText(_ text: String) -> String {
         var out = String.UnicodeScalarView()
+        var sawWord = false
+        var punctuation = false
         for scalar in text.unicodeScalars {
-            if isCJK(scalar) {
-                out.append(" ")
-                out.append(scalar)
-                out.append(" ")
+            let cjk = isCJK(scalar)
+            if cjk || isWordCharacter(scalar) {
+                if punctuation && sawWord {
+                    out.append(" ")
+                    out.append(boundary)
+                    out.append(" ")
+                }
+                punctuation = false
+                sawWord = true
+                if cjk {
+                    out.append(" ")
+                    out.append(scalar)
+                    out.append(" ")
+                } else {
+                    out.append(scalar)
+                }
             } else {
+                if !scalar.properties.isWhitespace { punctuation = true }
                 out.append(scalar)
             }
         }
         return String(out)
+    }
+
+    /// 分词器当成词的一部分的字符：字母、数字、附加符号、私用区字符（和 unicode61 一样）
+    private static func isWordCharacter(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber, .nonspacingMark, .spacingMark, .enclosingMark, .privateUse:
+            return true
+        default:
+            return false
+        }
     }
 
     /// 查询够不够长：汉字算 2，字母数字算 1，至少 3（两个汉字、三个字母、一个汉字加一个字母）。
