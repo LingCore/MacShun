@@ -91,6 +91,28 @@ struct WindowKeyTests {
         context.appKind = .excluded
         #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskCommand, context: context) == .pass)
     }
+
+    @Test func macKeyboardWinKeyIsOption() {
+        var config = KeyboardConfig()
+        config.layout = .mac
+        let mapper = KeyMapper(config: config)
+        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) { .text }
+        context.windowShortcuts = true
+        // Mac 键盘上和 Win 键同一个位置的是 ⌥
+        #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskAlternate, context: context) == .command(.window(.snap(.left))))
+        #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskCommand, context: context) != .command(.window(.snap(.left))))
+    }
+
+    @Test func worksWithKeyboardRemappingOff() {
+        var config = KeyboardConfig()
+        config.layout = .windows
+        config.enabled = false
+        let mapper = KeyMapper(config: config)
+        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) { .text }
+        context.windowShortcuts = true
+        #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskCommand, context: context) == .command(.window(.snap(.left))))
+        #expect(mapper.action(keyCode: KeyCode.c, flags: .maskControl, context: context) == .pass)
+    }
 }
 
 @Suite("W1 恢复和换屏幕")
@@ -105,6 +127,9 @@ struct WindowRestoreTests {
         let restored = WindowLayout.restoredFrame(remembered: other, in: area)
         #expect(area.contains(restored))
         #expect(restored.size == other.size)
+        // 比这块屏幕大：缩小放进来
+        let big = CGRect(x: 2500, y: 0, width: 2400, height: 1300)
+        #expect(area.contains(WindowLayout.restoredFrame(remembered: big, in: area)))
     }
 
     @Test func unknownFrameIsCenteredTwoThirds() {

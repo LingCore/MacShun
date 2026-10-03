@@ -84,7 +84,7 @@
 
 - **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。
 - **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
-- **也能搜文件内容**：txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字都能搜到，结果里直接显示匹配的那一行。中文一两个字也能搜，不需要聚焦（Spotlight）。
+- **也能搜文件内容**：txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字都能搜到，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
@@ -118,9 +118,10 @@
 
 | 权限 | 用来做什么 |
 |---|---|
-| 辅助功能 | 改写按键、粘贴剪贴板内容、找到文字光标的位置 |
+| 辅助功能 | 改写按键、粘贴剪贴板内容、找到文字光标的位置、移动和调整别的程序的窗口（分屏） |
 | 输入监控 | 识别是哪个键盘、哪个鼠标在输入（可以给每个设备单独设置） |
 | 剪贴板读取 | 在后台记录剪贴板历史（在系统设置里选“始终允许”） |
+| 文件和文件夹 | 第一次打开文件搜索时，系统会问能不能访问“桌面”“文稿”“下载”；点了不允许的文件夹搜不到 |
 
 ### 常见问题
 
@@ -271,9 +272,10 @@ Requires macOS 14 Sonoma or later.
 
 | Permission | Why |
 |---|---|
-| Accessibility | Remap keys, paste from history, find the text cursor |
+| Accessibility | Remap keys, paste from history, find the text cursor, move and resize other apps' windows (snapping) |
 | Input Monitoring | Tell which keyboard or mouse an event came from (per-device settings) |
 | Pasteboard access | Record clipboard history in the background (choose "Always Allow") |
+| Files and Folders | The first time you open file search, macOS asks about Desktop, Documents and Downloads; folders you deny won't be searched |
 
 The settings window walks you through each one, and changes take effect immediately.
 

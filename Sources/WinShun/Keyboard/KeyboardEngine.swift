@@ -44,8 +44,19 @@ final class KeyboardEngine {
             _ = doubleControl.feed(.other, at: 0)
             return
         }
-        let input = DoubleTapDetector.Input.control(down: event.flags.contains(.maskControl), flags: event.flags)
-        guard doubleControl.feed(input, at: ProcessInfo.processInfo.systemUptime) else { return }
+        let down = event.flags.contains(.maskControl)
+        let now = ProcessInfo.processInfo.systemUptime
+        // 按着 Ctrl 点了鼠标（Mac 上的右键）：不算单按一下 Ctrl，免得连着两次 Ctrl+点击打开搜索
+        if !down, let start = doubleControl.firstPressStart {
+            let sinceClick = [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown]
+                .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
+            if sinceClick < now - start {
+                _ = doubleControl.feed(.other, at: 0)
+                return
+            }
+        }
+        let input = DoubleTapDetector.Input.control(down: down, flags: event.flags)
+        guard doubleControl.feed(input, at: now) else { return }
         let cfg = config.get()
         guard cfg.fileSearch.enabled,
               AppCatalog.kind(of: environment.current.get(), userExcluded: cfg.keyboard.excludedApps) != .excluded
@@ -105,8 +116,9 @@ final class KeyboardEngine {
             action = previous
         } else {
             let context: KeyContext
-            if environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get() {
-                // 剪贴板面板或文件搜索框开着时，按键在本程序的搜索框里，不按后面那个应用的规则处理。
+            if environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get()
+                || environment.snapAssistActive.get() {
+                // 剪贴板面板、文件搜索框或贴靠助手开着时，按键在本程序的面板里，不按后面那个应用的规则处理。
                 context = KeyContext(
                     appKind: .normal, isBrowser: false,
                     clipboardEnabled: config.get().clipboard.enabled,

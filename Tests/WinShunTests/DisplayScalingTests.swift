@@ -117,6 +117,36 @@ struct DisplayScalingTests {
         #expect(options.map(\.label) == ["120 Hz", "60 Hz", "59.94 Hz"])
     }
 
+    @Test func currentModeRepresentsItsRefreshRate() {
+        var list = screen2KRefresh
+        for i in list.indices { list[i].modeID = Int32(i + 1) }
+        // 现在用的是第一个 144Hz 模式：重新选 144 时还是它，不换成另一个
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[0]).first?.modeID == 1)
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[5]).first?.modeID == 6)
+    }
+
+    @Test func skipsInterlacedAndStretchedModes() {
+        var list = screen2KRefresh
+        list[7].isUnusual = true   // 2560×1440 120Hz 隔行
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[6]).map(\.rate) == [144, 60])
+    }
+
+    @Test func scalingKeepsExactFractionalRefresh() {
+        var list = modes(["1920x1080@3840x2160", "3840x2160@3840x2160"], refresh: 60, native: "3840x2160@3840x2160")
+        list += modes(["1920x1080@3840x2160", "3840x2160@3840x2160"], refresh: 59.94, native: "3840x2160@3840x2160")
+        let options = DisplayScaling.options(from: list, preferredRefresh: 59.94)
+        #expect(options.map(\.mode.refreshRate) == [59.94, 59.94])
+    }
+
+    @Test func currentRefreshMatchesByOption() {
+        let list = modes(["2560x1440@2560x1440"], refresh: 60.004) + modes(["2560x1440@2560x1440"], refresh: 144)
+        var current = list[0]
+        current.refreshRate = 59.996   // 同一档（60.00），只是读数有一点差别
+        let info = DisplayInfo(id: 1, name: "", isMain: true, nativeWidth: 2560, nativeHeight: 1440, options: [],
+                               refreshOptions: DisplayScaling.refreshOptions(from: list, current: current), current: current)
+        #expect(info.currentRefresh?.rate == 60.004)
+    }
+
     @Test func skipsOtherAspectRatios() {
         let list = modes(["2560x1440@2560x1440", "1280x1024@2560x2048"])
         #expect(DisplayScaling.options(from: list, preferredRefresh: 60).map(\.mode.width) == [2560])

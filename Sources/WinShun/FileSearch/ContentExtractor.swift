@@ -38,6 +38,8 @@ enum ContentExtractor {
     static let maxJSONTextBytes = 128 << 10
     /// PDF 最多读多少页
     static let maxPDFPages = 100
+    /// Office 文件里所有部分加起来最多解压多少，防止由大量页面组成的“zip 炸弹”
+    static let maxUnzippedBytes = 256 << 20
 
     /// 这个文件要不要读内容。Office 打开文件时生成的 “~$xxx.docx” 临时文件不读。
     static func kind(ofFileNamed name: String) -> Kind? {
@@ -72,7 +74,9 @@ enum ContentExtractor {
         case .pdf:
             text = pdfText(url)
         }
-        guard let text, text.contains(where: { !$0.isWhitespace }) else { return nil }
+        guard var text, text.contains(where: { !$0.isWhitespace }) else { return nil }
+        // SQLite 按 C 字符串收文字，遇到 0 就停了，后面的搜不到（JSON 里的 \u0000、文本文件后面夹的 0）
+        if text.contains("\u{0}") { text = text.replacingOccurrences(of: "\u{0}", with: " ") }
         return truncated(text, maxBytes: limit)
     }
 
@@ -159,10 +163,26 @@ enum ContentExtractor {
                 .filter { $0.hasPrefix(prefix) && $0.hasSuffix(".xml") }
                 .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         }
-        let parts = (pages("ppt/slides/slide") + pages("ppt/notesSlides/notesSlide")).compactMap { name in
-            zip.read(name).flatMap { xmlText($0, text: ["a:t"], breaks: ["a:p"]) }
+        let parts = collect(zip, pages("ppt/slides/slide") + pages("ppt/notesSlides/notesSlide")) {
+            xmlText($0, text: ["a:t"], breaks: ["a:p"])
         }
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+
+    /// 依次解压几个部分取文字，文字够多了或者解压得太多了就停。
+    private static func collect(_ zip: ZipReader, _ names: [String], _ extract: (Data) -> String?) -> [String] {
+        var parts: [String] = []
+        var textBytes = 0
+        var unzipped = 0
+        for name in names {
+            guard textBytes < maxTextBytes, unzipped < maxUnzippedBytes else { break }
+            guard let data = zip.read(name) else { continue }
+            unzipped += data.count
+            guard let text = extract(data) else { continue }
+            textBytes += text.utf8.count
+            parts.append(text)
+        }
+        return parts
     }
 
     private static func xlsxText(_ zip: ZipReader) -> String? {
@@ -174,10 +194,9 @@ enum ContentExtractor {
         }
         // 有的程序把文字直接写在表格里（inlineStr），只有这时才去读表格，表格本身可能很大
         let marker = Data("inlineStr".utf8)
-        for name in zip.names where name.hasPrefix("xl/worksheets/sheet") && name.hasSuffix(".xml") {
-            guard let sheet = zip.read(name), sheet.range(of: marker) != nil,
-                  let text = xmlText(sheet, text: ["t"], breaks: ["c"], skip: ["rPh"]) else { continue }
-            parts.append(text)
+        let sheets = zip.names.filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
+        parts += collect(zip, sheets) { sheet in
+            sheet.range(of: marker) == nil ? nil : xmlText(sheet, text: ["t"], breaks: ["c"], skip: ["rPh"])
         }
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
@@ -256,8 +275,15 @@ enum ContentExtractor {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
-        // 卡住的 PDF 最多等 30 秒
-        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        // 卡住的 PDF 最多等 30 秒；不理 SIGTERM 时再过 3 秒强制结束
+        let pid = process.processIdentifier
+        let timeout = DispatchWorkItem {
+            guard process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
+                if process.isRunning { kill(pid, SIGKILL) }
+            }
+        }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: timeout)
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()

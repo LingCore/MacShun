@@ -83,9 +83,16 @@ struct KeyMapper {
         .union(KeyCode.symbols)
 
     func action(keyCode: CGKeyCode, flags: CGEventFlags, context: KeyContext) -> KeyAction {
-        guard config.enabled, context.appKind != .excluded else { return .pass }
-
+        guard context.appKind != .excluded else { return .pass }
         let mods = modifiers(of: flags)
+        // W1：Win+方向键分屏。分屏有自己的开关，不跟着键盘改写的总开关走。
+        // 只认当前布局的 Win 键：Windows 键盘上是 ⌘，Mac 键盘上是 ⌥（和 Win 键在同一个位置）。
+        // 不像 Win+V 那样在 Windows 键盘上也认 ⌥：那里 ⌥ 是 Alt
+        if context.windowShortcuts, let shortcut = Self.windowShortcut(keyCode: keyCode, mods: mods) {
+            return .command(.window(shortcut))
+        }
+        guard config.enabled else { return .pass }
+
         let shift: CGEventFlags = mods.contains(.shift) ? .maskShift : []
 
         // 焦点只查一次。
@@ -172,10 +179,6 @@ struct KeyMapper {
 
         if keyCode == KeyCode.v, win, context.clipboardEnabled {
             return .command(.clipboardHistory)
-        }
-        // W1：Win+方向键分屏。只认 Win 键（不认 ⌥：⌥+方向键是按词移动光标）
-        if context.windowShortcuts, let shortcut = Self.windowShortcut(keyCode: keyCode, mods: mods) {
-            return .command(.window(shortcut))
         }
         guard config.systemShortcuts else { return nil }
 

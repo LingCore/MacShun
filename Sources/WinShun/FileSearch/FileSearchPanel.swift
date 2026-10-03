@@ -25,7 +25,7 @@ final class FileSearchController {
         let cfg = configStore.config.fileSearch
         if index.includeExternalDrives != cfg.includeExternalDrives {
             index.includeExternalDrives = cfg.includeExternalDrives
-            if cfg.enabled && cfg.activated && index.lastIndexed != nil { index.rebuild() }
+            if cfg.enabled && cfg.activated && (index.isIndexing || index.lastIndexed != nil) { index.rebuild() }
         }
         if cfg.enabled && cfg.activated {
             index.start()
@@ -59,6 +59,7 @@ final class FileSearchController {
         index.includeExternalDrives = configStore.config.fileSearch.includeExternalDrives
         index.start()
         model.prepareForShow()
+        model.isShown = true
         resize()
         position()
         savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
@@ -75,6 +76,8 @@ final class FileSearchController {
         FrontAppTracker.shared.fileSearchPanelActive.set(false)
         if panel.isVisible { panel.orderOut(nil) }
         restoreInputSource()
+        // 关着时不用跟着文件变化重新搜
+        model.isShown = false
     }
 
     private func restoreInputSource() {
@@ -186,6 +189,8 @@ final class FileSearchModel: ObservableObject {
     @Published private(set) var focusToken = 0
     /// 也按内容搜（F2）
     @Published var searchesContent = false
+    /// 搜索框开着
+    var isShown = false
 
     let index: FileIndex
     let contentIndex: ContentIndex
@@ -205,17 +210,23 @@ final class FileSearchModel: ObservableObject {
     init(index: FileIndex, contentIndex: ContentIndex) {
         self.index = index
         self.contentIndex = contentIndex
-        // 索引建好、文件有变化时，按现在的关键词重新搜一次
+        // 索引建好、文件有变化时，按现在的关键词重新搜一次。扫描外接硬盘时一秒会有好几次，选中的那条不动
         index.$fileCount
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleSearch() }
+            .sink { [weak self] _ in
+                guard let self, self.isShown, !self.query.isEmpty else { return }
+                self.scheduleSearch(resetSelection: false)
+            }
             .store(in: &subscriptions)
         // 内容索引读完一批文件后也重新搜一次（每次最多半秒发布一次）
         contentIndex.$documentCount
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.scheduleContentSearch() }
+            .sink { [weak self] _ in
+                guard let self, self.isShown else { return }
+                self.scheduleContentSearch()
+            }
             .store(in: &subscriptions)
     }
 
@@ -234,14 +245,15 @@ final class FileSearchModel: ObservableObject {
         focusToken += 1
     }
 
-    private func scheduleSearch() {
+    /// 打了字时从第一条选起；文件有变化重新搜时，选中的那条不动
+    private func scheduleSearch(resetSelection: Bool = true) {
         generation += 1
         let current = generation
         let q = query
         index.search(q) { [weak self] found in
             guard let self, current == self.generation else { return }
             self.nameResults = found
-            self.merge(resetSelection: true)
+            self.merge(resetSelection: resetSelection)
         }
         scheduleContentSearch()
     }
@@ -276,9 +288,12 @@ final class FileSearchModel: ObservableObject {
     /// 合并两路结果。同一个文件名字和内容都匹配时只列在文件名里。选中的那条尽量不动。
     private func merge(resetSelection: Bool) {
         let selectedPath = resetSelection ? nil : selectedResult?.path
-        let names = contentResults.isEmpty ? nameResults : Array(nameResults.prefix(Self.maxNameResultsWithContent))
-        let namePaths = Set(names.map(\.path))
-        results = names + contentResults.filter { !namePaths.contains($0.path) }
+        // 内容结果都是名字也匹配的文件时，不用为它们腾地方
+        let allNamePaths = Set(nameResults.map(\.path))
+        let hasContentOnly = contentResults.contains { !allNamePaths.contains($0.path) }
+        let names = hasContentOnly ? Array(nameResults.prefix(Self.maxNameResultsWithContent)) : nameResults
+        let shown = Set(names.map(\.path))
+        results = names + contentResults.filter { !shown.contains($0.path) }
         selection = selectedPath.flatMap { path in results.firstIndex { $0.path == path } } ?? 0
     }
 

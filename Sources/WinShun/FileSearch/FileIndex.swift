@@ -69,10 +69,11 @@ struct FolderEntries {
         if let display = entry.displayName { items.append(store(display, flags: Self.displayNameFlag)) }
     }
 
-    /// 存完以后去掉多预留的空间（数组按两倍增长，最多会空一半）。从切片建数组才会真的复制成刚好大小
+    /// 存完以后去掉多预留的空间（数组按两倍增长，最多会空一半）。
+    /// Array(bytes) 和 Array(bytes[...]) 都会直接共用原来的存储，从指针复制才会建一个刚好大小的新数组
     mutating func compact() {
-        if bytes.capacity > bytes.count + 64 { bytes = Array(bytes[...]) }
-        if items.capacity > items.count + 4 { items = Array(items[...]) }
+        if bytes.capacity > bytes.count + 64 { bytes = bytes.withUnsafeBufferPointer { Array($0) } }
+        if items.capacity > items.count + 4 { items = items.withUnsafeBufferPointer { Array($0) } }
     }
 
     func name(at index: Int) -> String {
@@ -86,6 +87,23 @@ struct FolderEntries {
     }
 
     func isDirectory(at index: Int) -> Bool { items[index].flags & Self.directoryFlag != 0 }
+
+    func isPackage(at index: Int) -> Bool { items[index].flags & Self.packageFlag != 0 }
+
+    /// 有没有这个名字的文件夹（不算“包”）
+    func containsFolder(named name: String) -> Bool {
+        let target = Array(name.utf8)
+        var i = 0
+        while i < items.count {
+            let item = items[i]
+            if item.flags & (Self.directoryFlag | Self.packageFlag) == Self.directoryFlag, Int(item.nameLength) == target.count {
+                let start = Int(item.nameStart)
+                if bytes[start ..< start + target.count].elementsEqual(target) { return true }
+            }
+            i += item.flags & Self.hasDisplayNameFlag != 0 ? 2 : 1
+        }
+        return false
+    }
 
     /// 每个文件（不含显示名字）的位置
     var indices: [Int] {
@@ -118,7 +136,8 @@ struct FolderEntries {
         let name = Array(text.utf8.prefix(limit))
         let nameStart = bytes.count
         bytes.append(contentsOf: name)
-        let lower = Array(text.lowercased().utf8.prefix(limit))
+        // 小写、合成形式（NFC）：名字可能是分解形式存的（“デ” 存成 “テ” 加浊点），输入法打出来的是合成形式
+        let lower = Array(Self.matchForm(text, isASCII: !name.contains(where: { $0 >= 0x80 })).utf8.prefix(limit))
         var lowerStart = nameStart
         if lower != name {
             lowerStart = bytes.count
@@ -136,6 +155,11 @@ struct FolderEntries {
         return Item(nameStart: UInt32(nameStart), lowerStart: UInt32(lowerStart), pinyinStart: UInt32(pinyinStart),
                     nameLength: UInt16(name.count), lowerLength: UInt16(lower.count), stemLength: UInt16(stem),
                     pinyinLength: UInt16(pinyinLength), flags: flags)
+    }
+
+    /// 比较用的形式：小写，非 ASCII 的再转成合成形式（NFC）
+    static func matchForm(_ text: String, isASCII: Bool) -> String {
+        isASCII ? text.lowercased() : text.precomposedStringWithCanonicalMapping.lowercased()
     }
 
     /// 逐字的拼音，字之间用 0 隔开：汉字是拼音，ASCII 字符是它自己（小写），其他字符记成 0xFF（对不上任何 ASCII 查询）。
@@ -232,7 +256,7 @@ enum FileMatcher {
         let isASCII: Bool
 
         init(_ text: String) {
-            bytes = Array(text.lowercased().utf8)
+            bytes = Array(FolderEntries.matchForm(text, isASCII: text.utf8.allSatisfy { $0 < 0x80 }).utf8)
             isASCII = bytes.allSatisfy { $0 < 0x80 }
         }
     }
@@ -244,8 +268,13 @@ enum FileMatcher {
     /// 前一个字符是分隔符，这里算一个词的开头（“my-report” 里的 “report”）。
     private static func isWordStart(_ name: UnsafeBufferPointer<UInt8>, at position: Int) -> Bool {
         let previous = name[position - 1]
-        return previous == 0x20 || previous == 0x2D || previous == 0x5F || previous == 0x2E
-            || previous == 0x28 || previous == 0x5B || previous == 0xE3  // 空格 - _ . ( [，以及中文标点的开头字节
+        if previous == 0x20 || previous == 0x2D || previous == 0x5F || previous == 0x2E || previous == 0x28 || previous == 0x5B {
+            return true   // 空格 - _ . ( [
+        }
+        // 中文标点：U+3000–303F（、。「」【】《》）是 E3 80 xx，全角的 ！（）＿－ 等是 EF BC 81–8F
+        guard position >= 3 else { return false }
+        let lead = (name[position - 3], name[position - 2])
+        return lead == (0xE3, 0x80) || (lead == (0xEF, 0xBC) && (0x81...0x8F).contains(previous))
     }
 
     /// 子串第一次出现的位置。
@@ -310,12 +339,19 @@ final class FileIndex: ObservableObject {
     private var scannedRoots: [String] = []
     /// 第几次建立索引。重新建立后，上一次还没扫完的结果作废
     private var activeGeneration = 0
+    /// 正在扫描、还没并进索引的位置。这期间这些位置下的变化先记下来，扫完再处理，免得漏掉或被扫描结果盖掉
+    private var pendingRoots: [String] = []
+    private var deferredChanges: [String: Bool] = [:]
+    /// 最近一次搜索的编号：打字很快时，排在后面还没开始的旧搜索直接跳过
+    private let latestSearch = Locked(0)
 
     /// 以下只在主线程上读写
     private var generation = 0
     private var stream: FSEventStreamRef?
     private var started = false
     private var volumeObservers: [NSObjectProtocol] = []
+    /// 这次扫描的外接硬盘
+    private var currentDrives: [String] = []
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
@@ -356,7 +392,8 @@ final class FileIndex: ObservableObject {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self, self.started, self.includeExternalDrives else { return }
+                // 只有外接硬盘真的变了才重新扫描（例如系统挂载了不显示的卷时不用）
+                guard let self, self.started, self.includeExternalDrives, Self.driveRoots() != self.currentDrives else { return }
                 self.rebuild()
             })
         }
@@ -375,6 +412,8 @@ final class FileIndex: ObservableObject {
             self.activeGeneration = gen
             self.folders = [:]
             self.scannedRoots = []
+            self.pendingRoots = []
+            self.deferredChanges = [:]
         }
         fileCount = 0
         isIndexing = false
@@ -389,12 +428,15 @@ final class FileIndex: ObservableObject {
         let gen = generation
         let mainRoots = Self.mainRoots
         let drives = includeExternalDrives ? Self.driveRoots() : []
+        currentDrives = drives
         isIndexing = true
         isScanningDrives = !drives.isEmpty
         let keepDrives = includeExternalDrives
         queue.async {
             self.activeGeneration = gen
             self.plannedRoots = mainRoots + drives
+            self.pendingRoots = mainRoots + drives
+            self.deferredChanges = [:]
             self.contentIndex?.setSearchRoots(mainRoots + drives)
             // 关掉了“包括外接硬盘”时，内容索引里外接硬盘上的文件也去掉；只是拔掉了的留着，插回来不用重新读
             self.contentIndex?.prune(keeping: mainRoots + (keepDrives ? ["/Volumes"] : []))
@@ -412,6 +454,7 @@ final class FileIndex: ObservableObject {
                 self.folders = result
                 self.scannedRoots = mainRoots
                 self.sendContent(result, scopes: mainRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
+                self.finishedScanning(mainRoots)
                 malloc_zone_pressure_relief(nil, 0)
                 self.publishCount { count in
                     self.isIndexing = false
@@ -447,6 +490,7 @@ final class FileIndex: ObservableObject {
                 Self.collectContentFiles(folder, entries, into: &files)
             }
             self.contentIndex?.removeMissing(present: Set(files), scopes: scopes)
+            self.finishedScanning(drives)
             let count = self.folders.values.reduce(0) { $0 + $1.count }
             Log.app.notice("文件索引：外接硬盘扫完，共 \(count, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 1), privacy: .public) 秒")
             malloc_zone_pressure_relief(nil, 0)
@@ -505,7 +549,13 @@ final class FileIndex: ObservableObject {
             completion([])
             return
         }
+        let token = latestSearch.update { value -> Int in
+            value += 1
+            return value
+        }
         queue.async {
+            // 已经有更新的搜索了：这次的结果反正用不上
+            guard self.latestSearch.get() == token else { return }
             var matches: [FileSearchResult] = []
             for (folder, entries) in self.folders {
                 let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
@@ -574,11 +624,13 @@ final class FileIndex: ObservableObject {
         defer { closedir(dir) }
         var entries = FolderEntries()
         var subfolders: [String] = []
+        // Windows 的系统文件夹、$ 开头的系统文件都在盘的最上一层；AppData 在每个用户的文件夹里
+        let atRoot = (folder as NSString).deletingLastPathComponent == "/Volumes"
         while let item = readdir(dir) {
             let name = withUnsafePointer(to: item.pointee.d_name) {
                 String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
             }
-            if name.hasPrefix(".") || name.hasPrefix("$") { continue }
+            if name.hasPrefix(".") || (atRoot && name.hasPrefix("$")) { continue }
             let path = folder + "/" + name
             var type = item.pointee.d_type
             var info = stat()
@@ -587,7 +639,7 @@ final class FileIndex: ObservableObject {
                 type = info.st_mode & S_IFMT == S_IFDIR ? UInt8(DT_DIR) : UInt8(DT_REG)
             }
             if type == DT_DIR {
-                if windowsSystemFolders.contains(name) || excluded.contains(path) { continue }
+                if (atRoot ? windowsSystemFolders.contains(name) : name == "AppData") || excluded.contains(path) { continue }
                 if lstat(path, &info) == 0 && info.st_flags & UInt32(UF_HIDDEN) != 0 { continue }
                 // 只有带扩展名的文件夹可能是“包”（例如 .app），这种很少，单独问一下系统
                 let isPackage = name.contains(".")
@@ -705,6 +757,10 @@ final class FileIndex: ObservableObject {
         var contentScopes: [ContentIndex.Scope] = []
         for (rawPath, recursive) in changes {
             let folder = rawPath.count > 1 && rawPath.hasSuffix("/") ? String(rawPath.dropLast()) : rawPath
+            if pendingRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) {
+                deferredChanges[folder] = (deferredChanges[folder] ?? false) || recursive
+                continue
+            }
             guard isIndexed(folder) else { continue }
             touched = true
             // 系统说要整个重新扫描时，先把这个文件夹下面的全部去掉
@@ -713,6 +769,19 @@ final class FileIndex: ObservableObject {
                 removeSubtree(folder)   // 文件夹被删了
                 contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
                 continue
+            }
+            // 消失的子文件夹（被删除、改名或移走）：和原来列着的子文件夹比
+            let current = Set(subfolders)
+            var gone: [String] = []
+            if let old = folders[folder] {
+                for index in old.indices where old.isDirectory(at: index) && !old.isPackage(at: index) {
+                    let name = old.name(at: index)
+                    let child = folder == "/" ? "/" + name : folder + "/" + name
+                    if !current.contains(child) && folders[child] != nil {
+                        removeSubtree(child)
+                        gone.append(child)
+                    }
+                }
             }
             folders[folder] = entries
             Self.collectContentFiles(folder, entries, into: &contentFiles)
@@ -725,37 +794,38 @@ final class FileIndex: ObservableObject {
                 for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }
                 if !recursive { contentScopes.append(ContentIndex.Scope(folder: sub, recursive: true)) }
             }
-            // 消失的子文件夹（被删除、改名或移走）
-            let current = Set(subfolders)
-            let prefix = folder + "/"
-            var gone: Set<String> = []
-            for key in folders.keys where key.hasPrefix(prefix) {
-                let child = folder + "/" + key.dropFirst(prefix.count).split(separator: "/", maxSplits: 1)[0]
-                if !current.contains(child) {
-                    folders[key] = nil
-                    gone.insert(child)
-                }
-            }
             if !recursive { contentScopes += gone.map { ContentIndex.Scope(folder: $0, recursive: true) } }
         }
         if touched { publishCount() }
         if !contentScopes.isEmpty { contentIndex?.sync(files: contentFiles, scopes: contentScopes) }
     }
 
-    /// 这个文件夹在索引范围里吗：在已经扫过的位置下面，不在排除的文件夹里，路径上也没有隐藏文件夹、Windows 系统文件夹。
+    /// 这个文件夹在索引范围里吗：是扫过的位置本身，或者上一级文件夹里列着它、而且它不是“包”。
+    /// 包（.app、照片图库）、隐藏文件夹、外接硬盘上的 Windows 系统文件夹扫描时都没收，里面有变化也不收。
+    /// 上一级也是新的时不用管：处理上一级时会把它整个扫一遍。
     private func isIndexed(_ folder: String) -> Bool {
-        guard scannedRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) else { return false }
         if Self.excluded.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) { return false }
-        let parts = folder.split(separator: "/")
-        if parts.contains(where: { $0.hasPrefix(".") }) { return false }
-        if folder.hasPrefix("/Volumes/"), parts.contains(where: { Self.windowsSystemFolders.contains(String($0)) }) { return false }
-        return true
+        if scannedRoots.contains(folder) { return true }
+        guard scannedRoots.contains(where: { folder.hasPrefix($0 + "/") }) else { return false }
+        let parent = (folder as NSString).deletingLastPathComponent
+        return folders[parent]?.containsFolder(named: (folder as NSString).lastPathComponent) == true
     }
 
-    /// 去掉这个文件夹和它下面所有的文件夹。
+    /// 这些位置扫完、并进索引了：处理扫描期间记下来的变化。
+    private func finishedScanning(_ roots: [String]) {
+        pendingRoots.removeAll { roots.contains($0) }
+        let changes = deferredChanges.filter { change in roots.contains { change.key == $0 || change.key.hasPrefix($0 + "/") } }
+        guard !changes.isEmpty else { return }
+        changes.keys.forEach { deferredChanges[$0] = nil }
+        apply(changes.map { ($0.key, $0.value) })
+    }
+
+    /// 去掉这个文件夹和它下面所有的文件夹（按列着的子文件夹往下找，不用把所有文件夹比一遍）。
     private func removeSubtree(_ folder: String) {
-        let prefix = folder + "/"
-        for key in folders.keys where key.hasPrefix(prefix) { folders[key] = nil }
-        folders[folder] = nil
+        guard let entries = folders.removeValue(forKey: folder) else { return }
+        for index in entries.indices where entries.isDirectory(at: index) && !entries.isPackage(at: index) {
+            let name = entries.name(at: index)
+            removeSubtree(folder == "/" ? "/" + name : folder + "/" + name)
+        }
     }
 }

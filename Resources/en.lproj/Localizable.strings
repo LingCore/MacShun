@@ -222,7 +222,7 @@
 "txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字" = "Text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files";
 "已读取" = "Read";
 "内容索引只保存在这台电脑上" = "The content index stays on this Mac";
-"每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
+"每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file (128 KB for JSON) and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
 "文件内容" = "File contents";
 "要搜中文，在搜索框里切换到中文输入法就能打字。至少输入两个汉字或三个字母才会搜内容。" = "To search Chinese text, switch to a Chinese input source in the search bar. Contents are searched once you type at least two Chinese characters or three letters.";
 "第一次呼出时开始读取" = "Starts the first time you open file search";
@@ -254,7 +254,7 @@
 "恢复、最小化" = "Restore or minimize";
 "分在半边时，变成下面的四分之一" = "When snapped to a half, snaps to the bottom quarter";
 "移到另一块屏幕" = "Move to the other display";
-"在屏幕里的位置和大小不变" = "Keeps its position and size on the screen";
+"分好的照样分好，没分的放在差不多的位置" = "Snapped windows stay snapped; others keep roughly the same spot";
 "拉到和屏幕一样高" = "Stretch to full height";
 "宽度和左右位置不变" = "Keeps its width and horizontal position";
 "拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分着屏的窗口，会恢复原来的大小" = "Left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size.";

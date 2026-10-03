@@ -771,7 +771,7 @@ private struct FileSearchSettings: View {
                     InfoRow(
                         symbol: "lock",
                         title: L("内容索引只保存在这台电脑上"),
-                        detail: L("每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。")
+                        detail: L("每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。")
                     )
                 }
             } header: {
@@ -857,7 +857,7 @@ private struct WindowSettings: View {
                 shortcut("Win + ←  /  →", L("分到左半边、右半边"), L("再按一次移到隔壁屏幕，按反方向恢复原来的大小"))
                 shortcut("Win + ↑", L("最大化"), L("分在半边时，变成上面的四分之一"))
                 shortcut("Win + ↓", L("恢复、最小化"), L("分在半边时，变成下面的四分之一"))
-                shortcut("Win + Shift + ←  /  →", L("移到另一块屏幕"), L("在屏幕里的位置和大小不变"))
+                shortcut("Win + Shift + ←  /  →", L("移到另一块屏幕"), L("分好的照样分好，没分的放在差不多的位置"))
                 shortcut("Win + Shift + ↑", L("拉到和屏幕一样高"), L("宽度和左右位置不变"))
             }
             .disabled(!config.enabled)
@@ -946,7 +946,8 @@ private struct DisplaySettings: View {
                     if display.refreshOptions.count > 1 {
                         Picker(selection: refreshSelection(for: display)) {
                             if display.currentRefresh == nil {
-                                Text(verbatim: DisplayScaling.label(forRefresh: display.current.refreshRate)).tag(String?.none)
+                                Text(verbatim: display.current.refreshRate > 0 ? DisplayScaling.label(forRefresh: display.current.refreshRate) : "—")
+                                    .tag(String?.none)
                             }
                             ForEach(display.refreshOptions) { option in
                                 Text(verbatim: option.label).tag(Optional(option.id))
@@ -955,7 +956,8 @@ private struct DisplaySettings: View {
                             Text(L("刷新率"))
                             Text(L("越高，画面和鼠标越流畅"))
                         }
-                        .settingsAnchor(position == 0 ? .refreshRate : nil)
+                        // 主显示器可能没有刷新率可选（例如内建屏幕），搜索时跳到第一个能选的
+                        .settingsAnchor(position == model.displays.firstIndex(where: { $0.refreshOptions.count > 1 }) ? .refreshRate : nil)
                     }
                     LabeledContent(L("屏幕分辨率")) {
                         Group {

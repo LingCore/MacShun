@@ -66,6 +66,24 @@ struct FileMatcherTests {
         #expect(score("README", "readme.md") > 0)
     }
 
+    @Test func decomposedNamesMatchTypedQueries() {
+        // 文件名按分解形式存（HFS+、有的程序这样建），输入法打出来的是合成形式
+        let decomposed = "データ.txt".decomposedStringWithCanonicalMapping
+        #expect(decomposed.utf8.count != "データ.txt".utf8.count)
+        #expect(score("データ", decomposed) > 0)
+        #expect(score("cafe\u{301}", "café.md") > 0)
+    }
+
+    @Test func chinesePunctuationStartsAWord() {
+        #expect(score("报告", "会议纪要、报告.docx") > score("报告", "会议纪要报告.docx") + 15)
+        #expect(score("报告", "会议（报告）.docx") > score("报告", "会议纪要报告.docx") + 15)
+    }
+
+    @Test func fullwidthLettersDoNotStartAWord() {
+        // 全角字母后面不算词的开头
+        #expect(score("b", "Ａb.txt") < score("b", "Ａ b.txt"))
+    }
+
     @Test func pinyinInitialsAndFullPinyin() {
         #expect(score("bg", "年度报告.docx") > 0)
         #expect(score("baogao", "年度报告.docx") > 0)
@@ -117,6 +135,20 @@ struct FolderEntriesTests {
         #expect(folder.indices.map { folder.name(at: $0) } == ["Report.PDF", "Notes.app", "年度报告"])
         #expect(folder.indices.map { folder.displayName(at: $0) } == [nil, "备忘录", nil])
         #expect(folder.indices.map { folder.isDirectory(at: $0) } == [false, true, true])
+        // 只认不是“包”的文件夹
+        #expect(folder.containsFolder(named: "年度报告"))
+        #expect(!folder.containsFolder(named: "Notes.app"))
+        #expect(!folder.containsFolder(named: "Report.PDF"))
+        #expect(!folder.containsFolder(named: "备忘录"))
+    }
+
+    @Test func compactReleasesSpareCapacity() {
+        var folder = FolderEntries()
+        for i in 0 ..< 3000 { folder.append(FileEntry(name: "文件\(i).txt", isDirectory: false, isPackage: false)) }
+        folder.compact()
+        // 系统分配内存按档位取整，会多一点，但不会像按两倍增长那样多出一大截
+        #expect(Double(folder.bytes.capacity) <= Double(folder.bytes.count) * 1.15 + 64)
+        #expect(Double(folder.items.capacity) <= Double(folder.items.count) * 1.15 + 4)
     }
 
     @Test func byteSyllableMatchAgreesWithCharacterVersion() {

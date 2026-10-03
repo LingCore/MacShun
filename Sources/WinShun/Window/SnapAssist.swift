@@ -32,6 +32,7 @@ final class SnapAssist {
         self.panel = panel
         panel.setFrame(frame, display: true)
         panel.alphaValue = 0
+        FrontAppTracker.shared.snapAssistActive.set(true)
         panel.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
@@ -40,6 +41,7 @@ final class SnapAssist {
     }
 
     func hide() {
+        FrontAppTracker.shared.snapAssistActive.set(false)
         guard let panel, panel.isVisible else { return }
         panel.orderOut(nil)
         model.candidates = []
@@ -109,12 +111,18 @@ final class SnapAssistModel: ObservableObject {
     var onChoose: (Candidate) -> Void = { _ in }
     var onCancel: () -> Void = {}
 
-    /// 方向键选，Enter 放进去，Esc 跳过。处理了返回 true。
+    /// 方向键选，Enter 放进去，Esc 跳过。处理了返回 true。按着 ⌘ ⌃ ⌥ 的不处理。
     func handleKey(_ event: NSEvent) -> Bool {
-        guard !candidates.isEmpty else { return false }
+        let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard !candidates.isEmpty, mods.subtracting(.shift).isEmpty else { return false }
+        if event.keyCode == 48 {                            // Tab、Shift+Tab
+            move(mods.contains(.shift) ? -1 : 1)
+            return true
+        }
+        guard mods.isEmpty else { return false }
         switch event.keyCode {
         case 123: move(-1)                                  // ←
-        case 124, 48: move(1)                               // →、Tab
+        case 124: move(1)                                   // →
         case 125: move(columns)                             // ↓
         case 126: move(-columns)                            // ↑
         case 36, 76: onChoose(candidates[selection])        // Enter

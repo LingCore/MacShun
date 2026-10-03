@@ -24,7 +24,8 @@ struct ZipReader {
     static let maxEntrySize = 64 << 20
 
     init?(url: URL) {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        // 不用内存映射：读的时候文件被别的程序截短（例如脚本原地保存）会让整个程序崩溃（SIGBUS）
+        guard let data = try? Data(contentsOf: url) else { return nil }
         self.init(data: data)
     }
 

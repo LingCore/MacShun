@@ -560,6 +560,9 @@ final class SelfTest {
         // 2. 再拖：先恢复原来的大小，往外多推一段就过去，松开时不分屏
         guard await grab() else { return }
         await drag(toward: CGPoint(x: edgeX - 100, y: y), step: 10)
+        let unsnapped = finder.frame
+        check("拖动分好的窗口，恢复原来的大小",
+              unsnapped.map { abs($0.width - start.width) <= 3 && abs($0.height - start.height) <= 3 } ?? false, describe(unsnapped))
         await drag(toward: CGPoint(x: right.frame.minX + 250, y: y), step: 12)
         let crossed = cursorLocation
         check("继续往外推，光标过到另一块屏幕", right.frame.contains(crossed), "光标在 \(Int(crossed.x)),\(Int(crossed.y))")

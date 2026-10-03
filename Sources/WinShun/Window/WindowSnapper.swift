@@ -215,6 +215,14 @@ final class WindowSnapper {
 
         case .leftMouseDragged:
             guard var state = drag else { return }
+            // 系统的“按住 ⌥ 拖动平铺”开着时，按着 ⌥ 拖让给系统
+            if event.modifierFlags.contains(.option) && NativeTiling.optionAcceleratorEnabled && !ignoresNativeTiling {
+                drag = nil
+                preview.hide()
+                previewFrame = nil
+                stickyEdges.deactivate()
+                return
+            }
             if !state.resolved {
                 state.resolved = true
                 guard let window = WindowElement.under(state.start), let frame = window.frame,
@@ -271,9 +279,11 @@ final class WindowSnapper {
     }
 
     /// 拖动一个分着屏的窗口时，马上恢复原来的大小（Windows 也是这样），窗口跟着鼠标走。
+    /// 只比大小：第一次读到位置时窗口已经被拖动了一点。
     private func unsnapIfNeeded(_ window: WindowElement, frame: CGRect, cursor: CGPoint, state: inout DragState) {
         guard let id = window.windowID, let record = history[id], let snapped = record.snappedFrame,
-              let startFrame = state.startFrame, Self.same(startFrame, snapped),
+              let startFrame = state.startFrame,
+              abs(startFrame.width - snapped.width) <= 2, abs(startFrame.height - snapped.height) <= 2,
               let restore = record.restoreFrame else { return }
         let unsnapped = WindowLayout.unsnappedFrame(current: frame, restoreSize: restore.size, cursor: cursor)
         window.setFrame(unsnapped)
@@ -302,9 +312,16 @@ final class WindowSnapper {
 enum NativeTiling {
     private static let domain = "com.apple.WindowManager"
 
+    /// 拖到左右边、四个角平铺，或者拖到上边（菜单栏）填满屏幕，开着任何一个都会和我们抢
     static var dragTilingEnabled: Bool {
         guard #available(macOS 15, *) else { return false }
-        return enabled("EnableTilingByEdgeDrag") || enabled("EnableTilingOptionAccelerator")
+        return enabled("EnableTilingByEdgeDrag") || enabled("EnableTopTilingByEdgeDrag")
+    }
+
+    /// 按住 ⌥ 拖动时平铺。只在按着 ⌥ 时起作用，那时让给系统
+    static var optionAcceleratorEnabled: Bool {
+        guard #available(macOS 15, *) else { return false }
+        return enabled("EnableTilingOptionAccelerator")
     }
 
     /// 没写过就是开着（系统默认）

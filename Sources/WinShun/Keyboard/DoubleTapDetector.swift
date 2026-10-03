@@ -31,6 +31,12 @@ struct DoubleTapDetector {
 
     private var state: State = .idle
 
+    /// 第一下按下的时间（正按着第一下时）
+    var firstPressStart: TimeInterval? {
+        if case .firstDown(let start) = state { return start }
+        return nil
+    }
+
     /// 返回 true 表示这一下完成了“连按两下”。
     mutating func feed(_ input: Input, at time: TimeInterval) -> Bool {
         switch input {

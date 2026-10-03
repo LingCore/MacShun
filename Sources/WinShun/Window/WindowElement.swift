@@ -77,8 +77,8 @@ struct WindowElement: SnappableWindow {
 
     /// 某个位置下面的窗口
     static func under(_ point: CGPoint) -> WindowElement? {
+        // 不给系统级元素设超时：那会改掉整个程序的默认超时，键盘那边查焦点要靠更短的超时
         let systemWide = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(systemWide, timeout)
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success,
               var current = hit else { return nil }

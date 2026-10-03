@@ -125,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         pointer.restore()
         cursor.restore()
+        ContentIndex.shared.prepareForQuit()
         if !SelfTest.isRequested { clipboard.store.saveNow() }
     }
 

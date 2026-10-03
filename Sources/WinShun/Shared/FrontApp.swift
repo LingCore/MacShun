@@ -17,6 +17,8 @@ final class FrontAppTracker {
     let clipboardPanelActive = Locked(false)
     /// 本程序的文件搜索框是否正在接收键盘输入，同上。
     let fileSearchPanelActive = Locked(false)
+    /// 贴靠助手是否正在接收键盘输入，同上。
+    let snapAssistActive = Locked(false)
 
     private var observers: [NSObjectProtocol] = []
 

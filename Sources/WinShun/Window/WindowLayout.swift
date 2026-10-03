@@ -119,8 +119,11 @@ enum WindowLayout {
         if area.intersects(remembered) && area.contains(CGPoint(x: remembered.midX, y: remembered.midY)) {
             return remembered
         }
-        return clamped(CGRect(x: area.midX - remembered.width / 2, y: area.midY - remembered.height / 2,
-                              width: remembered.width, height: remembered.height), to: area)
+        // 在另一块屏幕上记的：挪到这块屏幕中间，放不下就缩小
+        let width = min(remembered.width, area.width)
+        let height = min(remembered.height, area.height)
+        return clamped(CGRect(x: (area.midX - width / 2).rounded(.down), y: (area.midY - height / 2).rounded(.down),
+                              width: width, height: height), to: area)
     }
 
     /// Win+Shift+←/→：移到另一块屏幕，在屏幕里的相对位置不变，放不下就缩小。

@@ -81,8 +81,10 @@ final class StickyEdges {
 
     /// 停止挡。主线程调用。
     func deactivate() {
-        lock.withLock { resistance = nil }
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        lock.withLock {
+            resistance = nil
+            if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        }
     }
 
     private func makeTap() -> CFMachPort? {
@@ -100,6 +102,8 @@ final class StickyEdges {
             return nil
         }
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        // 先存好再启动线程：拦截线程会读它
+        self.tap = tap
         let thread = Thread {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CFRunLoopRun()
@@ -107,7 +111,6 @@ final class StickyEdges {
         thread.name = "WinShun.StickyEdges"
         thread.qualityOfService = .userInteractive
         thread.start()
-        self.tap = tap
         return tap
     }
 
@@ -115,7 +118,8 @@ final class StickyEdges {
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if lock.withLock({ resistance != nil }), let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            // 在锁里判断和重新打开，免得和主线程的 deactivate 交错
+            lock.withLock { if resistance != nil, let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
         case .leftMouseDragged:
             let point = event.location
             let delta = CGVector(dx: event.getDoubleValueField(.mouseEventDeltaX), dy: event.getDoubleValueField(.mouseEventDeltaY))
@@ -127,8 +131,10 @@ final class StickyEdges {
                 event.location = target
             }
         case .leftMouseUp:
-            lock.withLock { resistance = nil }
-            if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+            lock.withLock {
+                resistance = nil
+                if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+            }
         default:
             break
         }

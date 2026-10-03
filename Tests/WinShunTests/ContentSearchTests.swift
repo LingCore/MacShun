@@ -160,6 +160,19 @@ struct ContentIndexTests {
         #expect(ContentIndex.matchExpression(for: "合同 2026") == "\" 合  同 \" AND \"2026\" *")
         #expect(ContentIndex.matchExpression(for: "a\"bc") == "\"a\"\"bc\" *")
         #expect(ContentIndex.matchExpression(for: "的") == nil)
+        // 单个字母不参与（以它开头的词太多）；结尾只有一个字母时不按前缀
+        #expect(ContentIndex.matchExpression(for: "合同 a") == "\" 合  同 \"")
+        #expect(ContentIndex.matchExpression(for: "a b c") == nil)
+        #expect(ContentIndex.matchExpression(for: "合同a") == "\" 合  同 a\"")
+    }
+
+    @Test func nulCharactersDoNotCutText() throws {
+        let file = temporaryFolder().appendingPathComponent("a.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"a": "前面\u0000后面的合同"}"#.utf8).write(to: file)
+        let text = ContentExtractor.extract(path: file.path, kind: .text)
+        #expect(text?.contains("后面的合同") == true)
+        #expect(text?.contains("\u{0}") == false)
     }
 
     @Test func snippetAroundFirstMatch() {
@@ -242,6 +255,32 @@ struct ContentIndexTests {
         #expect(index.searchNow("合同").map(\.path) == [good.path])
         #expect(!FileManager.default.fileExists(atPath: indexFolder.appendingPathComponent("reading").path))
         try? FileManager.default.removeItem(at: folder)
+    }
+
+    @Test func batchThatWasInterruptedIsReadAgainOneByOne() throws {
+        let folder = temporaryFolder()
+        let indexFolder = folder.appendingPathComponent("index")
+        let first = folder.appendingPathComponent("一.txt")
+        let second = folder.appendingPathComponent("二\n换行.txt")   // 名字里有换行
+        try "合同一".write(to: first, atomically: true, encoding: .utf8)
+        try "合同二".write(to: second, atomically: true, encoding: .utf8)
+        // 假装上次读这一批（两个文件）的时候程序退出了：不知道是哪个，这次单独读，都能搜到
+        try FileManager.default.createDirectory(at: indexFolder, withIntermediateDirectories: true)
+        try Data([first.path, second.path].joined(separator: "\0").utf8).write(to: indexFolder.appendingPathComponent("reading"))
+        let index = ContentIndex(directory: indexFolder)
+        index.start()
+        index.sync(files: [first.path, second.path], scopes: [ContentIndex.Scope(folder: folder.path, recursive: true)])
+        index.waitUntilIdle()
+        #expect(Set(index.searchNow("合同").map(\.path)) == [first.path, second.path])
+        try? FileManager.default.removeItem(at: folder)
+    }
+
+    @Test func manyScopesMatchLikeOne() {
+        let scopes = (0 ..< 20).map { ContentIndex.Scope(folder: "/x/\($0)", recursive: $0 % 2 == 0) }
+        let set = ContentIndex.ScopeSet(scopes)
+        for path in ["/x/2/a.txt", "/x/2/d/a.txt", "/x/3/a.txt", "/x/3/d/a.txt", "/x/30/a.txt", "/y/a.txt", "/x/a.txt"] {
+            #expect(set.contains(path) == scopes.contains { $0.contains(path) }, "\(path)")
+        }
     }
 
     @Test func scopes() {
