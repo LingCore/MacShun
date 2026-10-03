@@ -459,6 +459,8 @@ struct SearchField: NSViewRepresentable {
     let onMove: (Int) -> Void
     let onSubmit: () -> Void
     let onCancel: () -> Void
+    /// Tab（false）、Shift+Tab（true）。nil 时照常处理
+    var onTab: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -503,6 +505,14 @@ struct SearchField: NSViewRepresentable {
             case #selector(NSResponder.moveDown(_:)): parent.onMove(1); return true
             case #selector(NSResponder.insertNewline(_:)): parent.onSubmit(); return true
             case #selector(NSResponder.cancelOperation(_:)): parent.onCancel(); return true
+            case #selector(NSResponder.insertTab(_:)):
+                guard let onTab = parent.onTab else { return false }
+                onTab(false)
+                return true
+            case #selector(NSResponder.insertBacktab(_:)):
+                guard let onTab = parent.onTab else { return false }
+                onTab(true)
+                return true
             default: return false
             }
         }

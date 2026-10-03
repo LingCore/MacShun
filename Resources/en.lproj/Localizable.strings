@@ -224,7 +224,7 @@
 "内容索引只保存在这台电脑上" = "The content index stays on this Mac";
 "每个文件最多收录前 512 KB 文字（JSON 128 KB），PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file (128 KB for JSON) and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
 "文件内容" = "File contents";
-"要搜中文，在搜索框里切换到中文输入法就能打字。至少输入两个汉字或三个字母才会搜内容。" = "To search Chinese text, switch to a Chinese input source in the search bar. Contents are searched once you type at least two Chinese characters or three letters.";
+"搜索框默认只搜文件名，在右边选“全部”或“内容”（或按 Tab）才按内容搜。要搜中文，切换到中文输入法就能打字；至少输入两个汉字或三个字母才会搜内容。" = "The search bar looks at file names by default. Choose All or Contents on the right (or press Tab) to search inside files. To search Chinese text, switch to a Chinese input source; contents are searched once you type at least two Chinese characters or three letters.";
 "第一次呼出时开始读取" = "Starts the first time you open file search";
 "%ld 个文件，还有 %ld 个在读…" = "%ld files, %ld more to read…";
 "%ld 个文件，占用 %@" = "%ld files, %@ on disk";
@@ -265,3 +265,12 @@
 "拖动和贴靠" = "Drag and Snap Assist";
 "选一个窗口放在这里" = "Choose a window for this side";
 "Esc 跳过" = "Esc to skip";
+
+/* 文件搜索：全部 / 文件 / 内容 */
+"全部" = "All";
+"文件" = "Files";
+"内容" = "Contents";
+"搜索文件里的文字" = "Search text inside files";
+"切换范围" = "Switch scope";
+"至少输入两个汉字或三个字母才搜内容" = "Type at least two Chinese characters or three letters to search contents";
+"正在读取文件内容，结果可能还不全…" = "Still reading file contents, results may be incomplete…";

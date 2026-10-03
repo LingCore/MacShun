@@ -84,7 +84,7 @@
 
 - **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。
 - **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
-- **也能搜文件内容**：txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字都能搜到，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。
+- **也能搜文件内容**：txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字都能搜到，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。搜索框右边可以选 **全部 / 文件 / 内容**，默认只搜文件名，按 Tab 切换。
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
@@ -240,7 +240,7 @@ Every option can be found with the **search box** at the top of the settings win
 
 - **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files.
 - **Pinyin search** for Chinese file and app names.
-- **Searches file contents too**: text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight.
+- **Searches file contents too**: text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight. Pick **All / Files / Contents** on the right of the search bar (Files by default, Tab to switch).
 - Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 

@@ -292,3 +292,49 @@ struct ContentIndexTests {
         #expect(!deep.contains("/a/bc/c.txt"))
     }
 }
+
+@Suite("F2 搜索范围")
+struct FileSearchScopeTests {
+    private func makeModel() -> FileSearchModel {
+        let index = ContentIndex(directory: temporaryFolder().appendingPathComponent("index"))
+        return FileSearchModel(index: FileIndex.shared, contentIndex: index)
+    }
+
+    @Test func defaultsToFilesAndTabCycles() {
+        let model = makeModel()
+        model.searchesContent = true
+        model.prepareForShow()
+        #expect(model.scope == .files)
+        model.cycleScope(reverse: false)
+        #expect(model.scope == .contents)
+        model.cycleScope(reverse: false)
+        #expect(model.scope == .all)
+        model.cycleScope(reverse: true)
+        #expect(model.scope == .contents)
+        // 每次打开都回到“文件”
+        model.prepareForShow()
+        #expect(model.scope == .files)
+    }
+
+    @Test func contentSearchOffMeansFilesOnly() {
+        let model = makeModel()
+        model.searchesContent = false
+        model.scope = .contents
+        #expect(model.effectiveScope == .files)
+        model.cycleScope(reverse: false)
+        #expect(model.scope == .contents)   // 关着时 Tab 不起作用
+    }
+
+    @Test func shortQueryInContentsScopeAsksForMore() {
+        let model = makeModel()
+        model.searchesContent = true
+        model.scope = .contents
+        model.query = "合"
+        #expect(model.needsLongerQuery)
+        model.query = "合同"
+        #expect(!model.needsLongerQuery)
+        model.scope = .files
+        model.query = "合"
+        #expect(!model.needsLongerQuery)
+    }
+}

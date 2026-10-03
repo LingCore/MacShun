@@ -106,7 +106,7 @@ final class FileSearchController {
         model.onOpen = { [weak self] result, reveal in self?.open(result, reveal: reveal) }
         model.onClose = { [weak self] in self?.hide() }
         // 结果多少变了，面板跟着变高变矮
-        model.$results.combineLatest(model.$query, index.$isIndexing)
+        model.$results.combineLatest(model.$query, index.$isIndexing, model.$searchingContent)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.resize() }
             .store(in: &subscriptions)
@@ -178,6 +178,21 @@ final class FileSearchPanel: NSPanel {
     }
 }
 
+/// 搜索范围：全部、只看文件名、只看内容。
+enum FileSearchScope: Int, CaseIterable, Identifiable {
+    case all, files, contents
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: L("全部")
+        case .files: L("文件")
+        case .contents: L("内容")
+        }
+    }
+}
+
 /// 搜索框的数据和操作。
 final class FileSearchModel: ObservableObject {
     @Published var query = "" {
@@ -187,8 +202,20 @@ final class FileSearchModel: ObservableObject {
     @Published private(set) var results: [FileSearchResult] = []
     @Published var selection = 0
     @Published private(set) var focusToken = 0
-    /// 也按内容搜（F2）
+    /// 也按内容搜（F2）。设置里关掉了就没有范围可选，只搜文件名
     @Published var searchesContent = false
+    /// 搜索范围，每次打开都是“文件”
+    @Published var scope: FileSearchScope = .files {
+        didSet {
+            guard scope != oldValue else { return }
+            merge(resetSelection: true)
+            scheduleContentSearch()
+        }
+    }
+    /// 设置里没关内容搜索时才看范围
+    var effectiveScope: FileSearchScope { searchesContent ? scope : .files }
+    /// 内容搜索已经发出去、结果还没回来
+    @Published private(set) var searchingContent = false
     /// 搜索框开着
     var isShown = false
 
@@ -230,11 +257,26 @@ final class FileSearchModel: ObservableObject {
             .store(in: &subscriptions)
     }
 
-    /// 内容结果从第几条开始；没有内容结果时为 nil
-    var contentStart: Int? { results.firstIndex { $0.snippet != nil } }
+    /// 内容结果从第几条开始（在这里显示“文件内容”的小标题）；没有内容结果、或者只看内容时为 nil
+    var contentStart: Int? { effectiveScope == .all ? results.firstIndex { $0.snippet != nil } : nil }
+
+    /// 只看内容时，打的字太少还不会搜
+    var needsLongerQuery: Bool {
+        effectiveScope == .contents && !query.trimmingCharacters(in: .whitespaces).isEmpty && !ContentIndex.qualifies(query)
+    }
+
+    /// Tab、Shift+Tab 切换范围
+    func cycleScope(reverse: Bool) {
+        guard searchesContent else { return }
+        let all = FileSearchScope.allCases
+        scope = all[(scope.rawValue + (reverse ? all.count - 1 : 1)) % all.count]
+    }
 
     /// 结果下面要不要显示一行状态（正在建立索引、没有找到）
-    var showsStatus: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty && results.isEmpty }
+    /// 内容还在搜的时候先不说“没有找到”，免得一闪
+    var showsStatus: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty && results.isEmpty && !(searchingContent && effectiveScope != .files)
+    }
 
     func prepareForShow() {
         query = ""
@@ -242,6 +284,8 @@ final class FileSearchModel: ObservableObject {
         contentResults = []
         results = []
         selection = 0
+        scope = .files
+        searchingContent = false
         focusToken += 1
     }
 
@@ -262,7 +306,8 @@ final class FileSearchModel: ObservableObject {
     private func scheduleContentSearch() {
         pendingContentSearch?.cancel()
         let q = query
-        guard searchesContent, ContentIndex.qualifies(q) else {
+        guard effectiveScope != .files, ContentIndex.qualifies(q) else {
+            searchingContent = false
             if !contentResults.isEmpty {
                 contentResults = []
                 merge(resetSelection: false)
@@ -270,6 +315,7 @@ final class FileSearchModel: ObservableObject {
             return
         }
         let current = generation
+        searchingContent = true
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.contentIndex.search(q) { [weak self] hits in
@@ -278,6 +324,7 @@ final class FileSearchModel: ObservableObject {
                     FileSearchResult(path: hit.path, name: (hit.path as NSString).lastPathComponent,
                                      isDirectory: false, score: 0, snippet: hit.snippet)
                 }
+                self.searchingContent = false
                 self.merge(resetSelection: false)
             }
         }
@@ -288,13 +335,23 @@ final class FileSearchModel: ObservableObject {
     /// 合并两路结果。同一个文件名字和内容都匹配时只列在文件名里。选中的那条尽量不动。
     private func merge(resetSelection: Bool) {
         let selectedPath = resetSelection ? nil : selectedResult?.path
+        defer { selection = selectedPath.flatMap { path in results.firstIndex { $0.path == path } } ?? 0 }
+        switch effectiveScope {
+        case .files:
+            results = nameResults
+            return
+        case .contents:
+            results = contentResults
+            return
+        case .all:
+            break
+        }
         // 内容结果都是名字也匹配的文件时，不用为它们腾地方
         let allNamePaths = Set(nameResults.map(\.path))
         let hasContentOnly = contentResults.contains { !allNamePaths.contains($0.path) }
         let names = hasContentOnly ? Array(nameResults.prefix(Self.maxNameResultsWithContent)) : nameResults
         let shown = Set(names.map(\.path))
         results = names + contentResults.filter { !shown.contains($0.path) }
-        selection = selectedPath.flatMap { path in results.firstIndex { $0.path == path } } ?? 0
     }
 
     #if DEBUG
@@ -382,16 +439,20 @@ struct FileSearchView: View {
                 .foregroundStyle(.secondary)
             SearchField(
                 text: $model.query,
-                placeholder: model.searchesContent ? L("搜索文件名或内容，文件名支持拼音首字母") : L("搜索文件，支持拼音和首字母"),
+                placeholder: placeholder,
                 focusToken: model.focusToken,
                 fontSize: 20,
                 romanOnly: false,
                 onMove: { model.move($0) },
                 onSubmit: { model.openSelected() },
-                onCancel: { model.onClose() }
+                onCancel: { model.onClose() },
+                onTab: model.searchesContent ? { model.cycleScope(reverse: $0) } : nil
             )
             if index.isIndexing {
                 ProgressView().controlSize(.small)
+            }
+            if model.searchesContent {
+                ScopePicker(selection: $model.scope)
             }
         }
         .padding(.horizontal, 20)
@@ -399,6 +460,14 @@ struct FileSearchView: View {
         .background(VisualEffectBackground().clipShape(Capsule(style: .continuous)))
         .overlay(Capsule(style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+    }
+
+    private var placeholder: String {
+        switch model.effectiveScope {
+        case .files: L("搜索文件，支持拼音和首字母")
+        case .contents: L("搜索文件里的文字")
+        case .all: L("搜索文件名或内容，文件名支持拼音首字母")
+        }
     }
 
     private var card: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
@@ -432,8 +501,11 @@ struct FileSearchView: View {
             HStack(spacing: 12) {
                 KeyHint(key: "Enter", action: L("打开"))
                 KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
+                if model.searchesContent {
+                    KeyHint(key: "Tab", action: L("切换范围"))
+                }
                 Spacer(minLength: 0)
-                if model.searchesContent && contentIndex.pendingCount > 0 {
+                if model.effectiveScope != .files && contentIndex.pendingCount > 0 {
                     // 内容还没读完，结果可能不全
                     HStack(spacing: 5) {
                         ProgressView().controlSize(.mini)
@@ -466,7 +538,13 @@ struct FileSearchView: View {
 
     private var status: some View {
         HStack(spacing: 10) {
-            if index.isIndexing {
+            if model.needsLongerQuery {
+                Image(systemName: "text.magnifyingglass").foregroundStyle(.tertiary)
+                Text(L("至少输入两个汉字或三个字母才搜内容"))
+            } else if model.effectiveScope == .contents && contentIndex.pendingCount > 0 {
+                ProgressView().controlSize(.small)
+                Text(L("正在读取文件内容，结果可能还不全…"))
+            } else if index.isIndexing && model.effectiveScope != .contents {
                 ProgressView().controlSize(.small)
                 Text(L("正在建立索引，马上就好…"))
             } else {
@@ -561,5 +639,37 @@ private struct FileResultRow: View {
             }
         }
         return text
+    }
+}
+
+/// 搜索框右边的“全部 / 文件 / 内容”。
+private struct ScopePicker: View {
+    @Binding var selection: FileSearchScope
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(FileSearchScope.allCases) { scope in
+                let selected = scope == selection
+                Text(scope.title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .padding(.horizontal, 11)
+                    .frame(height: 26)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(selected ? Color.primary.opacity(0.14) : .clear)
+                            .shadow(color: .black.opacity(selected ? 0.15 : 0), radius: 1, y: 0.5)
+                    )
+                    .contentShape(Capsule(style: .continuous))
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.15)) { selection = scope }
+                    }
+            }
+        }
+        .padding(3)
+        .background(Capsule(style: .continuous).fill(Color.primary.opacity(0.06)))
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L("搜索范围"))
     }
 }

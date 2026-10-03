@@ -777,7 +777,7 @@ private struct FileSearchSettings: View {
             } header: {
                 Text(L("文件内容"))
             } footer: {
-                Text(L("要搜中文，在搜索框里切换到中文输入法就能打字。至少输入两个汉字或三个字母才会搜内容。"))
+                Text(L("搜索框默认只搜文件名，在右边选“全部”或“内容”（或按 Tab）才按内容搜。要搜中文，切换到中文输入法就能打字；至少输入两个汉字或三个字母才会搜内容。"))
                     .settingsFooter()
             }
             .disabled(!config.enabled)
