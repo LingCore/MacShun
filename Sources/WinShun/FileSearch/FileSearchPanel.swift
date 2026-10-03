@@ -14,6 +14,8 @@ final class FileSearchController {
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
     private var subscriptions: Set<AnyCancellable> = []
+    /// 接住 Ctrl+Enter 的事件监听（见 makePanel）
+    private var keyMonitor: Any?
     /// 打开前的输入法。打开时切到英文（直接打拼音首字母），关闭时切回来。
     private var savedInputSource: TISInputSource?
 
@@ -53,9 +55,13 @@ final class FileSearchController {
     }
 
     var isVisible: Bool { panel.isVisible }
+    /// 自测用
+    var currentQuery: String { model.query }
+    var visibleResults: [FileSearchResult] { model.results }
 
-    func toggle() {
-        if panel.isVisible { hide() } else { show() }
+    /// 连按两下 Ctrl：打开。已经开着时不关（多半是想接着输入或粘贴），只放到前面；关用 Esc。
+    func summon() {
+        if panel.isVisible { panel.makeKeyAndOrderFront(nil) } else { show() }
     }
 
     func show() {
@@ -129,8 +135,21 @@ final class FileSearchController {
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
         panel.onResignKey = { [weak self] in self?.hide() }
-        panel.onReveal = { [weak self] in self?.model.openSelected(reveal: true) }
+        // Ctrl+Enter 是系统“显示快捷菜单”的快捷键：系统在把按键交给窗口之前就处理了，输入框上会弹出右键菜单。
+        // 本程序的事件监听在那之前，在这里接住。⌘+Enter 输入框不处理，也在这里接。
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
+            guard let self, let panel, event.window === panel, Self.isRevealKey(event),
+                  (panel.firstResponder as? NSTextView)?.hasMarkedText() != true   // 输入法还在拼字时，回车留给输入法
+            else { return event }
+            self.model.openSelected(reveal: true)
+            return nil
+        }
         return panel
+    }
+
+    /// Ctrl+Enter、⌘+Enter：在访达中显示
+    static func isRevealKey(_ event: NSEvent) -> Bool {
+        (event.keyCode == 36 || event.keyCode == 76) && !event.modifierFlags.intersection([.control, .command]).isEmpty
     }
 
     /// 面板高度：胶囊加上下面的结果列表。保持顶边不动。
@@ -160,8 +179,6 @@ final class FileSearchPanel: NSPanel {
     static let width: CGFloat = 640
 
     var onResignKey: (() -> Void)?
-    /// Ctrl+Enter、⌘+Enter：在访达中显示
-    var onReveal: (() -> Void)?
 
     init() {
         super.init(
@@ -187,18 +204,6 @@ final class FileSearchPanel: NSPanel {
     override func resignKey() {
         super.resignKey()
         onResignKey?()
-    }
-
-    /// 输入框会把 Ctrl+Enter 当成插入换行、⌘+Enter 什么也不做，到不了“打开”，所以在面板这一层先接住。
-    /// 输入法还在拼字时不接，回车留给输入法。
-    override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown, event.keyCode == 36 || event.keyCode == 76,
-           !event.modifierFlags.intersection([.control, .command]).isEmpty,
-           (firstResponder as? NSTextView)?.hasMarkedText() != true, let onReveal {
-            onReveal()
-            return
-        }
-        super.sendEvent(event)
     }
 }
 

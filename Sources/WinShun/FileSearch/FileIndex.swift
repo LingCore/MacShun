@@ -265,43 +265,59 @@ enum FileMatcher {
         query.split(whereSeparator: { $0.isWhitespace }).map { Term(String($0)) }
     }
 
-    /// 一次搜索。查询里带 /（或 Windows 的 \）就当成路径：最后一段按名字搜，前面的部分要出现在文件所在文件夹的路径里，
-    /// 例如 “art/gpt/style_reference.png”。“~/” 换成个人文件夹；Windows 的盘符（“D:\”）去掉，旧硬盘上的路径照样找得到。
+    /// 一次搜索。查询里带 /（或 Windows 的 \）就当成路径，例如 “art/gpt/style_reference.png”：
+    /// 最后一段按名字搜，前面的文件夹对上得越多排得越前，对不上也照样列出名字对上的文件。
+    /// 文件夹可以写访达里显示的名字（“桌面/…”）或 Windows 的叫法（“文档”“视频”）；“~/” 是个人文件夹；
+    /// Windows 的盘符（“D:\”）去掉，旧硬盘上的路径照样找得到；两边的引号（Windows“复制为路径”会带上）和 file:// 去掉。
     struct Query {
         let terms: [Term]
-        /// 文件所在文件夹的路径（比较用的形式，后面加 /）里要有这一段，前后都是完整的文件夹名：“/art/gpt/”
-        let folder: [UInt8]?
+        /// 路径里的文件夹，一段一段（比较用的形式），每段是能对上的写法（本来的、对应的真名）
+        let folders: [Set<String>]
         /// 写的是完整路径（/ 开头）：存在的话直接放在最前面，没收录的位置（例如“资源库”里）也能打开
         let absolutePath: String?
 
         init(_ query: String) {
-            var text = query.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "\\", with: "/")
-            guard text.contains("/") else {
-                (terms, folder, absolutePath) = (FileMatcher.terms(of: query), nil, nil)
+            var text = query.trimmingCharacters(in: .whitespaces)
+            guard text.contains("/") || text.contains("\\") else {
+                (terms, folders, absolutePath) = (FileMatcher.terms(of: query), [], nil)
                 return
             }
-            if text.hasPrefix("~/") { text = NSHomeDirectory() + text.dropFirst() }
+            let quotes: Set<Character> = ["\"", "'", "“", "”", "‘", "’"]
+            while let first = text.first, quotes.contains(first) { text.removeFirst() }
+            while let last = text.last, quotes.contains(last) { text.removeLast() }
+            if text.hasPrefix("file://"), let url = URL(string: text), url.isFileURL { text = url.path }
+            text = text.replacingOccurrences(of: "\\", with: "/")
+            if text == "~" || text.hasPrefix("~/") { text = NSHomeDirectory() + text.dropFirst() }
             let chars = Array(text.prefix(3))
-            if chars.count == 3, chars[0].isASCII, chars[0].isLetter, chars[1] == ":", chars[2] == "/" { text.removeFirst(2) }
-            if text.hasPrefix("./") { text.removeFirst(2) }
-            while text.count > 1 && text.hasSuffix("/") { text.removeLast() }
-            absolutePath = text.hasPrefix("/") && text.count > 1 ? text : nil
-            guard let slash = text.lastIndex(of: "/") else {
-                (terms, folder) = (FileMatcher.terms(of: text), nil)
-                return
+            if chars.count >= 2, chars[0].isASCII, chars[0].isLetter, chars[1] == ":", chars.count == 2 || chars[2] == "/" {
+                text.removeFirst(2)
             }
-            let path = String(text[..<slash])
-            terms = FileMatcher.terms(of: String(text[text.index(after: slash)...]))
-            let form = FolderEntries.matchForm(path, isASCII: path.utf8.allSatisfy { $0 < 0x80 })
-            folder = path.isEmpty ? nil : Array(((form.hasPrefix("/") ? "" : "/") + form + "/").utf8)
+            // 一段一段，去掉每段两边的空格（“桌面 / 塔防游戏”）和 “.”
+            let parts = text.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != "." }
+            let absolute = text.hasPrefix("/") ? "/" + parts.joined(separator: "/") : nil
+            absolutePath = absolute.flatMap { $0.count > 1 ? $0 : nil }
+            terms = FileMatcher.terms(of: parts.last ?? "")
+            folders = parts.dropLast().map { part in
+                let form = FolderEntries.matchForm(part, isASCII: part.utf8.allSatisfy { $0 < 0x80 })
+                return Set([form] + (FileMatcher.folderAliases[form].map { [$0] } ?? []))
+            }
         }
 
-        /// 文件夹符合时额外加的分，不符合时 nil：正好在这个文件夹里的排在更深一层的前面。
-        func folderBonus(_ folder: String) -> Double? {
-            guard let wanted = self.folder else { return 0 }
-            let path = Array((FolderEntries.matchForm(folder, isASCII: folder.utf8.allSatisfy { $0 < 0x80 }) + "/").utf8)
-            guard FileMatcher.find(wanted, in: path) != nil else { return nil }
-            return path.count >= wanted.count && path.suffix(wanted.count).elementsEqual(wanted) ? 20 : 0
+        /// 按文件所在的文件夹加的分：写的那几段连着对上，正好是这个文件夹 40、在它下面更深的地方 30；
+        /// 没有连着对上时，对上几段给几分（最多 20）。没写文件夹时 0。
+        func folderBonus(_ folder: String) -> Double {
+            guard !folders.isEmpty else { return 0 }
+            let parts = FolderEntries.matchForm(folder, isASCII: folder.utf8.allSatisfy { $0 < 0x80 })
+                .split(separator: "/").map(String.init)
+            let n = folders.count
+            if parts.count >= n {
+                for end in stride(from: parts.count, through: n, by: -1)
+                where (0 ..< n).allSatisfy({ folders[$0].contains(parts[end - n + $0]) }) {
+                    return end == parts.count ? 40 : 30
+                }
+            }
+            let matched = folders.filter { forms in parts.contains { forms.contains($0) } }.count
+            return 20 * Double(matched) / Double(n)
         }
     }
 
@@ -604,9 +620,11 @@ final class FileIndex: ObservableObject {
             guard self.latestSearch.get() == token else { return }
             var matches: [FileSearchResult] = []
             for (folder, entries) in self.folders where !terms.isEmpty {
-                guard let bonus = parsed.folderBonus(folder) else { continue }
                 let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
+                var folderBonus: Double?
                 entries.forEachMatch(terms, depth: depth) { index, score in
+                    if folderBonus == nil { folderBonus = parsed.folderBonus(folder) }
+                    let bonus = folderBonus ?? 0
                     let name = entries.name(at: index)
                     let path = folder == "/" ? "/" + name : folder + "/" + name
                     matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
@@ -658,9 +676,9 @@ final class FileIndex: ObservableObject {
             let isPackage = values?.isPackage == true
             let path = folder == "/" ? "/" + name : folder + "/" + name
             if onDrive && isDirectory && windowsSystemFolders.contains(name) { continue }
-            // 应用程序再记一个访达里显示的名字（系统语言下的名字，例如“备忘录”）
+            // 应用程序和个人文件夹里的“桌面”“下载”这些再记一个访达里显示的名字（系统语言下的名字，例如“备忘录”）
             var displayName: String?
-            if isPackage && child.pathExtension == "app" {
+            if (isPackage && child.pathExtension == "app") || (isDirectory && folder == home) {
                 let shown = FileManager.default.displayName(atPath: path)
                 if shown != name && shown != child.deletingPathExtension().lastPathComponent {
                     displayName = shown

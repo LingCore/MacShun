@@ -10,9 +10,11 @@ import ApplicationServices
 /// 运行期间不要操作键盘鼠标。不测 Win+L（会锁屏）；Win+D 只能看屏幕确认，也不测。
 @MainActor
 final class SelfTest {
-    nonisolated static var isRequested: Bool { CommandLine.arguments.contains("--self-test") || onlyWindow }
+    nonisolated static var isRequested: Bool { CommandLine.arguments.contains("--self-test") || onlyWindow || onlySearch }
     /// 只测分屏：scripts/selftest.sh window
     nonisolated static var onlyWindow: Bool { CommandLine.arguments.contains("--self-test-window") }
+    /// 只测文件搜索：scripts/selftest.sh search
+    nonisolated static var onlySearch: Bool { CommandLine.arguments.contains("--self-test-search") }
 
     private enum Mod { case ctrl, alt, win, shift }
 
@@ -20,6 +22,7 @@ final class SelfTest {
     private let clipboard: ClipboardController
     private let openSettings: () -> Void
     private let windowSnapper: WindowSnapper?
+    private let fileSearch: FileSearchController?
     private let mapper: KeyMapper
     private let source = CGEventSource(stateID: .hidSystemState)
     private let ownBundleID = Bundle.main.bundleIdentifier
@@ -34,12 +37,13 @@ final class SelfTest {
 
     /// - Parameter layout: 事件拦截对当前键盘使用的布局，模拟按键要按同样的布局发出修饰键。
     init(config: AppConfig, layout: KeyboardLayoutKind, clipboard: ClipboardController, windowSnapper: WindowSnapper? = nil,
-         openSettings: @escaping () -> Void) {
+         fileSearch: FileSearchController? = nil, openSettings: @escaping () -> Void) {
         var config = config
         config.keyboard.layout = layout
         self.config = config
         self.clipboard = clipboard
         self.windowSnapper = windowSnapper
+        self.fileSearch = fileSearch
         self.openSettings = openSettings
         mapper = KeyMapper(config: config.keyboard)
     }
@@ -59,11 +63,22 @@ final class SelfTest {
             window.orderOut(nil)
             return finish()
         }
+        if Self.onlySearch {
+            let savedClipboard = NSPasteboard.general.string(forType: .string)
+            await fileSearchTest()
+            if let savedClipboard {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(savedClipboard, forType: .string)
+            }
+            return finish()
+        }
         let savedClipboard = NSPasteboard.general.string(forType: .string)
         setUpWindow()
         if await ensureFocus() {
             await textTests()
             await clipboardPanelTest()
+            await fileSearchTest()
+            _ = await ensureFocus()
             await mouseTests()
             await pointerSpeedTest()
             await altF4Test()
@@ -190,6 +205,85 @@ final class SelfTest {
         check("⌥V 也能打开剪贴板历史", clipboard.isVisible)
         await press(KeyCode.escape, settle: 300)
         clipboard.hide()
+    }
+
+    // MARK: - F1：文件搜索
+
+    /// 连按两下 Ctrl 打开；开着时再连按、按一下 Ctrl 接着 Ctrl+V 都不会关掉；粘贴“桌面/…”这样的路径能搜到；
+    /// Ctrl+Enter 在访达中显示。测试文件放在桌面上（个人文件夹里会收录的位置），测完删掉。
+    private func fileSearchTest() async {
+        say("— 文件搜索（F1）")
+        guard let fileSearch, config.fileSearch.enabled else { return say("跳过：文件搜索已关闭") }
+        let fm = FileManager.default
+        let rootName = "Win顺自测-\(Int(Date().timeIntervalSince1970))"
+        let root = fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop").appendingPathComponent(rootName)
+        let file = root.appendingPathComponent("art/gpt/style_reference.png")
+        do {
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: file)
+        } catch {
+            return fail("文件搜索测试准备", error.localizedDescription)
+        }
+        var menus = 0
+        let menuObserver = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+                                                                  object: nil, queue: nil) { note in
+            menus += 1
+            (note.object as? NSMenu)?.cancelTrackingWithoutAnimation()
+        }
+        defer {
+            NotificationCenter.default.removeObserver(menuObserver)
+            fileSearch.hide()
+            closeFinderWindows { $0 == "gpt" }
+            try? fm.removeItem(at: root)
+        }
+
+        await tapControl()
+        await tapControl()
+        let shown = await waitUntil(timeout: 2) { fileSearch.isVisible }
+        check("连按两下 Ctrl 打开搜索框", shown)
+        guard shown else { return }
+        await pause(400)
+        await tapControl()
+        await tapControl()
+        await pause(400)
+        check("开着时再连按两下 Ctrl 不会关掉", fileSearch.isVisible)
+
+        let query = "桌面/\(rootName)/art/gpt/style_reference.png"
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(query, forType: .string)
+        // 按一下 Ctrl 马上接着 Ctrl+V：以前会被当成连按两下，把搜索框关掉
+        await tapControl()
+        await press(KeyCode.v, [.ctrl], settle: 300)
+        check("按一下 Ctrl 接着 Ctrl+V 粘贴进去", fileSearch.isVisible && fileSearch.currentQuery == query,
+              "显示：\(fileSearch.isVisible)，搜索框里：\(fileSearch.currentQuery.debugDescription)")
+        let found = await waitUntil(timeout: 8) { fileSearch.visibleResults.first?.path == file.path }
+        check("按“桌面/…”路径搜到文件", found,
+              "第一条：\(fileSearch.visibleResults.first?.path ?? "无")，共 \(fileSearch.visibleResults.count) 条")
+        guard found else { return }
+
+        let downloads = fm.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path
+        let shownName = fm.displayName(atPath: downloads)
+        let byShownName = await withCheckedContinuation { done in
+            FileIndex.shared.search(shownName) { done.resume(returning: $0) }
+        }
+        check("按访达里显示的名字（\(shownName)）搜到个人文件夹里的“下载”", byShownName.first?.path == downloads,
+              "第一条：\(byShownName.first?.path ?? "无")")
+
+        menus = 0
+        await press(KeyCode.returnKey, [.ctrl], settle: 300)
+        let revealed = await waitUntil(timeout: 4) {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == AppCatalog.finder && self.finderTitle() == "gpt"
+        }
+        check("Ctrl+Enter 在访达中显示", revealed && !fileSearch.isVisible && menus == 0,
+              "访达窗口：\(finderTitle() ?? "无")，搜索框还开着：\(fileSearch.isVisible)，弹出菜单 \(menus) 次")
+    }
+
+    /// 单独按一下 Ctrl
+    private func tapControl() async {
+        postModifier(KeyCode.control, .maskControl)
+        await pause(40)
+        postModifier(KeyCode.control, [])
+        await pause(90)
     }
 
     // MARK: - M3、M4、M5：鼠标

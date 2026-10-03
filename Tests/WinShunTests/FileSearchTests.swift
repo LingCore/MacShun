@@ -15,33 +15,40 @@ struct DoubleTapDetectorTests {
     private let down = DoubleTapDetector.Input.control(down: true, flags: .maskControl)
     private let up = DoubleTapDetector.Input.control(down: false, flags: [])
 
-    @Test func firesOnSecondPress() {
-        #expect(run([(down, 0), (up, 0.1), (down, 0.3)]) == [false, false, true])
+    @Test func firesWhenSecondPressIsReleased() {
+        #expect(run([(down, 0), (up, 0.1), (down, 0.3), (up, 0.4)]) == [false, false, false, true])
     }
 
     @Test func tooSlowBetweenTaps() {
-        #expect(run([(down, 0), (up, 0.1), (down, 0.6)]) == [false, false, false])
+        #expect(run([(down, 0), (up, 0.1), (down, 0.6), (up, 0.7)]) == [false, false, false, false])
     }
 
     @Test func heldTooLong() {
-        #expect(run([(down, 0), (up, 0.5), (down, 0.6)]) == [false, false, false])
+        #expect(run([(down, 0), (up, 0.5), (down, 0.6), (up, 0.7)]) == [false, false, false, false])
+        // 第二下按太久也不算
+        #expect(run([(down, 0), (up, 0.1), (down, 0.2), (up, 0.8)]) == [false, false, false, false])
     }
 
     @Test func ctrlShortcutInBetweenResets() {
         // Ctrl+C 之后马上再按 Ctrl，不算连按
-        #expect(run([(down, 0), (.other, 0.05), (up, 0.1), (down, 0.2)]) == [false, false, false, false])
+        #expect(run([(down, 0), (.other, 0.05), (up, 0.1), (down, 0.2), (up, 0.3)]) == [false, false, false, false, false])
+    }
+
+    @Test func tapThenCtrlShortcutDoesNotFire() {
+        // 按一下 Ctrl，接着按 Ctrl+V：第二下中间按了 V，不算（搜索框开着时要能粘贴）
+        #expect(run([(down, 0), (up, 0.1), (down, 0.2), (.other, 0.25), (up, 0.3)]) == [false, false, false, false, false])
     }
 
     @Test func otherModifierHeldDoesNotCount() {
         let shiftDown = DoubleTapDetector.Input.control(down: true, flags: [.maskControl, .maskShift])
         let shiftUp = DoubleTapDetector.Input.control(down: false, flags: .maskShift)
-        #expect(run([(shiftDown, 0), (shiftUp, 0.1), (shiftDown, 0.2)]) == [false, false, false])
+        #expect(run([(shiftDown, 0), (shiftUp, 0.1), (shiftDown, 0.2), (shiftUp, 0.3)]) == [false, false, false, false])
     }
 
     @Test func thirdPressStartsOver() {
         // 触发后接着按，要再连按两下才会再触发
-        #expect(run([(down, 0), (up, 0.1), (down, 0.2), (up, 0.3), (down, 0.4), (up, 0.5), (down, 0.6)])
-            == [false, false, true, false, false, false, true])
+        #expect(run([(down, 0), (up, 0.1), (down, 0.2), (up, 0.3), (down, 0.4), (up, 0.5), (down, 0.6), (up, 0.7)])
+            == [false, false, false, true, false, false, false, true])
     }
 }
 
@@ -184,8 +191,8 @@ struct FolderEntriesTests {
 
 @Suite("F1 按路径搜")
 struct FilePathQueryTests {
-    private func folder(_ query: String) -> String? {
-        FileMatcher.Query(query).folder.map { String(decoding: $0, as: UTF8.self) }
+    private func folders(_ query: String) -> [String] {
+        FileMatcher.Query(query).folders.map { forms in forms.sorted().joined(separator: "|") }
     }
 
     private func names(_ query: String) -> [String] {
@@ -193,46 +200,56 @@ struct FilePathQueryTests {
     }
 
     @Test func splitsFolderAndName() {
-        #expect(folder("art/gpt/style_reference.png") == "/art/gpt/")
+        #expect(folders("art/gpt/style_reference.png") == ["art", "gpt"])
         #expect(names("art/gpt/style_reference.png") == ["style_reference.png"])
         #expect(FileMatcher.Query("art/gpt/style_reference.png").absolutePath == nil)
     }
 
     @Test func plainQueryHasNoFolder() {
         let query = FileMatcher.Query("q3 report")
-        #expect(query.folder == nil && query.absolutePath == nil)
+        #expect(query.folders.isEmpty && query.absolutePath == nil)
         #expect(names("q3 report") == ["q3", "report"])
     }
 
-    @Test func windowsPathsAndTrailingSlash() {
-        #expect(folder(#"D:\资料\合同\2026.docx"#) == "/资料/合同/")
+    @Test func finderAndWindowsFolderNames() {
+        // 访达里显示的“桌面”、Windows 上的“文档”“视频”都对得上真正的文件夹
+        #expect(folders("桌面/塔防游戏/art/gpt/style_reference.png") == ["desktop|桌面", "塔防游戏", "art", "gpt"])
+        #expect(folders("文档/a.docx") == ["documents|文档"])
+        #expect(folders("视频/a.mp4") == ["movies|视频"])
+    }
+
+    @Test func windowsPathsQuotesAndSpaces() {
+        #expect(folders(#"D:\资料\合同\2026.docx"#) == ["资料", "合同"])
         #expect(names(#"D:\资料\合同\2026.docx"#) == ["2026.docx"])
+        // Windows“复制为路径”带引号
+        #expect(FileMatcher.Query(#""C:\Users\me\Desktop\a.txt""#).absolutePath == "/Users/me/Desktop/a.txt")
+        #expect(folders("桌面 / 塔防游戏 / a.png") == ["desktop|桌面", "塔防游戏"])
+        #expect(names("桌面 / 塔防游戏 / a.png") == ["a.png"])
         // 最后带 / 的是文件夹本身
-        #expect(folder("art/gpt/") == "/art/")
+        #expect(folders("art/gpt/") == ["art"])
         #expect(names("art/gpt/") == ["gpt"])
-        #expect(folder("./src/Main.swift") == "/src/")
-        // 名字里有空格：路径整个当一个，名字照样按空格分开匹配
-        #expect(folder("My Docs/Q3 report.pdf") == "/my docs/")
+        #expect(folders("./src/Main.swift") == ["src"])
+        // 名字里有空格：名字照样按空格分开匹配
+        #expect(folders("My Docs/Q3 report.pdf") == ["my docs"])
         #expect(names("My Docs/Q3 report.pdf") == ["q3", "report.pdf"])
     }
 
-    @Test func absoluteAndHomePaths() {
+    @Test func absoluteHomeAndFileURLs() {
         #expect(FileMatcher.Query("/Users/me/a.txt").absolutePath == "/Users/me/a.txt")
-        let home = FileMatcher.Query("~/Desktop/a.txt")
-        #expect(home.absolutePath == NSHomeDirectory() + "/Desktop/a.txt")
-        #expect(folder("~/Desktop/a.txt") == (NSHomeDirectory() + "/Desktop/").lowercased())
+        #expect(FileMatcher.Query("~/Desktop/a.txt").absolutePath == NSHomeDirectory() + "/Desktop/a.txt")
+        #expect(FileMatcher.Query("file:///Users/me/My%20Docs/a.txt").absolutePath == "/Users/me/My Docs/a.txt")
+        #expect(names("file:///Users/me/My%20Docs/a.txt") == ["a.txt"])
     }
 
-    @Test func folderMustContainThePathAndExactFolderRanksHigher() {
-        let query = FileMatcher.Query("art/gpt/style_reference.png")
+    @Test func folderBonusRanksCloserPathsHigher() {
+        let query = FileMatcher.Query("桌面/塔防游戏/art/gpt/style_reference.png")
         let exact = query.folderBonus("/Users/me/Desktop/塔防游戏/Art/GPT")
         let deeper = query.folderBonus("/Users/me/Desktop/塔防游戏/art/gpt/old")
-        #expect(exact != nil && deeper != nil)
-        #expect(exact! > deeper!)
-        #expect(query.folderBonus("/Users/me/Desktop/塔防游戏/art") == nil)
-        // 前后都要是完整的文件夹名
-        #expect(query.folderBonus("/Users/me/Desktop/塔防游戏/art/gpt_old") == nil)
-        #expect(query.folderBonus("/Users/me/smart/gpt") == nil)
+        let partly = query.folderBonus("/Users/me/Desktop/塔防游戏/art/gpt_old")
+        let elsewhere = query.folderBonus("/Users/me/Downloads")
+        #expect(exact == 40 && deeper == 30)
+        #expect(partly > 0 && partly < deeper)
+        #expect(elsewhere == 0)
         #expect(FileMatcher.Query("style_reference").folderBonus("/anywhere") == 0)
     }
 

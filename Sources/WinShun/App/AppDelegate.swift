@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startPermissionPolling()
             windowSnapper.applyConfig()
             let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard,
-                                windowSnapper: windowSnapper) { [weak self] in
+                                windowSnapper: windowSnapper, fileSearch: fileSearch) { [weak self] in
                 self?.settingsWindow.show()
             }
             Task { @MainActor in
@@ -169,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clipboard.toggle()
         } else if command == .fileSearch {
             clipboard.hide()
-            fileSearch.toggle()
+            fileSearch.summon()
         } else if case .window(let shortcut) = command {
             windowSnapper.handle(shortcut)
         } else {

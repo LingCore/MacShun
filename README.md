@@ -82,11 +82,11 @@
 
 #### 🔍 文件搜索（像 Everything）
 
-- **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。
+- **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。搜索框开着时再连按也不会关掉，Esc 关闭。
 - **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
 - **也能搜文件内容**：txt、Markdown、CSV、JSON，代码（ts、js、py、swift、vue、html 等）、配置（yaml、xml、toml）、字幕（srt、ass、lrc），以及 Word、Excel、PowerPoint、PDF 里的文字都能搜到（跳过 node_modules、dist、build 这类生成和依赖的文件夹）；截图、照片和扫描版 PDF 里的字也会自动识别，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。搜索框右边可以选 **全部 / 文件 / 内容**，默认只搜文件名，按 Tab 切换。常打开的文件会排在前面。
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
-- **可以直接粘贴路径**：`art/gpt/style_reference.png` 这样的相对路径、`~/Desktop/…` 和完整路径都行，Windows 的 `D:\资料\合同.docx` 也认（不管盘符）。完整路径的文件即使不在搜索范围里（例如“资源库”里）也能直接打开。
+- **可以直接粘贴路径**：`art/gpt/style_reference.png` 这样的相对路径、`桌面/塔防游戏/…` 这样用访达里显示的名字写的、`~/Desktop/…` 和完整路径都行，Windows 的 `D:\资料\合同.docx`（带不带引号都行）也认，盘符不管。文件夹写得不全或不对也没关系，名字对上的文件照样列出来，路径对上得越多排得越前。完整路径的文件即使不在搜索范围里（例如“资源库”里）也能直接打开。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
 #### 🪟 分屏（像 Windows 11）
@@ -239,11 +239,11 @@ Every option can be found with the **search box** at the top of the settings win
 
 #### 🔍 File search (like Everything)
 
-- **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files.
+- **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files. Pressing it again while open keeps it open; Esc closes it.
 - **Pinyin search** for Chinese file and app names.
 - **Searches file contents too**: text inside txt, Markdown, CSV and JSON files, code (ts, js, py, swift, vue, html…), config (yaml, xml, toml), subtitles (srt, ass, lrc), plus Word, Excel, PowerPoint and PDF (skipping generated and dependency folders like node_modules, dist and build); text in screenshots, photos and scanned PDFs is recognized too, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight. Pick **All / Files / Contents** on the right of the search bar (Files by default, Tab to switch). Files you open often rank higher.
 - Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
-- **Paste a path**: relative paths like `art/gpt/style_reference.png`, `~/Desktop/…` and full paths all work, and so do Windows paths like `D:\Docs\contract.docx` (the drive letter is ignored). A full path opens even when it is outside the indexed folders (e.g. inside Library).
+- **Paste a path**: relative paths like `art/gpt/style_reference.png`, paths written with Finder's localized folder names, `~/Desktop/…` and full paths all work, and so do Windows paths like `D:\Docs\contract.docx` (quoted or not; the drive letter is ignored). If the folders are partly wrong, files with a matching name still show up, ranked by how much of the path matches. A full path opens even when it is outside the indexed folders (e.g. inside Library).
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 
 #### 🪟 Window snapping (like Windows 11)

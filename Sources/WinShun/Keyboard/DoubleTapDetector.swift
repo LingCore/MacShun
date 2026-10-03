@@ -6,8 +6,9 @@ import Foundation
 /// 识别“连按两下 Ctrl”（F1 呼出文件搜索）。只看事件，不拦截：Ctrl 照常发给系统。
 ///
 /// 一下 = 单独按下 Ctrl（没有同时按着别的修饰键）并在 maxPress 内松开，中间没有按别的键；
-/// 第一下松开后 maxGap 内又按下 Ctrl 就算连按两下，按下的那一刻触发。
-/// 中间按了别的键或别的修饰键（例如 Ctrl+C）都会重新计。
+/// 第一下松开后 maxGap 内又按了一下就算连按两下，第二下松开的那一刻触发。
+/// 不在第二下按下时触发：按一下 Ctrl 接着按 Ctrl+V、Ctrl+C 这类快捷键时，第二下中间按了别的键，不算。
+/// 中间按了别的键或别的修饰键都会重新计。
 struct DoubleTapDetector {
     enum Input {
         /// Ctrl 按下或松开；flags 是事件带的修饰键
@@ -25,16 +26,18 @@ struct DoubleTapDetector {
         case firstDown(TimeInterval)
         /// 第一下松开的时间
         case firstUp(TimeInterval)
-        /// 已经触发，等这次松开
-        case fired
+        /// 第二下按下的时间
+        case secondDown(TimeInterval)
     }
 
     private var state: State = .idle
 
-    /// 第一下按下的时间（正按着第一下时）
-    var firstPressStart: TimeInterval? {
-        if case .firstDown(let start) = state { return start }
-        return nil
+    /// 正按着的这一下是什么时候按下的（第一下或第二下）
+    var pressStart: TimeInterval? {
+        switch state {
+        case .firstDown(let start), .secondDown(let start): start
+        default: nil
+        }
     }
 
     /// 返回 true 表示这一下完成了“连按两下”。
@@ -51,18 +54,15 @@ struct DoubleTapDetector {
                 return false
             }
             switch (state, down) {
-            case (.idle, true), (.fired, true):
-                state = .firstDown(time)
             case (.firstDown(let start), false):
                 state = time - start <= maxPress ? .firstUp(time) : .idle
             case (.firstUp(let released), true):
-                if time - released <= maxGap {
-                    state = .fired
-                    return true
-                }
-                state = .firstDown(time)
-            case (.fired, false):
+                state = time - released <= maxGap ? .secondDown(time) : .firstDown(time)
+            case (.secondDown(let start), false):
                 state = .idle
+                return time - start <= maxPress
+            case (_, true):
+                state = .firstDown(time)
             default:
                 state = .idle
             }

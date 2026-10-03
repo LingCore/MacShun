@@ -18,9 +18,10 @@ if pgrep -x WinShun >/dev/null; then
     sleep 1
 fi
 
-# scripts/selftest.sh window 只测分屏（十几秒）
+# scripts/selftest.sh window 只测分屏（十几秒），scripts/selftest.sh search 只测文件搜索
 ARG="--self-test"
 [[ "${1:-}" == "window" ]] && ARG="--self-test-window"
+[[ "${1:-}" == "search" ]] && ARG="--self-test-search"
 open -n -W --stdout "$LOG" --stderr "$LOG" "$APP" --args "$ARG" || true
 cat "$LOG"
 

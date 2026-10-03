@@ -18,8 +18,8 @@ SOURCES = ROOT / "Sources" / "WinShun"
 STRINGS = ROOT / "Resources" / "en.lproj" / "Localizable.strings"
 STRINGSDICT = ROOT / "Resources" / "en.lproj" / "Localizable.stringsdict"
 
-# 不是界面文字的文件：自测输出、拼音表、按名字识别程序
-SKIP_FILES = {"SelfTest.swift", "GuideTest.swift", "Pinyin.swift", "AppCatalog.swift"}
+# 不是界面文字的文件：自测输出、拼音表、按名字识别程序、搜索用的文件夹别名
+SKIP_FILES = {"SelfTest.swift", "GuideTest.swift", "Pinyin.swift", "AppCatalog.swift", "FolderAliases.swift"}
 # 不是界面文字的行
 SKIP_LINE = re.compile(r"Log\.|appendingPathComponent|lower\.contains|summary = |\+ \"读取剪贴板|label: \"|keywords: \"|\"简体中文\"")
 # 设置搜索目录里的标题：存的是键，显示时才翻译

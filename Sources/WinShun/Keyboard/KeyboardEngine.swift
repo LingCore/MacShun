@@ -47,7 +47,7 @@ final class KeyboardEngine {
         let down = event.flags.contains(.maskControl)
         let now = ProcessInfo.processInfo.systemUptime
         // 按着 Ctrl 点了鼠标（Mac 上的右键）：不算单按一下 Ctrl，免得连着两次 Ctrl+点击打开搜索
-        if !down, let start = doubleControl.firstPressStart {
+        if !down, let start = doubleControl.pressStart {
             let sinceClick = [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown]
                 .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
             if sinceClick < now - start {
