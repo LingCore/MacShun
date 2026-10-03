@@ -16,6 +16,7 @@ enum WindowShortcut: Equatable {
 final class WindowSnapper {
     private let configStore: ConfigStore
     private let preview = SnapPreview()
+    private let stickyEdges = StickyEdges()
     private lazy var assist = SnapAssist { [weak self] window, area in
         self?.fill(area, with: window)
     }
@@ -31,6 +32,10 @@ final class WindowSnapper {
 
     private var mouseMonitor: Any?
     private var drag: DragState?
+    /// 自测用：系统自带的拖动分屏开着也照样处理拖动
+    var ignoresNativeTiling = false
+    /// 自测用：拖动时预览的位置（AX 坐标）
+    private(set) var previewFrame: CGRect?
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
@@ -50,6 +55,7 @@ final class WindowSnapper {
             mouseMonitor = nil
             drag = nil
             preview.hide()
+            stickyEdges.deactivate()
         }
         if !config.enabled || !config.snapAssist { assist.hide() }
     }
@@ -198,8 +204,9 @@ final class WindowSnapper {
         let point = ScreenGeometry.axPoint(NSEvent.mouseLocation)
         switch event.type {
         case .leftMouseDown:
+            stickyEdges.deactivate()
             // 系统自带的拖动分屏开着时让它来，两个一起会打架
-            guard !NativeTiling.dragTilingEnabled else {
+            guard ignoresNativeTiling || !NativeTiling.dragTilingEnabled else {
                 drag = nil
                 return
             }
@@ -233,15 +240,19 @@ final class WindowSnapper {
                     return
                 }
                 state.moving = true
+                // 确定是在拖窗口了，才在两块屏幕相接的边上挡一下鼠标
+                stickyEdges.activate(screens: ScreenGeometry.screens().map(\.frame))
                 unsnapIfNeeded(window, frame: frame, cursor: point, state: &state)
             }
             updateTarget(cursor: point, state: &state)
             drag = state
 
         case .leftMouseUp:
+            stickyEdges.deactivate()
             guard let state = drag else { return }
             drag = nil
             preview.hide()
+            previewFrame = nil
             guard state.moving, let target = state.target, let window = state.window else { return }
             let restoreFrame = state.restoreFrame ?? state.startFrame ?? .zero
             // 等系统处理完这次拖动的最后一下再放
@@ -272,14 +283,10 @@ final class WindowSnapper {
 
     private func updateTarget(cursor: CGPoint, state: inout DragState) {
         let screens = ScreenGeometry.screens()
-        var target: (position: WindowLayout.Position, screen: ScreenGeometry.Screen)?
-        if let screen = screens.first(where: { $0.frame.insetBy(dx: -1, dy: -1).contains(cursor) }),
-           let position = WindowLayout.dragTarget(cursor: cursor, screen: screen.frame,
-                                                  freeEdges: ScreenGeometry.freeEdges(of: screen, among: screens)) {
-            target = (position, screen)
-        }
+        let target = WindowLayout.dragTarget(cursor: cursor, screens: screens.map(\.frame)).map { (position: $0.position, screen: screens[$0.screen]) }
         let changed = target?.position != state.target?.position || target?.screen.frame != state.target?.screen.frame
         state.target = target
+        previewFrame = target.map { $0.position.frame(in: $0.screen.area) }
         guard changed else { return }
         if let target {
             preview.show(ScreenGeometry.appKitRect(target.position.frame(in: target.screen.area)))

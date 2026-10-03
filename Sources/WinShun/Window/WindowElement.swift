@@ -246,16 +246,4 @@ enum ScreenGeometry {
         }
         return best?.index ?? screens.indices.first { screens[$0].frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
     }
-
-    /// 这块屏幕哪些边没有挨着别的屏幕（拖到这些边才分屏）
-    static func freeEdges(of screen: Screen, among screens: [Screen]) -> WindowLayout.Edges {
-        var edges = WindowLayout.Edges.all
-        let f = screen.frame
-        func covered(_ point: CGPoint) -> Bool { screens.contains { $0.frame != f && $0.frame.contains(point) } }
-        if covered(CGPoint(x: f.minX - 2, y: f.midY)) { edges.remove(.left) }
-        if covered(CGPoint(x: f.maxX + 2, y: f.midY)) { edges.remove(.right) }
-        if covered(CGPoint(x: f.midX, y: f.minY - 2)) { edges.remove(.top) }
-        if covered(CGPoint(x: f.midX, y: f.maxY + 2)) { edges.remove(.bottom) }
-        return edges
-    }
 }

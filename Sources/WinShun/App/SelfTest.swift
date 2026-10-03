@@ -488,9 +488,118 @@ final class SelfTest {
         let stretched = finder.frame
         check("Win+Shift+↑ 拉到和屏幕一样高",
               stretched.map { abs($0.minY - area.minY) <= 3 && abs($0.height - area.height) <= 3 } ?? false, describe(stretched))
-        say(NativeTiling.dragTilingEnabled
-            ? "拖到屏幕边缘分屏：系统自带的拖动分屏开着，现在用的是系统的（设置里可以一键关掉）"
-            : "拖到屏幕边缘分屏：需要用鼠标试")
+        await dragTests(finder, screens: screens)
+        if NativeTiling.dragTilingEnabled {
+            say("系统自带的拖动分屏开着，平时拖窗口用的是系统的（设置里可以一键关掉）；上面的拖动测试临时用了 Win顺 的")
+        }
+    }
+
+    /// W2：用模拟的鼠标拖 Finder 窗口经过两块屏幕相接的边。
+    /// 每一下都从光标现在的位置往前移一点，和真鼠标一样，这样光标被挡住时下一下也从挡住的地方算。
+    private func dragTests(_ finder: WindowElement, screens: [ScreenGeometry.Screen]) async {
+        guard let snapper = windowSnapper, config.window.dragToSnap else { return say("拖动分屏没打开，跳过拖动测试") }
+        // 找左右相邻、有一段挨着的两块屏幕
+        var pair: (left: ScreenGeometry.Screen, right: ScreenGeometry.Screen, shared: ClosedRange<CGFloat>)?
+        for a in screens {
+            for b in screens where abs(a.frame.maxX - b.frame.minX) < 1 {
+                let top = max(a.frame.minY, b.frame.minY), bottom = min(a.frame.maxY, b.frame.maxY)
+                if bottom - top > 300 { pair = (a, b, top ... bottom) }
+            }
+        }
+        guard let (left, right, shared) = pair else { return say("没有左右相邻的两块屏幕，跳过拖动测试") }
+        snapper.ignoresNativeTiling = true
+        defer {
+            snapper.ignoresNativeTiling = false
+            postMouse(.leftMouseUp, at: cursorLocation)
+        }
+        func near(_ a: CGRect?, _ b: CGRect) -> Bool {
+            guard let a else { return false }
+            return abs(a.minX - b.minX) <= 3 && abs(a.minY - b.minY) <= 3 && abs(a.width - b.width) <= 3 && abs(a.height - b.height) <= 3
+        }
+        func describe(_ rect: CGRect?) -> String {
+            rect.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))×\(Int($0.height))" } ?? "?"
+        }
+        /// 抓住标题栏（窗口顶上中间、工具栏按钮上面一点）
+        func grab() async -> Bool {
+            guard let frame = finder.frame else { return false }
+            let point = CGPoint(x: frame.midX, y: frame.minY + 6)
+            CGWarpMouseCursorPosition(point)
+            await pause(150)
+            postMouse(.leftMouseDown, at: point)
+            await pause(150)
+            return true
+        }
+        func release() async {
+            postMouse(.leftMouseUp, at: cursorLocation)
+            await pause(600)
+            if snapper.isAssistVisible { await press(KeyCode.escape, settle: 300) }
+        }
+        let y = (shared.lowerBound + shared.upperBound) / 2
+        let edgeX = left.frame.maxX - 1
+        let pushes = 6   // 每下 8 点，一共 48 点，没到挡不住的距离
+
+        // 1. 拖到交界处停住，松开分到左边屏幕的右半边
+        let start = WindowLayout.clamped(CGRect(x: edgeX - 900, y: y - 10, width: 700, height: 450), to: left.area)
+        finder.setFrame(start)
+        await pause(300)
+        let before = finder.frame
+        guard await grab() else { return fail("拖动分屏", "读不到 Finder 窗口的位置") }
+        await drag(toward: CGPoint(x: edgeX - 60, y: y), step: 8)
+        guard let moved = finder.frame, let before, moved.minX > before.minX + 20 else {
+            await release()
+            return fail("拖动分屏", "模拟的拖动没有拖动窗口：\(describe(before)) → \(describe(finder.frame))")
+        }
+        await drag(toward: CGPoint(x: edgeX + 400, y: y), step: 8, maxSteps: 60 / 8 + pushes)
+        let held = cursorLocation
+        check("拖到两块屏幕交界处，光标停在边上", abs(held.x - edgeX) <= 1, "光标在 \(Int(held.x)),\(Int(held.y))，边在 x=\(Int(edgeX))")
+        let leftRight = WindowLayout.Position.rightHalf.frame(in: left.area)
+        check("停住时预览左边屏幕的右半边", near(snapper.previewFrame, leftRight), "预览 \(describe(snapper.previewFrame))")
+        await release()
+        check("松开分到左边屏幕的右半边", near(finder.frame, leftRight), describe(finder.frame))
+
+        // 2. 再拖：先恢复原来的大小，往外多推一段就过去，松开时不分屏
+        guard await grab() else { return }
+        await drag(toward: CGPoint(x: edgeX - 100, y: y), step: 10)
+        await drag(toward: CGPoint(x: right.frame.minX + 250, y: y), step: 12)
+        let crossed = cursorLocation
+        check("继续往外推，光标过到另一块屏幕", right.frame.contains(crossed), "光标在 \(Int(crossed.x)),\(Int(crossed.y))")
+        check("推过去以后不预览", snapper.previewFrame == nil, "预览 \(describe(snapper.previewFrame))")
+        await release()
+        let inRight = finder.frame.map { right.frame.intersects($0) && WindowLayout.position(of: $0, in: right.area) == nil } ?? false
+        check("松开时窗口在另一块屏幕上、没有分屏", inRight, describe(finder.frame))
+
+        // 3. 往回拖到交界处，停在右边屏幕的左边上，松开分到右边屏幕的左半边
+        guard await grab() else { return }
+        await drag(toward: CGPoint(x: right.frame.minX + 60, y: y), step: 8)
+        await drag(toward: CGPoint(x: right.frame.minX - 400, y: y), step: 8, maxSteps: 60 / 8 + pushes)
+        let heldBack = cursorLocation
+        check("往回拖，光标停在另一边的边上", abs(heldBack.x - right.frame.minX) <= 1, "光标在 \(Int(heldBack.x)),\(Int(heldBack.y))")
+        let rightLeft = WindowLayout.Position.leftHalf.frame(in: right.area)
+        check("停住时预览右边屏幕的左半边", near(snapper.previewFrame, rightLeft), "预览 \(describe(snapper.previewFrame))")
+        await release()
+        check("松开分到右边屏幕的左半边", near(finder.frame, rightLeft), describe(finder.frame))
+    }
+
+    private var cursorLocation: CGPoint { CGEvent(source: nil)?.location ?? .zero }
+
+    private func postMouse(_ type: CGEventType, at point: CGPoint, delta: CGVector = .zero) {
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else { return }
+        event.setIntegerValueField(.mouseEventDeltaX, value: Int64(delta.dx.rounded()))
+        event.setIntegerValueField(.mouseEventDeltaY, value: Int64(delta.dy.rounded()))
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// 按着左键往 target 拖，每下最多移动 step 点
+    private func drag(toward target: CGPoint, step: CGFloat, maxSteps: Int = 400) async {
+        for _ in 0 ..< maxSteps {
+            let cursor = cursorLocation
+            let distance = hypot(target.x - cursor.x, target.y - cursor.y)
+            if distance < 0.5 { return }
+            let scale = min(1, step / distance)
+            let delta = CGVector(dx: (target.x - cursor.x) * scale, dy: (target.y - cursor.y) * scale)
+            postMouse(.leftMouseDragged, at: CGPoint(x: cursor.x + delta.dx, y: cursor.y + delta.dy), delta: delta)
+            await pause(10)
+        }
     }
 
     private func revealInFinder(_ url: URL) async -> Bool {
