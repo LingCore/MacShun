@@ -192,9 +192,7 @@
 "和系统设置里改分辨率一样" = "Same as changing resolution in System Settings";
 "只列出文字清晰的档位。改动会一直保留，退出 Win顺 也不会恢复。" = "Only sharp options are listed. Changes stay in effect, even after you quit WinShun.";
 
-/* Caps Lock、文件搜索 */
-"Caps Lock 只管大写" = "Caps Lock only types capitals";
-"按一下就是大写锁定，不切换中英文输入法" = "One press locks capitals, without switching input sources";
+/* 文件搜索 */
 "文件搜索" = "File Search";
 "重新建立索引" = "Rebuild Index";
 "连按两下 Ctrl 搜索电脑里的文件，像 Everything 一样快，支持拼音首字母" = "Press Ctrl twice to search files on your Mac, as fast as Everything, with pinyin support";

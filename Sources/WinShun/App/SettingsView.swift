@@ -339,7 +339,6 @@ private struct KeyboardSettings: View {
                 rule(L("系统快捷键"), L("Alt+Tab、Alt+F4、Win+E/D/L/S、Win+Space 切换输入法"), $config.systemShortcuts).settingsAnchor(.systemShortcuts)
                 rule("Finder", L("Ctrl+X 剪切移动文件，F2 重命名，Enter 打开，Delete 删除"), $config.finderShortcuts).settingsAnchor(.finderShortcuts)
                 rule(L("微信、QQ 截图"), L("Alt+A、Ctrl+Alt+A 截图"), $config.chatScreenshot).settingsAnchor(.chatScreenshot)
-                rule(L("Caps Lock 只管大写"), L("按一下就是大写锁定，不切换中英文输入法"), $config.capsLockTypesOnly).settingsAnchor(.capsLock)
             }
             .disabled(!config.enabled)
 

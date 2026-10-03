@@ -48,7 +48,6 @@
 - **访达（Finder）**：Ctrl+X 再 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级。
 - **聊天软件截图**：微信、QQ 里的 Alt+A、Ctrl+Alt+A 截图照常能用。
 - **不该改的地方不改**：终端里保留原来的 Ctrl 键，远程桌面和虚拟机里不改写任何按键（包括 ToDesk、向日葵、UU 远程）。
-- **Caps Lock 只管大写**：按一下就是大写锁定，不会像 Mac 默认那样切换中英文输入法。退出 Win顺 后恢复系统原来的设置。
 - **两种键盘都能用**：Windows 键盘和 Mac 键盘上 Ctrl、Option、⌘ 的位置不同，Win顺 自动识别，不用设置。
 
 #### 🖱️ 鼠标像 Windows
@@ -134,9 +133,6 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 **Mac 上有没有像 Everything 那样快速搜索文件的工具？**
 装上 Win顺，连按两下 Ctrl 就能搜，支持拼音首字母，不用记完整文件名。
 
-**Mac 按 Caps Lock 总是切换输入法，怎么改成只管大写？**
-在 Win顺 的“键盘”页打开“Caps Lock 只管大写”（默认就是打开的）。
-
 **Mac 接了两块屏幕，怎么让它们的缩放不一样？**
 macOS 本来就支持每块屏幕单独设置。Win顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
@@ -192,7 +188,6 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **System shortcuts**: Alt+Tab switches apps, Alt+F4 closes the window, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
 - **Finder**: Ctrl+X then Ctrl+V cuts and moves files, F2 renames, Enter opens, Delete moves to Trash, Backspace goes up a folder.
 - **Leaves things alone where it should**: Terminal keeps its Ctrl keys; remote desktop and virtual machine apps are never remapped.
-- **Caps Lock just types capitals**: one press locks capitals instead of switching input sources as macOS does by default. The system setting is restored when you quit WinShun.
 - **Works with both keyboard types**: Windows and Mac keyboards put Ctrl, Option and ⌘ in different places — WinShun detects which one you are typing on.
 
 #### 🖱️ Windows mouse behavior on Mac
@@ -277,9 +272,6 @@ Those are great tools, but each does one thing and needs setup. WinShun does key
 
 **Is there an Everything-like file search for Mac?**
 WinShun includes one: press Ctrl twice and start typing.
-
-**How do I stop Caps Lock from switching input sources?**
-Turn on "Caps Lock only types capitals" on WinShun's Keyboard page (on by default).
 
 **How do I use different scaling on two monitors?**
 macOS supports per-display scaling; WinShun's Displays page shows it as Windows-style percentages, one menu per screen.
