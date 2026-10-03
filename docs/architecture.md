@@ -9,7 +9,7 @@
 | `App/` | 程序入口、菜单栏图标、设置界面、开机自启、权限引导 | SwiftUI、AppKit、`SMAppService` | 无 |
 | `Keyboard/` | Windows 键位规则（K1–K9）、Win+E/D/L/S 等系统操作 | `CGEventTap`、辅助功能接口（查询焦点） | 辅助功能 |
 | `Mouse/` | 指针加速、滚轮方向和步长、侧键、Ctrl+滚轮、光标大小（M1–M6） | `CGEventTap`、IOKit HID、`CGSSetCursorScale` | 辅助功能、输入监控 |
-| `FileSearch/` | 文件名索引、连按两下 Ctrl 弹出的搜索框（F1） | FSEvents、`FileManager`、`NSPanel` | 首次扫描时系统询问“桌面”“文稿”“下载”的访问权限 |
+| `FileSearch/` | 文件名索引、连按两下 Ctrl 弹出的搜索框（F1），文件内容索引（F2） | FSEvents、`FileManager`、`NSPanel`、SQLite FTS5、PDFKit、libcompression | 首次扫描时系统询问“桌面”“文稿”“下载”的访问权限 |
 | `Display/` | 每块显示器按百分比选缩放（D1）、选刷新率（D2） | `CGDisplayCopyAllDisplayModes`、`CGConfigureDisplayWithDisplayMode` | 无 |
 | `Clipboard/` | 记录剪贴板、保存历史、弹出面板、模拟粘贴（C1–C5） | `NSPasteboard`（轮询 `changeCount`）、`NSPanel`、`CGEvent` | 读取剪贴板（“粘贴”设为始终允许）、辅助功能（模拟粘贴、找光标位置） |
 | `Shared/` | 事件拦截线程、配置、权限、拼音、前台应用与输入法、应用名单、日志 | `CFStringTransform`、Text Input Sources | 无 |
@@ -29,7 +29,10 @@
 | `Keyboard/CapsLockSwitch.swift` | 还原早先 Caps Lock 试验留下的系统设置 |
 | `Keyboard/DoubleTapDetector.swift` | 识别连按两下 Ctrl。纯函数 |
 | `FileSearch/FileIndex.swift` | 文件名索引：扫描、FSEvents 增量更新、打分排序（打分是纯函数） |
-| `FileSearch/FileSearchPanel.swift` | 胶囊搜索框 |
+| `FileSearch/FileSearchPanel.swift` | 胶囊搜索框，合并文件名和内容两路结果 |
+| `FileSearch/ContentIndex.swift` | 文件内容索引：SQLite FTS5，增量更新，查询和摘要（分词、查询、摘要是纯函数） |
+| `FileSearch/ContentExtractor.swift` | 从 txt/csv/json、Office、PDF 里读出文字 |
+| `FileSearch/ZipReader.swift` | 读 docx/xlsx/pptx 外面那层 zip |
 | `Display/DisplayScaling.swift` | 算出每块显示器清晰的缩放档位和能用的刷新率（纯函数），切换显示模式 |
 | `Clipboard/ClipboardStore.swift` | 历史记录的保存、去重、固定、搜索 |
 | `Clipboard/ClipboardPanel.swift` | Win+V 弹出的面板 |
@@ -59,6 +62,13 @@
 - **刷新率**：列出和当前模式大小（点和像素）都一样的模式的刷新率，按两位小数区分（59.94 和 60 分开）；切缩放时优先保持当前刷新率。同一个大小和刷新率有时有两个模式（2K 144Hz 屏上看到过，公开属性完全一样，猜是时序不同），优先系统标为默认（`ioFlags & 0x4`）的，都不是就用列表里靠后的，和系统自己选的一致。
 - **Caps Lock（试过后去掉）**：系统设置“使用大写锁定键切换‘ABC’输入法”背后是 Carbon 里没有公开的 `TISSetRomanSwitchState(Boolean)`（直接写 `TISRomanSwitchState` 偏好不生效）。关掉它之后，苹果拼音收到 Caps Lock 会进自己的英文模式，打出来仍是小写；再临时切到 ABC 又会被系统自动关掉 Caps Lock。做不到 Windows 那样一按就大写，所以去掉了，`Keyboard/CapsLockSwitch.swift` 只负责还原用过那几个版本留下的系统设置。
 - **文件搜索**：Mac 的 APFS 没有 NTFS 那样的文件总表（Everything 快的原因），所以自己扫一遍建索引，之后靠 FSEvents 增量更新。第一轮扫个人文件夹（不含“资源库”）和应用程序（含 Cryptexes 里的 Safari），实测 2.3 万个文件 0.4 秒；第二轮在后台扫外接硬盘，跳过 Windows 系统文件夹（实测 NTFS 只读盘 41 万个文件约 90 秒），扫的时候不耽误搜索。每次搜索遍历全部文件名，按字节查找，43 万个文件约 70 毫秒。应用程序另外收录访达里的本地化名字（“备忘录”），所以能按中文名和拼音搜到。第一次呼出时才开始建索引，让系统询问“桌面”等文件夹权限发生在用户主动打开的时候。
+- **文件内容搜索**：不用聚焦（Spotlight）。聚焦查短词慢、拿不到匹配处的文字、外接 NTFS 盘通常不建索引、用户排除的文件夹搜不到。改为自己建 SQLite FTS5 索引（系统自带的 libsqlite3，macOS 27 上是 3.54），放在 `~/Library/Application Support/WinShun/ContentIndex/`。
+  - 要读哪些文件由文件名索引告诉它（扫描完、FSEvents 有变化时交过来文件列表和范围），按修改时间和大小判断要不要重读。程序依赖包（node_modules、site-packages 等）不读。
+  - 中文分词：存进去之前每个汉字前后加空格，用 `unicode61` 分成单字；查询时一个词变成短语（“合 同”），所以一两个字也能搜，不需要词典。英文按前缀匹配。至少两个汉字或三个字母才搜内容。
+  - 全文索引是 contentless 的（不存原文）；原文用 zlib 压缩后另存一份，用来截取结果里显示的那一行。contentless 表删除时要交回原来的文字，所以从存的原文重新算一遍（不依赖 3.43 才有的 `contentless_delete`）。
+  - 读文字：txt/csv/json 依次试 UTF-8、UTF-16（BOM）、GB18030，JSON 里的 `\uXXXX` 换回汉字；docx/xlsx/pptx 用 libcompression 自己解 zip，再用 XMLParser 取文字（不用 textutil，启动进程每个文件要 90 毫秒）；xlsx 只读文字格子；pdf 用 PDFKit，最多 100 页。每个文件最多收录 512 KB 文字。iCloud 里还没下载的文件（`SF_DATALESS`）不读，免得触发下载。
+  - 实测：个人文件夹 2776 个文件 4.5 秒读完，索引 27.5 MB，搜索 1–13 毫秒。
+  - 搜索框只在打开时切到英文输入法，不再限制只能英文，要搜中文内容时可以切回中文输入法。
 - **窗口到前台**：macOS 14 起是协作式激活，用户正在用别的程序时，菜单栏程序自己请求激活会被拒绝，设置窗口会被挡在后面（自测复现过）。`App/Foreground.swift` 先正常请求激活并把窗口摆到最上面，没激活成功再用辅助功能接口把本程序设为前台。
 - **读取剪贴板**：从 macOS 15.4 起，程序在后台读剪贴板会触发系统询问。剪贴板历史要求用户在“系统设置 → 隐私与安全性 → 粘贴”里把 Win顺 设为“始终允许”；没设好之前不自动读取，避免每次复制都弹窗。
 - **拼音搜索**：用系统自带的 `CFStringTransform` 逐字转拼音。系统按字取最常见读音，`地`、`长` 的默认读音不对，`银行`、`重新`、`音乐`、`调整` 等多音字词也会转错，所以在 `Pinyin.swift` 里维护了纠正表。搜索框获得焦点时只允许英文输入，直接打 “jtb” 就能搜索。

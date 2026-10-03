@@ -447,13 +447,15 @@ struct VisualEffectBackground: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
-/// 搜索框。获得焦点时只允许英文输入，这样直接打 “jtb” 就能搜索，不会先进入中文输入法的候选状态。
+/// 搜索框。默认获得焦点时只允许英文输入，这样直接打 “jtb” 就能搜索，不会先进入中文输入法的候选状态。
 /// 方向键、Enter、Esc 交给面板处理；输入法正在组字时这些键仍归输入法。
 struct SearchField: NSViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let focusToken: Int
     var fontSize: CGFloat = 16
+    /// false 时也能切到中文输入法（文件搜索要能打中文搜内容）
+    var romanOnly = true
     let onMove: (Int) -> Void
     let onSubmit: () -> Void
     let onCancel: () -> Void
@@ -466,6 +468,7 @@ struct SearchField: NSViewRepresentable {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: fontSize)
+        field.romanOnly = romanOnly
         field.placeholderString = placeholder
         field.delegate = context.coordinator
         field.cell?.isScrollable = true
@@ -476,6 +479,7 @@ struct SearchField: NSViewRepresentable {
     func updateNSView(_ field: RomanOnlyTextField, context: Context) {
         context.coordinator.parent = self
         if field.stringValue != text { field.stringValue = text }
+        if field.placeholderString != placeholder { field.placeholderString = placeholder }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
@@ -506,9 +510,11 @@ struct SearchField: NSViewRepresentable {
 }
 
 final class RomanOnlyTextField: NSTextField {
+    var romanOnly = true
+
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok, let editor = currentEditor() as? NSTextView {
+        if ok, romanOnly, let editor = currentEditor() as? NSTextView {
             editor.inputContext?.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
         }
         return ok

@@ -55,6 +55,8 @@ struct FileSearchResult: Identifiable, Equatable {
     let name: String
     let isDirectory: Bool
     let score: Double
+    /// 按内容搜到的：匹配处附近的一段文字
+    var snippet: String? = nil
 
     var id: String { path }
 }
@@ -162,6 +164,11 @@ final class FileIndex: ObservableObject {
     /// 是否包括外接硬盘。改了之后要重新建立索引才生效。只在主线程上改。
     var includeExternalDrives = true
 
+    /// 文件内容索引（F2）。扫描完、文件有变化时，把要读内容的文件交给它。只在 queue 上读写，用 setContentIndex 设置
+    private var contentIndex: ContentIndex?
+    /// 这次要扫描的位置（包括还没扫到的外接硬盘），只在 queue 上读写
+    private var plannedRoots: [String] = []
+
     private let queue = DispatchQueue(label: "WinShun.FileIndex", qos: .utility)
     private let scanQueue = DispatchQueue(label: "WinShun.FileIndex.scan", qos: .utility)
     private let driveQueue = DispatchQueue(label: "WinShun.FileIndex.drives", qos: .background)
@@ -254,7 +261,14 @@ final class FileIndex: ObservableObject {
         let drives = includeExternalDrives ? Self.driveRoots() : []
         isIndexing = true
         isScanningDrives = !drives.isEmpty
-        queue.async { self.activeGeneration = gen }
+        let keepDrives = includeExternalDrives
+        queue.async {
+            self.activeGeneration = gen
+            self.plannedRoots = mainRoots + drives
+            self.contentIndex?.setSearchRoots(mainRoots + drives)
+            // 关掉了“包括外接硬盘”时，内容索引里外接硬盘上的文件也去掉；只是拔掉了的留着，插回来不用重新读
+            self.contentIndex?.prune(keeping: mainRoots + (keepDrives ? ["/Volumes"] : []))
+        }
         restartWatching(mainRoots + drives)
 
         scanQueue.async {
@@ -267,6 +281,7 @@ final class FileIndex: ObservableObject {
                 guard gen == self.activeGeneration else { return }
                 self.folders = result
                 self.scannedRoots = mainRoots
+                self.sendContent(result, scopes: mainRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
                 self.publishCount { count in
                     self.isIndexing = false
                     self.lastIndexed = Date()
@@ -292,10 +307,44 @@ final class FileIndex: ObservableObject {
                 guard gen == self.activeGeneration else { return }
                 self.folders.merge(result) { _, new in new }
                 self.scannedRoots.append(drive)
+                self.sendContent(result, scopes: [ContentIndex.Scope(folder: drive, recursive: true)])
                 self.publishCount { _ in
                     if last { self.isScanningDrives = false }
                 }
             }
+        }
+    }
+
+    /// 接上或断开内容索引。接上时把已经扫到的文件都交给它。哪个线程都可以调用。
+    func setContentIndex(_ index: ContentIndex?) {
+        queue.async {
+            guard self.contentIndex !== index else { return }
+            self.contentIndex = index
+            guard let index else { return }
+            index.setSearchRoots(self.plannedRoots)
+            if !self.scannedRoots.isEmpty {
+                self.sendContent(self.folders, scopes: self.scannedRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
+            }
+        }
+    }
+
+    /// 内容索引不读的文件夹：程序的依赖包，成千上万个 json、txt，都不是用户自己的文件
+    private static let skippedForContent: Set<String> = [
+        "node_modules", "site-packages", "dist-packages", "__pycache__", "bower_components", "Pods", "DerivedData",
+    ]
+
+    /// 把这些文件夹里要读内容的文件交给内容索引（在 queue 上）。
+    private func sendContent(_ folders: [String: [FileEntry]], scopes: [ContentIndex.Scope]) {
+        guard let contentIndex else { return }
+        var files: [String] = []
+        for (folder, entries) in folders { Self.collectContentFiles(folder, entries, into: &files) }
+        contentIndex.sync(files: files, scopes: scopes)
+    }
+
+    private static func collectContentFiles(_ folder: String, _ entries: [FileEntry], into files: inout [String]) {
+        guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) }) else { return }
+        for entry in entries where !entry.isDirectory && ContentExtractor.kind(ofFileNamed: entry.name) != nil {
+            files.append(folder == "/" ? "/" + entry.name : folder + "/" + entry.name)
         }
     }
 
@@ -427,6 +476,9 @@ final class FileIndex: ObservableObject {
     /// FSEvents 告诉我们哪些文件夹里有变化（在 queue 上）。重新列出这些文件夹，新出现的子文件夹整个扫描，消失的整个删掉。
     private func apply(_ changes: [(path: String, mustScanSubfolders: Bool)]) {
         var touched = false
+        // 交给内容索引的：这些范围里现在有的文件
+        var contentFiles: [String] = []
+        var contentScopes: [ContentIndex.Scope] = []
         for (rawPath, recursive) in changes {
             let folder = rawPath.count > 1 && rawPath.hasSuffix("/") ? String(rawPath.dropLast()) : rawPath
             guard isIndexed(folder) else { continue }
@@ -435,22 +487,35 @@ final class FileIndex: ObservableObject {
             if recursive { removeSubtree(folder) }
             guard let (entries, subfolders) = Self.list(folder) else {
                 removeSubtree(folder)   // 文件夹被删了
+                contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
                 continue
             }
             folders[folder] = entries
+            Self.collectContentFiles(folder, entries, into: &contentFiles)
+            contentScopes.append(ContentIndex.Scope(folder: folder, recursive: recursive))
             var denied: [String] = []
             for sub in subfolders where folders[sub] == nil {
-                Self.scanTree(sub, into: &folders, denied: &denied)
+                var scanned: [String: [FileEntry]] = [:]
+                Self.scanTree(sub, into: &scanned, denied: &denied)
+                folders.merge(scanned) { _, new in new }
+                for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }
+                if !recursive { contentScopes.append(ContentIndex.Scope(folder: sub, recursive: true)) }
             }
             // 消失的子文件夹（被删除、改名或移走）
             let current = Set(subfolders)
             let prefix = folder + "/"
+            var gone: Set<String> = []
             for key in folders.keys where key.hasPrefix(prefix) {
                 let child = folder + "/" + key.dropFirst(prefix.count).split(separator: "/", maxSplits: 1)[0]
-                if !current.contains(child) { folders[key] = nil }
+                if !current.contains(child) {
+                    folders[key] = nil
+                    gone.insert(child)
+                }
             }
+            if !recursive { contentScopes += gone.map { ContentIndex.Scope(folder: $0, recursive: true) } }
         }
         if touched { publishCount() }
+        if !contentScopes.isEmpty { contentIndex?.sync(files: contentFiles, scopes: contentScopes) }
     }
 
     /// 这个文件夹在索引范围里吗：在已经扫过的位置下面，不在排除的文件夹里，路径上也没有隐藏文件夹、Windows 系统文件夹。

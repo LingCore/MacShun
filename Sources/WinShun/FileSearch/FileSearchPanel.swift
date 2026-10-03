@@ -5,14 +5,15 @@ import Carbon
 import Combine
 import SwiftUI
 
-/// 文件搜索（F1）：连按两下 Ctrl 弹出胶囊形的搜索框，边打字边出结果。只在主线程上使用。
+/// 文件搜索（F1、F2）：连按两下 Ctrl 弹出胶囊形的搜索框，边打字边出结果，按文件名和文件内容搜。只在主线程上使用。
 final class FileSearchController {
     private let configStore: ConfigStore
     private let index = FileIndex.shared
+    private let contentIndex = ContentIndex.shared
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
     private var subscriptions: Set<AnyCancellable> = []
-    /// 打开前的输入法。搜索框只允许英文输入，关闭时切回来。
+    /// 打开前的输入法。打开时切到英文（直接打拼音首字母），关闭时切回来。
     private var savedInputSource: TISInputSource?
 
     init(configStore: ConfigStore) {
@@ -32,6 +33,16 @@ final class FileSearchController {
             index.stop()
             hide()
         }
+        // 内容索引里有文件的原文，不用了就删掉
+        let searchesContent = cfg.enabled && cfg.activated && cfg.searchContents
+        if searchesContent {
+            contentIndex.start()
+            index.setContentIndex(contentIndex)
+        } else {
+            index.setContentIndex(nil)
+            contentIndex.stop(deleteData: true)
+        }
+        model.searchesContent = searchesContent
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -51,6 +62,11 @@ final class FileSearchController {
         resize()
         position()
         savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
+        // 先切到英文，直接打拼音首字母就能搜；要搜中文内容时可以再切回中文输入法
+        if let english = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue(),
+           savedInputSource.map({ !CFEqual($0, english) }) ?? true {
+            TISSelectInputSource(english)
+        }
         FrontAppTracker.shared.fileSearchPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
     }
@@ -83,7 +99,7 @@ final class FileSearchController {
     // MARK: - 面板
 
     private func makeModel() -> FileSearchModel {
-        let model = FileSearchModel(index: index)
+        let model = FileSearchModel(index: index, contentIndex: contentIndex)
         model.onOpen = { [weak self] result, reveal in self?.open(result, reveal: reveal) }
         model.onClose = { [weak self] in self?.hide() }
         // 结果多少变了，面板跟着变高变矮
@@ -96,7 +112,7 @@ final class FileSearchController {
 
     private func makePanel() -> FileSearchPanel {
         let panel = FileSearchPanel()
-        let host = NSHostingView(rootView: FileSearchView(model: model, index: index))
+        let host = NSHostingView(rootView: FileSearchView(model: model, index: index, contentIndex: contentIndex))
         host.frame = NSRect(origin: .zero, size: panel.frame.size)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
@@ -106,7 +122,8 @@ final class FileSearchController {
 
     /// 面板高度：胶囊加上下面的结果列表。保持顶边不动。
     private func resize() {
-        let height = FileSearchView.height(resultCount: model.results.count, showsStatus: model.showsStatus)
+        let height = FileSearchView.height(resultCount: model.results.count, hasContentSection: model.contentStart != nil,
+                                           showsStatus: model.showsStatus)
         var frame = panel.frame
         guard abs(frame.height - height) > 0.5 else { return }
         frame.origin.y += frame.height - height
@@ -163,32 +180,55 @@ final class FileSearchModel: ObservableObject {
     @Published var query = "" {
         didSet { scheduleSearch() }
     }
+    /// 文件名结果在前，内容结果在后
     @Published private(set) var results: [FileSearchResult] = []
     @Published var selection = 0
     @Published private(set) var focusToken = 0
+    /// 也按内容搜（F2）
+    @Published var searchesContent = false
 
     let index: FileIndex
+    let contentIndex: ContentIndex
     var onOpen: (FileSearchResult, Bool) -> Void = { _, _ in }
     var onClose: () -> Void = {}
 
     private var generation = 0
+    private var nameResults: [FileSearchResult] = []
+    private var contentResults: [FileSearchResult] = []
+    private var pendingContentSearch: DispatchWorkItem?
     private var icons: [String: NSImage] = [:]
-    private var indexSubscription: AnyCancellable?
+    private var subscriptions: Set<AnyCancellable> = []
 
-    init(index: FileIndex) {
+    /// 有内容结果时，文件名结果最多显示几条，免得内容结果被挤到很下面
+    static let maxNameResultsWithContent = 6
+
+    init(index: FileIndex, contentIndex: ContentIndex) {
         self.index = index
+        self.contentIndex = contentIndex
         // 索引建好、文件有变化时，按现在的关键词重新搜一次
-        indexSubscription = index.$fileCount
+        index.$fileCount
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.scheduleSearch() }
+            .store(in: &subscriptions)
+        // 内容索引读完一批文件后也重新搜一次（每次最多半秒发布一次）
+        contentIndex.$documentCount
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.scheduleContentSearch() }
+            .store(in: &subscriptions)
     }
+
+    /// 内容结果从第几条开始；没有内容结果时为 nil
+    var contentStart: Int? { results.firstIndex { $0.snippet != nil } }
 
     /// 结果下面要不要显示一行状态（正在建立索引、没有找到）
     var showsStatus: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty && results.isEmpty }
 
     func prepareForShow() {
         query = ""
+        nameResults = []
+        contentResults = []
         results = []
         selection = 0
         focusToken += 1
@@ -200,9 +240,46 @@ final class FileSearchModel: ObservableObject {
         let q = query
         index.search(q) { [weak self] found in
             guard let self, current == self.generation else { return }
-            self.results = found
-            self.selection = 0
+            self.nameResults = found
+            self.merge(resetSelection: true)
         }
+        scheduleContentSearch()
+    }
+
+    /// 内容搜索稍等一下再发（打字很快时只搜最后一次），旧的结果先留着，新的来了再换，免得列表一闪一闪。
+    private func scheduleContentSearch() {
+        pendingContentSearch?.cancel()
+        let q = query
+        guard searchesContent, ContentIndex.qualifies(q) else {
+            if !contentResults.isEmpty {
+                contentResults = []
+                merge(resetSelection: false)
+            }
+            return
+        }
+        let current = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.contentIndex.search(q) { [weak self] hits in
+                guard let self, current == self.generation else { return }
+                self.contentResults = hits.map { hit in
+                    FileSearchResult(path: hit.path, name: (hit.path as NSString).lastPathComponent,
+                                     isDirectory: false, score: 0, snippet: hit.snippet)
+                }
+                self.merge(resetSelection: false)
+            }
+        }
+        pendingContentSearch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    /// 合并两路结果。同一个文件名字和内容都匹配时只列在文件名里。选中的那条尽量不动。
+    private func merge(resetSelection: Bool) {
+        let selectedPath = resetSelection ? nil : selectedResult?.path
+        let names = contentResults.isEmpty ? nameResults : Array(nameResults.prefix(Self.maxNameResultsWithContent))
+        let namePaths = Set(names.map(\.path))
+        results = names + contentResults.filter { !namePaths.contains($0.path) }
+        selection = selectedPath.flatMap { path in results.firstIndex { $0.path == path } } ?? 0
     }
 
     #if DEBUG
@@ -210,6 +287,7 @@ final class FileSearchModel: ObservableObject {
     func showPreview(query: String, results: [FileSearchResult]) {
         self.query = query
         generation += 1
+        pendingContentSearch?.cancel()
         self.results = results
         selection = 0
     }
@@ -245,6 +323,7 @@ final class FileSearchModel: ObservableObject {
 struct FileSearchView: View {
     @ObservedObject var model: FileSearchModel
     @ObservedObject var index: FileIndex
+    @ObservedObject var contentIndex: ContentIndex
 
     static let capsuleHeight: CGFloat = 56
     static let rowHeight: CGFloat = 46
@@ -254,11 +333,13 @@ struct FileSearchView: View {
     private static let gap: CGFloat = 8
     private static let footerHeight: CGFloat = 30
     private static let statusHeight: CGFloat = 56
+    static let sectionHeaderHeight: CGFloat = 26
 
-    static func height(resultCount: Int, showsStatus: Bool) -> CGFloat {
+    static func height(resultCount: Int, hasContentSection: Bool, showsStatus: Bool) -> CGFloat {
         var h = capsuleHeight + margin * 2
         if resultCount > 0 {
             h += gap + CGFloat(min(resultCount, maxVisibleRows)) * rowHeight + 12 + footerHeight
+            if hasContentSection { h += sectionHeaderHeight }
         } else if showsStatus {
             h += gap + statusHeight
         }
@@ -286,9 +367,10 @@ struct FileSearchView: View {
                 .foregroundStyle(.secondary)
             SearchField(
                 text: $model.query,
-                placeholder: L("搜索文件，支持拼音和首字母"),
+                placeholder: model.searchesContent ? L("搜索文件名或内容，文件名支持拼音首字母") : L("搜索文件，支持拼音和首字母"),
                 focusToken: model.focusToken,
                 fontSize: 20,
+                romanOnly: false,
                 onMove: { model.move($0) },
                 onSubmit: { model.openSelected() },
                 onCancel: { model.onClose() }
@@ -312,6 +394,9 @@ struct FileSearchView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(model.results.enumerated()), id: \.element.id) { position, result in
+                            if position == model.contentStart {
+                                sectionHeader
+                            }
                             FileResultRow(model: model, result: result, isSelected: position == model.selection)
                                 .id(result.id)
                                 .onTapGesture {
@@ -333,7 +418,17 @@ struct FileSearchView: View {
                 KeyHint(key: "Enter", action: L("打开"))
                 KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
                 Spacer(minLength: 0)
-                KeyHint(key: "Esc", action: L("关闭"))
+                if model.searchesContent && contentIndex.pendingCount > 0 {
+                    // 内容还没读完，结果可能不全
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text(L("正在读取文件内容"))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                } else {
+                    KeyHint(key: "Esc", action: L("关闭"))
+                }
             }
             .padding(.horizontal, 14)
             .frame(height: Self.footerHeight)
@@ -341,6 +436,17 @@ struct FileSearchView: View {
         .background(VisualEffectBackground().clipShape(card))
         .overlay(card.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+    }
+
+    private var sectionHeader: some View {
+        HStack(spacing: 6) {
+            Text(L("文件内容"))
+            Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 0.5)
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .frame(height: Self.sectionHeaderHeight)
     }
 
     private var status: some View {
@@ -383,16 +489,39 @@ private struct FileResultRow: View {
             Image(nsImage: model.icon(for: result))
                 .resizable()
                 .frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(result.name)
-                    .font(.system(size: 14))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(folder)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
+            if let snippet = result.snippet {
+                // 按内容搜到的：第一行文件名和位置，第二行匹配的那段文字
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(result.name)
+                            .font(.system(size: 14))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                        Text(folder)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    Text(highlighted(snippet))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(result.name)
+                        .font(.system(size: 14))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(folder)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -403,5 +532,19 @@ private struct FileResultRow: View {
                 .fill(isSelected ? Color.accentColor.opacity(0.22) : .clear)
         )
         .contentShape(Rectangle())
+    }
+
+    /// 搜索词在摘要里加粗、用正文颜色
+    private func highlighted(_ snippet: String) -> AttributedString {
+        var text = AttributedString(snippet)
+        for term in model.query.split(whereSeparator: { $0.isWhitespace }) {
+            var from = text.startIndex
+            while from < text.endIndex, let found = text[from...].range(of: String(term), options: .caseInsensitive) {
+                text[found].foregroundColor = .primary
+                text[found].font = .system(size: 12, weight: .semibold)
+                from = found.upperBound
+            }
+        }
+        return text
     }
 }

@@ -9,7 +9,7 @@ struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
         case chatScreenshot, terminal, remoteDesktop, excludedApps
-        case fileSearchEnabled, fileIndex, externalDrives
+        case fileSearchEnabled, fileIndex, externalDrives, fileContents
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
@@ -97,6 +97,8 @@ extension SettingsItem {
         .init(id: .fileIndex, tab: .fileSearch, title: "重新建立索引",
               keywords: "索引 收录 权限 桌面 文稿 下载 index rebuild permission"),
 
+        .init(id: .fileContents, tab: .fileSearch, title: "搜索文件内容",
+              keywords: "内容 全文 正文 文字 word excel ppt pdf csv json txt markdown 文档 表格 content full text"),
         .init(id: .externalDrives, tab: .fileSearch, title: "包括外接硬盘",
               keywords: "硬盘 移动硬盘 u盘 外接 ntfs drive volume external usb"),
 

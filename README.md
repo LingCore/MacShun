@@ -84,8 +84,9 @@
 
 - **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。
 - **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
+- **也能搜文件内容**：txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字都能搜到，结果里直接显示匹配的那一行。中文一两个字也能搜，不需要聚焦（Spotlight）。
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
-- 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。索引只放在内存里，不联网。
+- 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
 #### 🖥️ 显示器缩放和刷新率
 
@@ -133,6 +134,9 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 
 **Mac 上有没有像 Everything 那样快速搜索文件的工具？**
 装上 Win顺，连按两下 Ctrl 就能搜，支持拼音首字母，不用记完整文件名。
+
+**Mac 怎么搜 Word、Excel、PDF 里的文字？**
+Win顺 的文件搜索也能按内容搜：txt、CSV、JSON、Word、Excel、PowerPoint、PDF 都支持，外接的 NTFS 硬盘也能搜，结果里直接显示匹配的那一行。
 
 **Mac 接了两块屏幕，怎么让它们的缩放不一样？**
 macOS 本来就支持每块屏幕单独设置。Win顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
@@ -225,8 +229,9 @@ Every option can be found with the **search box** at the top of the settings win
 
 - **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files.
 - **Pinyin search** for Chinese file and app names.
+- **Searches file contents too**: text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight.
 - Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
-- Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The index stays in memory and never goes online.
+- Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 
 #### 🖥️ Display scaling and refresh rate
 
@@ -274,6 +279,9 @@ Those are great tools, but each does one thing and needs setup. WinShun does key
 
 **Is there an Everything-like file search for Mac?**
 WinShun includes one: press Ctrl twice and start typing.
+
+**How do I search text inside Word, Excel or PDF files on a Mac?**
+WinShun's file search also matches contents of txt, CSV, JSON, Word, Excel, PowerPoint and PDF files, including on external NTFS drives, and shows the matching line.
 
 **How do I use different scaling on two monitors?**
 macOS supports per-display scaling; WinShun's Displays page shows it as Windows-style percentages, one menu per screen.

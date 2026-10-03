@@ -165,6 +165,8 @@ struct FileSearchConfig: Codable, Equatable {
     var activated = false
     /// 也搜索外接硬盘
     var includeExternalDrives = true
+    /// F2：也按文件内容搜（txt、csv、json、Word、Excel、PowerPoint、PDF）
+    var searchContents = true
 
     init() {}
 
@@ -174,6 +176,7 @@ struct FileSearchConfig: Codable, Equatable {
         enabled = c.value(.enabled, default: d.enabled)
         activated = c.value(.activated, default: d.activated)
         includeExternalDrives = c.value(.includeExternalDrives, default: d.includeExternalDrives)
+        searchContents = c.value(.searchContents, default: d.searchContents)
     }
 }
 

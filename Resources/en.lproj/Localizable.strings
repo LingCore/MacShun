@@ -198,7 +198,7 @@
 /* 文件搜索 */
 "文件搜索" = "File Search";
 "重新建立索引" = "Rebuild Index";
-"连按两下 Ctrl 搜索电脑里的文件，像 Everything 一样快，支持拼音首字母" = "Press Ctrl twice to search files on your Mac, as fast as Everything, with pinyin support";
+"连按两下 Ctrl 按文件名或内容搜索电脑里的文件，像 Everything 一样快，文件名支持拼音首字母" = "Press Ctrl twice to search files on your Mac by name or content, as fast as Everything, with pinyin support for names";
 "使用" = "Usage";
 "呼出" = "Open with";
 "连按两下 Ctrl" = "Press Ctrl twice";
@@ -211,11 +211,25 @@
 "系统询问时选了“不允许”。到“隐私与安全性 → 文件与文件夹”里给 Win顺 打开，再重新建立索引。" = "Access was denied when macOS asked. Allow WinShun in Privacy & Security › Files and Folders, then rebuild the index.";
 "打开系统设置" = "Open System Settings";
 "索引" = "Index";
-"不包括“资源库”、隐藏文件和应用程序包里的内容。索引只放在内存里，不联网。" = "Excludes Library, hidden files and the inside of app bundles. The index stays in memory and never goes online.";
+"不包括“资源库”、隐藏文件和应用程序包里的内容。文件名索引只放在内存里，不联网。" = "Excludes Library, hidden files and the inside of app bundles. The file name index stays in memory and never goes online.";
 "搜索范围" = "Search Scope";
 "正在建立索引…" = "Indexing…";
 "第一次呼出时开始建立" = "Built the first time you open it";
 "%ld 个文件和文件夹" = "%ld files and folders";
+
+/* 文件内容搜索 */
+"搜索文件内容" = "Search file contents";
+"txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字" = "Text inside txt, Markdown, CSV, JSON, Word, Excel, PowerPoint and PDF files";
+"已读取" = "Read";
+"内容索引只保存在这台电脑上" = "The content index stays on this Mac";
+"每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。" = "Up to the first 512 KB of text per file and the first 100 pages of a PDF. Very large files and iCloud files not yet downloaded are skipped. Turning this off deletes the index.";
+"文件内容" = "File contents";
+"要搜中文，在搜索框里切换到中文输入法就能打字。至少输入两个汉字或三个字母才会搜内容。" = "To search Chinese text, switch to a Chinese input source in the search bar. Contents are searched once you type at least two Chinese characters or three letters.";
+"第一次呼出时开始读取" = "Starts the first time you open file search";
+"%ld 个文件，还有 %ld 个在读…" = "%ld files, %ld more to read…";
+"%ld 个文件，占用 %@" = "%ld files, %@ on disk";
+"搜索文件名或内容，文件名支持拼音首字母" = "Search file names or contents";
+"正在读取文件内容" = "Reading file contents";
 "搜索文件，支持拼音和首字母" = "Search files";
 "打开" = "Open";
 "在访达中显示" = "Show in Finder";

@@ -246,7 +246,7 @@ struct SettingsView: View {
         case .clipboard:
             ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
         case .fileSearch:
-            FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared)
+            FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared, contentIndex: ContentIndex.shared)
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
@@ -688,11 +688,12 @@ private struct ClipboardSettings: View {
 private struct FileSearchSettings: View {
     @Binding var config: FileSearchConfig
     @ObservedObject var index: FileIndex
+    @ObservedObject var contentIndex: ContentIndex
 
     var body: some View {
         SearchableForm {
             Section {
-                SettingsPageHeader(tab: .fileSearch, subtitle: L("连按两下 Ctrl 搜索电脑里的文件，像 Everything 一样快，支持拼音首字母")) {
+                SettingsPageHeader(tab: .fileSearch, subtitle: L("连按两下 Ctrl 按文件名或内容搜索电脑里的文件，像 Everything 一样快，文件名支持拼音首字母")) {
                     Toggle("", isOn: $config.enabled).labelsHidden()
                 }
                 .settingsAnchor(.fileSearchEnabled)
@@ -749,10 +750,37 @@ private struct FileSearchSettings: View {
             .disabled(!config.enabled)
 
             Section {
+                Toggle(isOn: $config.searchContents) {
+                    Text(L("搜索文件内容"))
+                    Text(L("txt、Markdown、CSV、JSON、Word、Excel、PowerPoint、PDF 里的文字"))
+                }
+                .settingsAnchor(.fileContents)
+                if config.searchContents {
+                    LabeledContent(L("已读取")) {
+                        HStack(spacing: 8) {
+                            if config.activated && contentIndex.pendingCount > 0 { ProgressView().controlSize(.small) }
+                            Text(contentSummary).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    }
+                    InfoRow(
+                        symbol: "lock",
+                        title: L("内容索引只保存在这台电脑上"),
+                        detail: L("每个文件最多收录前 512 KB 文字，PDF 只读前 100 页；太大的文件和 iCloud 里还没下载的文件不读。关掉后索引会删除。")
+                    )
+                }
+            } header: {
+                Text(L("文件内容"))
+            } footer: {
+                Text(L("要搜中文，在搜索框里切换到中文输入法就能打字。至少输入两个汉字或三个字母才会搜内容。"))
+                    .settingsFooter()
+            }
+            .disabled(!config.enabled)
+
+            Section {
                 InfoRow(
                     symbol: "folder",
                     title: L("个人文件夹和应用程序"),
-                    detail: L("不包括“资源库”、隐藏文件和应用程序包里的内容。索引只放在内存里，不联网。")
+                    detail: L("不包括“资源库”、隐藏文件和应用程序包里的内容。文件名索引只放在内存里，不联网。")
                 )
                 Toggle(isOn: $config.includeExternalDrives) {
                     Text(L("包括外接硬盘"))
@@ -771,6 +799,15 @@ private struct FileSearchSettings: View {
         if !config.activated || index.lastIndexed == nil { return L("第一次呼出时开始建立") }
         let count = L("%ld 个文件和文件夹", index.fileCount)
         return index.isScanningDrives ? L("%@，正在扫描外接硬盘…", count) : count
+    }
+
+    private var contentSummary: String {
+        if !config.activated { return L("第一次呼出时开始读取") }
+        let size = ByteCountFormatter.string(fromByteCount: contentIndex.diskSize, countStyle: .file)
+        if contentIndex.pendingCount > 0 {
+            return L("%ld 个文件，还有 %ld 个在读…", contentIndex.documentCount, contentIndex.pendingCount)
+        }
+        return L("%ld 个文件，占用 %@", contentIndex.documentCount, size)
     }
 }
 
