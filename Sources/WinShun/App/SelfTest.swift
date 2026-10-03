@@ -10,13 +10,16 @@ import ApplicationServices
 /// 运行期间不要操作键盘鼠标。不测 Win+L（会锁屏）；Win+D 只能看屏幕确认，也不测。
 @MainActor
 final class SelfTest {
-    nonisolated static var isRequested: Bool { CommandLine.arguments.contains("--self-test") }
+    nonisolated static var isRequested: Bool { CommandLine.arguments.contains("--self-test") || onlyWindow }
+    /// 只测分屏：scripts/selftest.sh window
+    nonisolated static var onlyWindow: Bool { CommandLine.arguments.contains("--self-test-window") }
 
     private enum Mod { case ctrl, alt, win, shift }
 
     private let config: AppConfig
     private let clipboard: ClipboardController
     private let openSettings: () -> Void
+    private let windowSnapper: WindowSnapper?
     private let mapper: KeyMapper
     private let source = CGEventSource(stateID: .hidSystemState)
     private let ownBundleID = Bundle.main.bundleIdentifier
@@ -30,11 +33,13 @@ final class SelfTest {
     private var failed = 0
 
     /// - Parameter layout: 事件拦截对当前键盘使用的布局，模拟按键要按同样的布局发出修饰键。
-    init(config: AppConfig, layout: KeyboardLayoutKind, clipboard: ClipboardController, openSettings: @escaping () -> Void) {
+    init(config: AppConfig, layout: KeyboardLayoutKind, clipboard: ClipboardController, windowSnapper: WindowSnapper? = nil,
+         openSettings: @escaping () -> Void) {
         var config = config
         config.keyboard.layout = layout
         self.config = config
         self.clipboard = clipboard
+        self.windowSnapper = windowSnapper
         self.openSettings = openSettings
         mapper = KeyMapper(config: config.keyboard)
     }
@@ -45,6 +50,13 @@ final class SelfTest {
         say("Win顺 自测开始。键盘类型：\(config.keyboard.layout == .windows ? "Windows 键盘" : "Mac 键盘")")
         guard Permissions.accessibility else {
             fail("权限", "没有辅助功能权限")
+            return finish()
+        }
+        if Self.onlyWindow {
+            setUpWindow()
+            await windowTests()
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            window.orderOut(nil)
             return finish()
         }
         let savedClipboard = NSPasteboard.general.string(forType: .string)
@@ -61,6 +73,7 @@ final class SelfTest {
             await finderTests()
             await spotlightTest()
             await settingsWindowTest()
+            await windowTests()
         } else {
             fail("测试窗口", "无法把测试窗口切到前台，没有继续，以免按键打到别的程序里")
         }
@@ -400,6 +413,84 @@ final class SelfTest {
         }
         check("Ctrl+X、Ctrl+V 移动文件", moved,
               "A 里还有：\(fm.fileExists(atPath: file.path))，B 里有：\(fm.fileExists(atPath: b.appendingPathComponent("测试文件.txt").path))")
+    }
+
+    // MARK: - 分屏
+
+    /// W1、W3：用一个 Finder 窗口按真实的 Win+方向键，检查窗口最后的位置。
+    private func windowTests() async {
+        guard config.window.enabled else { return say("分屏没打开，跳过") }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Win顺分屏自测-\(UUID().uuidString.prefix(6))")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            closeFinderWindows { $0 == folder.lastPathComponent }
+            try? FileManager.default.removeItem(at: folder)
+        }
+        NSWorkspace.shared.open(folder)
+        let opened = await waitUntil(timeout: 5) {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == AppCatalog.finder
+                && WindowElement.focused()?.title == folder.lastPathComponent
+        }
+        guard opened, let finder = WindowElement.focused() else {
+            return fail("分屏", "没能把 Finder 窗口切到前台")
+        }
+        let screens = ScreenGeometry.screens()
+        guard let index = finder.frame.flatMap({ ScreenGeometry.index(of: $0, in: screens) }) else {
+            return fail("分屏", "读不到 Finder 窗口的位置")
+        }
+        let area = screens[index].area
+        // 先摆成一个普通大小的窗口
+        let start = CGRect(x: area.midX - 450, y: area.midY - 300, width: 900, height: 600).integral
+        finder.setFrame(start)
+        await pause(300)
+        let begin = finder.frame ?? start
+
+        func near(_ a: CGRect?, _ b: CGRect, _ tolerance: CGFloat = 3) -> Bool {
+            guard let a else { return false }
+            return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance
+                && abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+        }
+        func describe(_ rect: CGRect?) -> String {
+            rect.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))×\(Int($0.height))" } ?? "?"
+        }
+
+        await press(KeyCode.leftArrow, [.win], settle: 500)
+        check("Win+← 分到左半边", near(finder.frame, WindowLayout.Position.leftHalf.frame(in: area)), describe(finder.frame))
+        if config.window.snapAssist {
+            if windowSnapper?.isAssistVisible == true {
+                pass("分屏后在另一半弹出贴靠助手")
+                await press(KeyCode.escape, settle: 300)
+                check("Esc 关掉贴靠助手", windowSnapper?.isAssistVisible == false)
+            } else {
+                say("贴靠助手：屏幕上没有别的窗口，没有弹出")
+            }
+        }
+        await press(KeyCode.upArrow, [.win], settle: 400)
+        check("Win+↑ 左半边变成左上四分之一", near(finder.frame, WindowLayout.Position.topLeft.frame(in: area)), describe(finder.frame))
+        await press(KeyCode.downArrow, [.win], settle: 400)
+        check("Win+↓ 回到左半边", near(finder.frame, WindowLayout.Position.leftHalf.frame(in: area)), describe(finder.frame))
+        await press(KeyCode.rightArrow, [.win], settle: 400)
+        check("Win+→ 恢复原来的大小和位置", near(finder.frame, begin), describe(finder.frame))
+        await press(KeyCode.upArrow, [.win], settle: 400)
+        check("Win+↑ 最大化", near(finder.frame, area), describe(finder.frame))
+        await press(KeyCode.downArrow, [.win], settle: 400)
+        check("Win+↓ 从最大化恢复", near(finder.frame, begin), describe(finder.frame))
+        if screens.count > 1 {
+            await press(KeyCode.rightArrow, [.win, .shift], settle: 500)
+            let other = (index + 1) % screens.count
+            let moved = finder.frame.flatMap { ScreenGeometry.index(of: $0, in: screens) }
+            check("Win+Shift+→ 移到另一块屏幕", moved == other, "在第 \(moved.map { $0 + 1 } ?? 0) 块屏幕")
+            await press(KeyCode.leftArrow, [.win, .shift], settle: 500)
+            let back = finder.frame.flatMap { ScreenGeometry.index(of: $0, in: screens) }
+            check("Win+Shift+← 移回来", back == index, "在第 \(back.map { $0 + 1 } ?? 0) 块屏幕")
+        }
+        await press(KeyCode.upArrow, [.win, .shift], settle: 400)
+        let stretched = finder.frame
+        check("Win+Shift+↑ 拉到和屏幕一样高",
+              stretched.map { abs($0.minY - area.minY) <= 3 && abs($0.height - area.height) <= 3 } ?? false, describe(stretched))
+        say(NativeTiling.dragTilingEnabled
+            ? "拖到屏幕边缘分屏：系统自带的拖动分屏开着，现在用的是系统的（设置里可以一键关掉）"
+            : "拖到屏幕边缘分屏：需要用鼠标试")
     }
 
     private func revealInFinder(_ url: URL) async -> Bool {

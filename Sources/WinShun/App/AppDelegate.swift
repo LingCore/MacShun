@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pointer = PointerAccelerationController()
     private let cursor = CursorSizeController()
     private lazy var fileSearch = FileSearchController(configStore: configStore)
+    private lazy var windowSnapper = WindowSnapper(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
     private var statusMenu: StatusMenu!
@@ -60,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in
                 self?.clipboard.applyConfig()
                 self?.fileSearch.applyConfig()
+                self?.windowSnapper.applyConfig()
                 self?.applyPointer()
             }
             .store(in: &subscriptions)
@@ -73,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         clipboard.applyConfig()
+        windowSnapper.applyConfig()
         startEventTapsIfPossible()
 
         if GuideTest.isRequested {
@@ -88,7 +91,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if SelfTest.isRequested {
             keyboard.learningEnabled.set(false)
             startPermissionPolling()
-            let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard) { [weak self] in
+            windowSnapper.applyConfig()
+            let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard,
+                                windowSnapper: windowSnapper) { [weak self] in
                 self?.settingsWindow.show()
             }
             Task { @MainActor in
@@ -164,6 +169,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if command == .fileSearch {
             clipboard.hide()
             fileSearch.toggle()
+        } else if case .window(let shortcut) = command {
+            windowSnapper.handle(shortcut)
         } else {
             SystemActions.run(command)
         }

@@ -111,6 +111,7 @@ final class KeyboardEngine {
                     appKind: .normal, isBrowser: false,
                     clipboardEnabled: config.get().clipboard.enabled,
                     inputSourceID: environment.inputSourceID.get(),
+                    windowShortcuts: config.get().window.enabled,
                     focus: { .text }
                 )
             } else {
@@ -121,6 +122,7 @@ final class KeyboardEngine {
                     clipboardEnabled: config.get().clipboard.enabled,
                     chatAppRunning: environment.chatAppRunning.get(),
                     inputSourceID: environment.inputSourceID.get(),
+                    windowShortcuts: config.get().window.enabled,
                     focus: { [focusInspector] in focusInspector.focusKind() }
                 )
             }

@@ -5,14 +5,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SettingsTab: Hashable, CaseIterable, Identifiable {
-    case keyboard, mouse, clipboard, fileSearch, display, general
+    case keyboard, mouse, clipboard, fileSearch, window, display, general
     /// 作者的其他作品，见 Gleaning
     case gleaning
 
     var id: Self { self }
 
     /// 侧栏上半部分的设置项，“拾穗”单独放在下面。
-    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .fileSearch, .display, .general]
+    static let settings: [SettingsTab] = [.keyboard, .mouse, .clipboard, .fileSearch, .window, .display, .general]
 
     /// 侧边栏里的名字
     var title: String {
@@ -21,6 +21,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .mouse: L("鼠标")
         case .clipboard: L("剪贴板")
         case .fileSearch: L("文件搜索")
+        case .window: L("分屏")
         case .display: L("显示器")
         case .general: L("通用")
         case .gleaning: Gleaning.title
@@ -34,6 +35,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .mouse: L("鼠标像 Windows")
         case .clipboard: L("剪贴板历史")
         case .fileSearch: L("文件搜索")
+        case .window: L("分屏像 Windows")
         case .display: L("显示器缩放和刷新率")
         case .general: L("通用")
         case .gleaning: Gleaning.title
@@ -46,6 +48,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .mouse: "computermouse.fill"
         case .clipboard: "doc.on.clipboard.fill"
         case .fileSearch: "doc.text.magnifyingglass"
+        case .window: "rectangle.split.2x1.fill"
         case .display: "display"
         case .general: "gearshape.fill"
         case .gleaning: Gleaning.symbol
@@ -58,6 +61,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
         case .mouse: .indigo
         case .clipboard: .orange
         case .fileSearch: .green
+        case .window: .purple
         case .display: .teal
         case .general: .gray
         case .gleaning: Gleaning.tint
@@ -247,6 +251,8 @@ struct SettingsView: View {
             ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
         case .fileSearch:
             FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared, contentIndex: ContentIndex.shared)
+        case .window:
+            WindowSettings(config: $configStore.config.window, tiling: NativeTilingStatus.shared)
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
@@ -814,6 +820,94 @@ private struct FileSearchSettings: View {
 extension Notification.Name {
     /// 设置里点“现在试试”，打开文件搜索
     static let openFileSearch = Notification.Name("WinShun.openFileSearch")
+}
+
+// MARK: - 分屏
+
+/// 系统自带的拖动分屏开没开。设置页打开时刷新（用户可能刚在系统设置里改过）。
+final class NativeTilingStatus: ObservableObject {
+    static let shared = NativeTilingStatus()
+    @Published private(set) var conflicting = NativeTiling.dragTilingEnabled
+
+    func refresh() {
+        let value = NativeTiling.dragTilingEnabled
+        if value != conflicting { conflicting = value }
+    }
+
+    func disable() {
+        NativeTiling.disableDragTiling()
+        refresh()
+    }
+}
+
+private struct WindowSettings: View {
+    @Binding var config: WindowConfig
+    @ObservedObject var tiling: NativeTilingStatus
+
+    var body: some View {
+        SearchableForm {
+            Section {
+                SettingsPageHeader(tab: .window, subtitle: L("Win+方向键分屏，拖到屏幕边缘分屏，分好一半后帮你挑另一半")) {
+                    Toggle("", isOn: $config.enabled).labelsHidden()
+                }
+                .settingsAnchor(.windowSnap)
+            }
+
+            Section(L("快捷键")) {
+                shortcut("Win + ←  /  →", L("分到左半边、右半边"), L("再按一次移到隔壁屏幕，按反方向恢复原来的大小"))
+                shortcut("Win + ↑", L("最大化"), L("分在半边时，变成上面的四分之一"))
+                shortcut("Win + ↓", L("恢复、最小化"), L("分在半边时，变成下面的四分之一"))
+                shortcut("Win + Shift + ←  /  →", L("移到另一块屏幕"), L("在屏幕里的位置和大小不变"))
+                shortcut("Win + Shift + ↑", L("拉到和屏幕一样高"), L("宽度和左右位置不变"))
+            }
+            .disabled(!config.enabled)
+
+            Section {
+                Toggle(isOn: $config.dragToSnap) {
+                    Text(L("拖到屏幕边缘分屏"))
+                    Text(L("拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分着屏的窗口，会恢复原来的大小"))
+                }
+                .settingsAnchor(.dragToSnap)
+                if config.dragToSnap && tiling.conflicting {
+                    HStack(alignment: .firstTextBaseline) {
+                        InfoRow(
+                            symbol: "exclamationmark.triangle",
+                            title: L("系统自带的拖动分屏也开着"),
+                            detail: L("两个一起会打架，现在拖动时用的是系统的，不会弹出贴靠助手。关掉系统的就好，Win+方向键不受影响。")
+                        )
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 6) {
+                            Button(L("关掉系统的拖动分屏")) { tiling.disable() }
+                            Button(L("打开系统设置")) { NativeTiling.openSystemSettings() }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+                Toggle(isOn: $config.snapAssist) {
+                    Text(L("贴靠助手"))
+                    Text(L("分好一半后，在另一半列出其他窗口，点一个就放进去；也可以用方向键和 Enter 选，Esc 跳过"))
+                }
+                .settingsAnchor(.snapAssist)
+            } header: {
+                Text(L("拖动和贴靠"))
+            }
+            .disabled(!config.enabled)
+        }
+        .onAppear { tiling.refresh() }
+    }
+
+    private func shortcut(_ keys: String, _ title: String, _ detail: String) -> some View {
+        LabeledContent {
+            Text(verbatim: keys)
+                .font(.system(.callout, design: .rounded).weight(.medium))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(0.07)))
+        } label: {
+            Text(title)
+            Text(detail)
+        }
+    }
 }
 
 // MARK: - 显示器

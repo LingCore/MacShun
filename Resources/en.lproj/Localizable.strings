@@ -239,3 +239,29 @@
 "包括外接硬盘" = "Include external drives";
 "在后台慢慢扫描，不影响搜索。不收录 Windows 的系统文件夹。" = "Scanned slowly in the background without slowing searches. Windows system folders are skipped.";
 "%@，正在扫描外接硬盘…" = "%@, scanning external drives…";
+
+/* 分屏 */
+"分屏" = "Window Snapping";
+"拖到屏幕边缘分屏" = "Drag to screen edges to snap";
+"贴靠助手" = "Snap Assist";
+"分屏像 Windows" = "Window snapping like Windows";
+"Win+方向键分屏，拖到屏幕边缘分屏，分好一半后帮你挑另一半" = "Snap windows with Win+arrow keys or by dragging to screen edges, then pick what fills the other half";
+"快捷键" = "Shortcuts";
+"分到左半边、右半边" = "Snap to left or right half";
+"再按一次移到隔壁屏幕，按反方向恢复原来的大小" = "Press again to move to the next display; press the opposite arrow to restore";
+"最大化" = "Maximize";
+"分在半边时，变成上面的四分之一" = "When snapped to a half, snaps to the top quarter";
+"恢复、最小化" = "Restore or minimize";
+"分在半边时，变成下面的四分之一" = "When snapped to a half, snaps to the bottom quarter";
+"移到另一块屏幕" = "Move to the other display";
+"在屏幕里的位置和大小不变" = "Keeps its position and size on the screen";
+"拉到和屏幕一样高" = "Stretch to full height";
+"宽度和左右位置不变" = "Keeps its width and horizontal position";
+"拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分着屏的窗口，会恢复原来的大小" = "Left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size.";
+"系统自带的拖动分屏也开着" = "macOS window tiling is also on";
+"两个一起会打架，现在拖动时用的是系统的，不会弹出贴靠助手。关掉系统的就好，Win+方向键不受影响。" = "The two would fight, so dragging currently uses macOS tiling and Snap Assist won't appear. Turn off the macOS one; Win+arrow keys work either way.";
+"关掉系统的拖动分屏" = "Turn Off macOS Tiling";
+"分好一半后，在另一半列出其他窗口，点一个就放进去；也可以用方向键和 Enter 选，Esc 跳过" = "After snapping to a half, shows your other windows in the other half. Click one to fill it, or use the arrow keys and Enter; Esc skips.";
+"拖动和贴靠" = "Drag and Snap Assist";
+"选一个窗口放在这里" = "Choose a window for this side";
+"Esc 跳过" = "Esc to skip";

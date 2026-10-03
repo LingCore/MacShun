@@ -34,7 +34,7 @@
 
 ## 中文
 
-**Win顺 是什么？** 一个给“从 Windows 换到 Mac 的人”用的小工具。装上之后，Mac 上的快捷键、鼠标和剪贴板都按 Windows 的习惯工作：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样、Win+V 打开剪贴板历史。不用学新的快捷键，也不用写任何配置。
+**Win顺 是什么？** 一个给“从 Windows 换到 Mac 的人”用的小工具。装上之后，Mac 上的快捷键、鼠标、剪贴板和分屏都按 Windows 的习惯工作：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样、Win+V 打开剪贴板历史、Win+方向键分屏。不用学新的快捷键，也不用写任何配置。
 
 它常驻在屏幕顶部的菜单栏，不占程序坞，不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
 
@@ -88,6 +88,13 @@
 - Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
+#### 🪟 分屏（像 Windows 11）
+
+- **Win+← / →** 分到左右半边，半边时 **Win+↑ / ↓** 变成四分之一；按反方向恢复原来的大小，同一方向再按移到隔壁屏幕。
+- **Win+↑** 最大化，**Win+↓** 恢复或最小化；**Win+Shift+← / →** 把窗口移到另一块屏幕。
+- **拖到屏幕边缘分屏**：拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分好的窗口会恢复原来的大小。
+- **贴靠助手**：分好一半后，另一半列出其他窗口，点一个就放进去。这是 Windows 的招牌功能，Rectangle 和 macOS 自带的分屏都没有。
+
 #### 🖥️ 显示器缩放和刷新率
 
 - 每块屏幕单独选缩放，像 Windows 一样按百分比（100%、125%、150%…）选，不用去系统设置里猜“看起来像多少”。
@@ -129,8 +136,11 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 **Mac 有没有像 Windows Win+V 那样的剪贴板历史？**
 有。Win顺 自带剪贴板历史，按 Win+V 弹出，支持拼音搜索。
 
-**和 Karabiner-Elements、LinearMouse、Maccy 有什么区别？**
-这些都是很好的工具，但要分别安装、自己配置。Win顺 把“快捷键 + 鼠标 + 剪贴板”三件事一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+**和 Karabiner-Elements、LinearMouse、Maccy、Rectangle 有什么区别？**
+这些都是很好的工具，但要分别安装、自己配置。Win顺 把“快捷键 + 鼠标 + 剪贴板 + 分屏”一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+
+**Mac 怎么像 Windows 一样用 Win+方向键分屏？**
+装上 Win顺 就行：Win+← / → 分到左右半边，Win+↑ 最大化，拖到屏幕边缘也能分屏，分好一半后还会列出其他窗口让你选另一半（贴靠助手）。
 
 **Mac 上有没有像 Everything 那样快速搜索文件的工具？**
 装上 Win顺，连按两下 Ctrl 就能搜，支持拼音首字母，不用记完整文件名。
@@ -171,7 +181,7 @@ scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 
 
 ## English
 
-**What is WinShun?** WinShun (Win顺, "Windows made smooth") is a small macOS menu bar app for people switching from Windows to Mac. It makes your Mac's keyboard shortcuts, mouse and clipboard behave the way Windows does: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction, and Win+V clipboard history. No new shortcuts to learn and no configuration files to write.
+**What is WinShun?** WinShun (Win顺, "Windows made smooth") is a small macOS menu bar app for people switching from Windows to Mac. It makes your Mac's keyboard shortcuts, mouse, clipboard and window snapping behave the way Windows does: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction, Win+V clipboard history and Win+arrow window snapping. No new shortcuts to learn and no configuration files to write.
 
 It lives in the menu bar, stays out of the Dock, works offline, needs no account, and is completely free.
 
@@ -233,6 +243,13 @@ Every option can be found with the **search box** at the top of the settings win
 - Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 
+#### 🪟 Window snapping (like Windows 11)
+
+- **Win+← / →** snaps to the left or right half; from a half, **Win+↑ / ↓** snaps to a quarter. The opposite arrow restores the window, the same arrow again moves it to the next display.
+- **Win+↑** maximizes, **Win+↓** restores or minimizes; **Win+Shift+← / →** moves the window to the other display.
+- **Drag to screen edges**: left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size.
+- **Snap Assist**: after snapping to a half, your other windows appear in the other half; click one to fill it. Neither Rectangle nor macOS tiling has this.
+
 #### 🖥️ Display scaling and refresh rate
 
 - Pick scaling for each screen in Windows-style percentages (100%, 125%, 150%…) instead of guessing "looks like" resolutions.
@@ -274,8 +291,11 @@ Enable "linear pointer" on WinShun's Mouse page.
 **Is there a Win+V clipboard history for Mac?**
 Yes — WinShun includes one, with search.
 
-**How is it different from Karabiner-Elements, LinearMouse or Maccy?**
-Those are great tools, but each does one thing and needs setup. WinShun does keyboard, mouse and clipboard together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
+**How do I snap windows with Win+arrow keys on a Mac, like on Windows?**
+Install WinShun: Win+← / → snaps to halves, Win+↑ maximizes, dragging to screen edges snaps too, and Snap Assist offers your other windows for the other half.
+
+**How is it different from Karabiner-Elements, LinearMouse, Maccy or Rectangle?**
+Those are great tools, but each does one thing and needs setup. WinShun does keyboard, mouse, clipboard and window snapping together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
 
 **Is there an Everything-like file search for Mac?**
 WinShun includes one: press Ctrl twice and start typing.

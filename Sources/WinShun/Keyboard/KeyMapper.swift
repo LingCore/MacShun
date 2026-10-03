@@ -22,6 +22,8 @@ enum SystemCommand: Equatable {
     case switchInputSource
     /// 连按两下 Ctrl：文件搜索（F1）
     case fileSearch
+    /// Win+方向键：分屏（W1）
+    case window(WindowShortcut)
 }
 
 /// 对一次按键的处理结果。
@@ -49,6 +51,8 @@ struct KeyContext {
     var chatAppRunning: Bool = false
     /// 当前输入源的标识
     var inputSourceID: String? = nil
+    /// Win+方向键分屏是否打开
+    var windowShortcuts = false
     /// 查询键盘焦点。代价较高，只在规则需要时才调用。
     var focus: () -> FocusKind
 }
@@ -144,6 +148,19 @@ struct KeyMapper {
         return .pass
     }
 
+    static func windowShortcut(keyCode: CGKeyCode, mods: WinModifiers) -> WindowShortcut? {
+        switch (keyCode, mods) {
+        case (KeyCode.leftArrow, [.win]): return .snap(.left)
+        case (KeyCode.rightArrow, [.win]): return .snap(.right)
+        case (KeyCode.upArrow, [.win]): return .snap(.up)
+        case (KeyCode.downArrow, [.win]): return .snap(.down)
+        case (KeyCode.leftArrow, [.win, .shift]): return .moveToDisplay(left: true)
+        case (KeyCode.rightArrow, [.win, .shift]): return .moveToDisplay(left: false)
+        case (KeyCode.upArrow, [.win, .shift]): return .stretchVertically
+        default: return nil
+        }
+    }
+
     /// K3、K7。最常用的几个组合不依赖键盘的 Win/Mac 模式，切换模式后马上就能用：
     /// - ⌥ 一定当 Alt 或 Win 用：Windows 用户不会用 ⌥+字母打 √ ∂ ß 这类符号；
     /// - Alt+Tab：⌥Tab 打开切换器，⌘Tab 本来就是系统的切换程序；
@@ -155,6 +172,10 @@ struct KeyMapper {
 
         if keyCode == KeyCode.v, win, context.clipboardEnabled {
             return .command(.clipboardHistory)
+        }
+        // W1：Win+方向键分屏。只认 Win 键（不认 ⌥：⌥+方向键是按词移动光标）
+        if context.windowShortcuts, let shortcut = Self.windowShortcut(keyCode: keyCode, mods: mods) {
+            return .command(.window(shortcut))
         }
         guard config.systemShortcuts else { return nil }
 

@@ -10,6 +10,7 @@
 | `Keyboard/` | Windows 键位规则（K1–K9）、Win+E/D/L/S 等系统操作 | `CGEventTap`、辅助功能接口（查询焦点） | 辅助功能 |
 | `Mouse/` | 指针加速、滚轮方向和步长、侧键、Ctrl+滚轮、光标大小（M1–M6） | `CGEventTap`、IOKit HID、`CGSSetCursorScale` | 辅助功能、输入监控 |
 | `FileSearch/` | 文件名索引、连按两下 Ctrl 弹出的搜索框（F1），文件内容索引（F2） | FSEvents、`FileManager`、`NSPanel`、SQLite FTS5、PDFKit、libcompression | 首次扫描时系统询问“桌面”“文稿”“下载”的访问权限 |
+| `Window/` | 分屏（W1–W3）：Win+方向键、拖到屏幕边缘、贴靠助手 | 辅助功能接口（AXUIElement）、`CGWindowListCopyWindowInfo`、`NSEvent` 全局鼠标监听 | 辅助功能（已有） |
 | `Display/` | 每块显示器按百分比选缩放（D1）、选刷新率（D2） | `CGDisplayCopyAllDisplayModes`、`CGConfigureDisplayWithDisplayMode` | 无 |
 | `Clipboard/` | 记录剪贴板、保存历史、弹出面板、模拟粘贴（C1–C5） | `NSPasteboard`（轮询 `changeCount`）、`NSPanel`、`CGEvent` | 读取剪贴板（“粘贴”设为始终允许）、辅助功能（模拟粘贴、找光标位置） |
 | `Shared/` | 事件拦截线程、配置、权限、拼音、前台应用与输入法、应用名单、日志 | `CFStringTransform`、Text Input Sources | 无 |
@@ -33,6 +34,10 @@
 | `FileSearch/ContentIndex.swift` | 文件内容索引：SQLite FTS5，增量更新，查询和摘要（分词、查询、摘要是纯函数） |
 | `FileSearch/ContentExtractor.swift` | 从 txt/csv/json、Office、PDF 里读出文字 |
 | `FileSearch/ZipReader.swift` | 读 docx/xlsx/pptx 外面那层 zip |
+| `Window/WindowLayout.swift` | 分屏位置的大小、Windows 11 的 Win+方向键规则、拖到边缘的判断。纯函数 |
+| `Window/WindowElement.swift` | 通过辅助功能接口读写别的程序的窗口；本程序自己的窗口直接用 NSWindow |
+| `Window/WindowSnapper.swift` | 分屏的主控：快捷键、记住分屏前的大小、拖动吸附和预览框、和系统自带分屏的冲突 |
+| `Window/SnapAssist.swift` | 贴靠助手面板 |
 | `Display/DisplayScaling.swift` | 算出每块显示器清晰的缩放档位和能用的刷新率（纯函数），切换显示模式 |
 | `Clipboard/ClipboardStore.swift` | 历史记录的保存、去重、固定、搜索 |
 | `Clipboard/ClipboardPanel.swift` | Win+V 弹出的面板 |
@@ -58,6 +63,13 @@
 - **指针加速**：用系统公开的 HID 属性 `HIDUseLinearScalingMouseAcceleration`（和 macOS 14 起“系统设置”里关掉“指针加速”的效果一样），可以每个鼠标分别设置，跟踪速度仍然有效。这个属性不会保存，鼠标重连、睡眠唤醒后由程序重新设置；退出时恢复原值。
 - **指针速度**：没有加速时，系统把鼠标的移动计数直接乘以 `HIDMouseAcceleration`（就是“跟踪速度”，系统滑块最高 3）得到指针移动的点数（见 IOHIDFamily 的 `IOHIDPointerScrollFilter::setupPointerAcceleration` 和 `IOHIDSimpleAccelerator`）。程序按鼠标把这个值设成用户选的倍数（0.25–8 倍），改了马上生效；没调过就跟系统设置一样。只在没有加速时调，有加速时这个值是用来选加速曲线的，交给系统。调过速度后，“系统设置”里的跟踪速度对这个鼠标不再起作用（程序每 30 秒会把它改回来）。
 - **光标大小**：用窗口服务器未公开的 `CGSSetCursorScale` 实时改（1–4 倍，和“辅助功能 → 显示 → 指针大小”同一个东西），不写系统偏好 `com.apple.universalaccess`。退出时恢复成系统偏好里的大小；和指针速度一起每 30 秒检查一次，被系统改回去时重新设置。实测 macOS 27 普通程序可以调用，不需要权限。
+- **分屏**：按 Windows 11 的习惯做，而不是照搬 Rectangle 的上百种尺寸和 Ctrl+Option 快捷键。
+  - 窗口现在分在哪：先看是不是我们上次放的位置（按窗口编号记），再按大小位置判断，每条边允许差 16 点（终端按字符调整大小对不齐）。分屏前的大小也按窗口编号记，恢复时用；记不得就居中放三分之二大小。
+  - 参考 Rectangle 处理的坑：先设大小、再设位置、再设一次大小（跨屏幕时系统会按原来那块屏幕限制大小）；程序开着 `AXEnhancedUserInterface` 时临时关掉（不然改大小很卡、有动画）；AX 调用超时设成 0.5 秒；用私有函数 `_AXUIElementGetWindow` 取窗口编号。对本程序自己的窗口调用 AX 会卡到超时（要等自己的主线程回应），改用 NSWindow。
+  - 拖到边缘：`NSEvent` 全局监听鼠标（只看不改）。只有从窗口顶部 80 点以内开始的拖动才跟踪（在内容里选文字、拖文件时不去问窗口位置），确定窗口在移动（位置变、大小不变）后按鼠标位置判断边缘和角，和别的屏幕挨着的边不算。
+  - macOS 15 起系统自带拖动分屏（`com.apple.WindowManager` 的 `EnableTilingByEdgeDrag`、`EnableTilingOptionAccelerator`，没写过就是开着）。两个同时开会打架，所以系统的开着时我们的拖动分屏不生效，设置页提示并提供“关掉系统的拖动分屏”按钮（用户点了才写）。Win+方向键不受影响。
+  - 贴靠助手：`CGWindowListCopyWindowInfo` 拿屏幕上的窗口和前后顺序（不需要屏幕录制权限），窗口标题从 AX 读。面板是不抢前台的 NSPanel，能接收方向键、Enter、Esc，点别处就关。
+  - 真机自测：`scripts/selftest.sh window` 用一个 Finder 窗口按真实的 Win+方向键检查位置，十几秒。
 - **显示器缩放**：Windows 的百分比 = 原生宽度 ÷ “看起来像”的宽度。只列出清晰的档位：原生分辨率（100%），以及高分屏模式里渲染像素不少于原生像素的（系统先按 2 倍渲染再缩小，文字清晰）。2K 这类非高分屏，系统给的高分屏模式只有原生像素的一半，所以只有 100% 和 200%。切换用 `CGCompleteDisplayConfiguration(.permanently)`，和系统设置里改一样会一直保留。
 - **刷新率**：列出和当前模式大小（点和像素）都一样的模式的刷新率，按两位小数区分（59.94 和 60 分开）；切缩放时优先保持当前刷新率。同一个大小和刷新率有时有两个模式（2K 144Hz 屏上看到过，公开属性完全一样，猜是时序不同），优先系统标为默认（`ioFlags & 0x4`）的，都不是就用列表里靠后的，和系统自己选的一致。
 - **Caps Lock（试过后去掉）**：系统设置“使用大写锁定键切换‘ABC’输入法”背后是 Carbon 里没有公开的 `TISSetRomanSwitchState(Boolean)`（直接写 `TISRomanSwitchState` 偏好不生效）。关掉它之后，苹果拼音收到 Caps Lock 会进自己的英文模式，打出来仍是小写；再临时切到 ABC 又会被系统自动关掉 Caps Lock。做不到 Windows 那样一按就大写，所以去掉了，`Keyboard/CapsLockSwitch.swift` 只负责还原用过那几个版本留下的系统设置。
@@ -134,7 +146,7 @@
 | Maccy（https://github.com/p0deje/Maccy） | MIT | 剪贴板监听、历史存储、弹出面板 |
 | LinearMouse（https://github.com/linearmouse/linearmouse） | MIT | 按设备设置指针和滚轮、侧键前进后退 |
 | Karabiner-Elements（https://github.com/pqrs-org/Karabiner-Elements） | 待核实 | Windows 键位规则的设计，按应用排除的名单 |
-| Rectangle（https://github.com/rxhanson/Rectangle） | MIT（待核实） | 以后做窗口贴靠时参考 |
+| Rectangle（https://github.com/rxhanson/Rectangle） | MIT（已核实） | 分屏参考了它处理窗口的做法（见“分屏”），没有借用代码 |
 
 目前没有借用任何第三方代码。借用代码时，要登记到根目录的 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 

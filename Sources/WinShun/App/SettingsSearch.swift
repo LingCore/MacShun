@@ -13,6 +13,7 @@ struct SettingsItem: Identifiable {
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
+        case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, relaunch, launchAtLogin, language, version
         case works, feedback
@@ -101,6 +102,13 @@ extension SettingsItem {
               keywords: "内容 全文 正文 文字 word excel ppt pdf csv json txt markdown 文档 表格 content full text"),
         .init(id: .externalDrives, tab: .fileSearch, title: "包括外接硬盘",
               keywords: "硬盘 移动硬盘 u盘 外接 ntfs drive volume external usb"),
+
+        .init(id: .windowSnap, tab: .window, title: "分屏",
+              keywords: "窗口 贴靠 半屏 左右 最大化 最小化 win+方向键 win+arrow rectangle snap split tile window"),
+        .init(id: .dragToSnap, tab: .window, title: "拖到屏幕边缘分屏",
+              keywords: "拖动 边缘 四分之一 aero snap drag edge tile"),
+        .init(id: .snapAssist, tab: .window, title: "贴靠助手",
+              keywords: "另一半 选择窗口 snap assist"),
 
         .init(id: .displayScale, tab: .display, title: "显示器缩放",
               keywords: "缩放 分辨率 文字大小 放大 屏幕 显示器 双屏 高分屏 scale scaling resolution text size monitor screen hidpi retina dpi"),

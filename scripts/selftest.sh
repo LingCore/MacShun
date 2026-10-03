@@ -18,7 +18,10 @@ if pgrep -x WinShun >/dev/null; then
     sleep 1
 fi
 
-open -n -W --stdout "$LOG" --stderr "$LOG" "$APP" --args --self-test || true
+# scripts/selftest.sh window 只测分屏（十几秒）
+ARG="--self-test"
+[[ "${1:-}" == "window" ]] && ARG="--self-test-window"
+open -n -W --stdout "$LOG" --stderr "$LOG" "$APP" --args "$ARG" || true
 cat "$LOG"
 
 if [[ $WAS_RUNNING == 1 ]]; then

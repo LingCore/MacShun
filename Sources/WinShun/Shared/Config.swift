@@ -180,11 +180,31 @@ struct FileSearchConfig: Codable, Equatable {
     }
 }
 
+struct WindowConfig: Codable, Equatable {
+    /// W1：Win+方向键分屏
+    var enabled = true
+    /// W2：拖到屏幕边缘分屏（系统自带的拖动分屏开着时不生效）
+    var dragToSnap = true
+    /// W3：分好一半后在另一半列出其他窗口（贴靠助手）
+    var snapAssist = true
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = WindowConfig()
+        enabled = c.value(.enabled, default: d.enabled)
+        dragToSnap = c.value(.dragToSnap, default: d.dragToSnap)
+        snapAssist = c.value(.snapAssist, default: d.snapAssist)
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var keyboard = KeyboardConfig()
     var mouse = MouseConfig()
     var clipboard = ClipboardConfig()
     var fileSearch = FileSearchConfig()
+    var window = WindowConfig()
 
     init() {}
 
@@ -194,6 +214,7 @@ struct AppConfig: Codable, Equatable {
         mouse = c.value(.mouse, default: MouseConfig())
         clipboard = c.value(.clipboard, default: ClipboardConfig())
         fileSearch = c.value(.fileSearch, default: FileSearchConfig())
+        window = c.value(.window, default: WindowConfig())
     }
 }
 
