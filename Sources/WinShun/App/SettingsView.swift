@@ -499,19 +499,46 @@ private struct MouseSettings: View {
             }
             .disabled(!config.enabled)
 
-            Section(L("按键")) {
-                Toggle(isOn: $config.sideButtons) {
-                    Text(L("侧键前进、后退"))
-                    Text(L("鼠标第 4、5 键在所有应用里后退、前进"))
-                }
-                .settingsAnchor(.sideButtons)
+            Section {
+                sideButtonRow(L("后侧键（第 4 键）"), setting: $config.backButton)
+                    .settingsAnchor(.sideButtons)
+                sideButtonRow(L("前侧键（第 5 键）"), setting: $config.forwardButton)
                 Toggle(isOn: $config.ctrlWheelZoom) {
                     Text(L("Ctrl+滚轮缩放"))
                     Text(L("在网页、文档、图片里放大缩小"))
                 }
                 .settingsAnchor(.ctrlWheelZoom)
+            } header: {
+                Text(L("按键"))
+            } footer: {
+                Text(L("用罗技、雷蛇等鼠标软件给侧键设了别的功能时，选“不处理”，侧键会原样交给它们。"))
+                    .settingsFooter()
             }
             .disabled(!config.enabled)
+        }
+    }
+
+    /// 一个侧键：选做什么，选“自定义快捷键”时下面录快捷键
+    @ViewBuilder
+    private func sideButtonRow(_ title: String, setting: Binding<SideButtonSetting>) -> some View {
+        Picker(selection: setting.action) {
+            ForEach(SideButtonAction.allCases.filter { $0 != .none }) { action in
+                Text(action.title).tag(action)
+            }
+            Divider()
+            Text(SideButtonAction.none.title).tag(SideButtonAction.none)
+        } label: {
+            Text(title)
+        }
+        if setting.wrappedValue.action == .shortcut {
+            HStack {
+                Text(L("按下这组键"))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                ShortcutRecorder(shortcut: setting.shortcut)
+                    .fixedSize()
+            }
+            .padding(.leading, 20)
         }
     }
 

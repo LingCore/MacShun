@@ -21,6 +21,8 @@ final class SelfTest {
     private let config: AppConfig
     private let clipboard: ClipboardController
     private let openSettings: () -> Void
+    /// 临时改设置（测鼠标侧键的几种设置），测完改回去
+    private let updateConfig: ((inout AppConfig) -> Void) -> Void
     private let windowSnapper: WindowSnapper?
     private let fileSearch: FileSearchController?
     private let mapper: KeyMapper
@@ -31,13 +33,15 @@ final class SelfTest {
     private var textView: NSTextView!
     private var monitor: Any?
     private var keyLog: [(code: UInt16, mods: NSEvent.ModifierFlags)] = []
+    private var buttonLog: [Int] = []
     private var scrollLog: [(dy: CGFloat, precise: Bool)] = []
     private var passed = 0
     private var failed = 0
 
     /// - Parameter layout: 事件拦截对当前键盘使用的布局，模拟按键要按同样的布局发出修饰键。
     init(config: AppConfig, layout: KeyboardLayoutKind, clipboard: ClipboardController, windowSnapper: WindowSnapper? = nil,
-         fileSearch: FileSearchController? = nil, openSettings: @escaping () -> Void) {
+         fileSearch: FileSearchController? = nil, updateConfig: @escaping ((inout AppConfig) -> Void) -> Void = { _ in },
+         openSettings: @escaping () -> Void) {
         var config = config
         config.keyboard.layout = layout
         self.config = config
@@ -45,6 +49,7 @@ final class SelfTest {
         self.windowSnapper = windowSnapper
         self.fileSearch = fileSearch
         self.openSettings = openSettings
+        self.updateConfig = updateConfig
         mapper = KeyMapper(config: config.keyboard)
     }
 
@@ -357,7 +362,7 @@ final class SelfTest {
             check("Ctrl+滚轮不再滚动", scrollLog.isEmpty)
         }
 
-        if config.mouse.sideButtons {
+        if config.mouse.backButton.action == .back && config.mouse.forwardButton.action == .forward {
             for (button, key, label) in [(Int64(3), KeyCode.leftBracket, "后退键 → ⌘["), (Int64(4), KeyCode.rightBracket, "前进键 → ⌘]")] {
                 keyLog.removeAll()
                 postOtherMouse(button, at: point)
@@ -365,6 +370,36 @@ final class SelfTest {
                 expectKey("侧键：\(label)", key, .command)
             }
         }
+        await sideButtonSettingsTest(at: point)
+    }
+
+    /// 侧键改成自定义快捷键、不处理：临时改设置，测完改回去
+    private func sideButtonSettingsTest(at point: CGPoint) async {
+        let saved = (config.mouse.backButton, config.mouse.forwardButton)
+        updateConfig {
+            $0.mouse.forwardButton = SideButtonSetting(.shortcut, shortcut: WinShortcut(keyCode: KeyCode.a, modifiers: .ctrl))
+            $0.mouse.backButton = SideButtonSetting(.none)
+        }
+        defer { updateConfig { $0.mouse.backButton = saved.0; $0.mouse.forwardButton = saved.1 } }
+        await pause(200)
+
+        // 按 Ctrl+A 的效果要和键盘上按的一样：经过键盘规则变成 ⌘A，全选
+        let text = "hello side button"
+        await setText(text, caret: 3)
+        postOtherMouse(4, at: point)
+        let selected = await waitUntil(timeout: 1) {
+            self.textView.selectedRange() == NSRange(location: 0, length: (text as NSString).length)
+        }
+        if config.keyboard.enabled && config.keyboard.ctrlAsCommand {
+            check("侧键设成 Ctrl+A：和按 Ctrl+A 一样全选", selected, "选区 \(textView.selectedRange())")
+        }
+
+        keyLog.removeAll()
+        buttonLog.removeAll()
+        postOtherMouse(3, at: point)
+        await pause(250)
+        check("侧键设成不处理：原样交给程序", keyLog.isEmpty && buttonLog == [3],
+              "收到按键 \(keyLog.count) 个，侧键 \(buttonLog)")
     }
 
     // MARK: - M1：指针速度
@@ -833,10 +868,12 @@ final class SelfTest {
         window.isReleasedWhenClosed = false
         window.center()
 
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel]) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .scrollWheel, .otherMouseDown]) { [weak self] event in
             guard let self else { return event }
             if event.type == .keyDown {
                 self.keyLog.append((event.keyCode, event.modifierFlags.intersection([.command, .option, .control, .shift])))
+            } else if event.type == .otherMouseDown {
+                self.buttonLog.append(event.buttonNumber)
             } else {
                 self.scrollLog.append((event.scrollingDeltaY, event.hasPreciseScrollingDeltas))
             }

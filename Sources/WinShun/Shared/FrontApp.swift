@@ -19,6 +19,10 @@ final class FrontAppTracker {
     let fileSearchPanelActive = Locked(false)
     /// 贴靠助手是否正在接收键盘输入，同上。
     let snapAssistActive = Locked(false)
+    /// 设置里正在录快捷键（鼠标侧键）：键盘规则先停一下，录下用户实际按的键
+    let recordingShortcut = Locked(false)
+    /// 最近一次按键的键盘是哪种布局（Win 键发出 ⌘ 还是 ⌥），鼠标侧键按快捷键时要按它发出修饰键
+    let keyboardLayout = Locked(KeyboardLayoutKind.windows)
 
     private var observers: [NSObjectProtocol] = []
 

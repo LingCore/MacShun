@@ -12,6 +12,7 @@ enum SystemActions {
         case .lockScreen: lockScreen()
         case .spotlight: openSpotlight()
         case .switchInputSource: switchInputSource()
+        case .missionControl: missionControl()
         case .clipboardHistory, .fileSearch, .window: break  // 由剪贴板、文件搜索、分屏模块处理
         }
     }
@@ -21,6 +22,16 @@ enum SystemActions {
         Synthetic.afterModifiersReleased {
             let stroke = SymbolicHotKeys.stroke(id: SymbolicHotKeys.previousInputSource)
                 ?? KeyStroke(KeyCode.space, .maskControl)
+            Synthetic.tap(stroke, at: .cghidEventTap)
+        }
+    }
+
+    /// 调度中心。优先通知程序坞，不行再模拟系统设置里的快捷键（默认 ⌃↑）。
+    static func missionControl() {
+        if DockNotification.send("com.apple.expose.awake") { return }
+        Synthetic.afterModifiersReleased {
+            let stroke = SymbolicHotKeys.stroke(id: SymbolicHotKeys.missionControl)
+                ?? KeyStroke(KeyCode.upArrow, .maskControl)
             Synthetic.tap(stroke, at: .cghidEventTap)
         }
     }
@@ -61,6 +72,7 @@ enum SystemActions {
 /// 读取“系统设置 → 键盘 → 键盘快捷键”里的系统快捷键。
 enum SymbolicHotKeys {
     static let showDesktop = 36
+    static let missionControl = 32
     static let spotlight = 64
     static let previousInputSource = 60
 

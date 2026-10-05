@@ -36,7 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let keyboard = KeyboardEngine(config: configStore.snapshot, environment: environment) { [weak self] command in
             self?.run(command)
         }
-        let mouse = MouseEngine(config: configStore.snapshot, frontApp: environment.current)
+        let mouse = MouseEngine(config: configStore.snapshot, environment: environment) { [weak self] command in
+            self?.run(command)
+        }
         keyboard.devices.onDevicesChanged = { [weak self] list, seen in
             self?.knownKeyboards = (list, seen)
             self?.updateKeyboardList()
@@ -93,7 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startPermissionPolling()
             windowSnapper.applyConfig()
             let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard,
-                                windowSnapper: windowSnapper, fileSearch: fileSearch) { [weak self] in
+                                windowSnapper: windowSnapper, fileSearch: fileSearch,
+                                updateConfig: { [weak self] change in self.map { change(&$0.configStore.config) } }) { [weak self] in
                 self?.settingsWindow.show()
             }
             Task { @MainActor in

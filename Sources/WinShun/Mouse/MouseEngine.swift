@@ -6,15 +6,19 @@ import CoreGraphics
 /// 在事件拦截线程上处理鼠标事件：滚轮方向和步长（M2、M3）、侧键（M4）、Ctrl+滚轮缩放（M5）。
 final class MouseEngine {
     private let config: Locked<AppConfig>
-    private let frontApp: Locked<AppIdentity>
+    private let environment: FrontAppTracker
+    private let onCommand: (SystemCommand) -> Void
     let devices = InputDeviceMonitor.mice()
 
     /// 被换成快捷键的侧键，松开时也要吞掉。
     private var swallowedButtons: Set<Int64> = []
+    /// 换成另一个侧键的，松开时也要换
+    private var rewrittenButtons: [Int64: Int64] = [:]
 
-    init(config: Locked<AppConfig>, frontApp: Locked<AppIdentity>) {
+    init(config: Locked<AppConfig>, environment: FrontAppTracker, onCommand: @escaping (SystemCommand) -> Void) {
         self.config = config
-        self.frontApp = frontApp
+        self.environment = environment
+        self.onCommand = onCommand
     }
 
     func handle(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
@@ -83,27 +87,47 @@ final class MouseEngine {
 
     // MARK: - 侧键
 
-    /// 第 4、5 键（编号 3、4）：后退、前进。
-    /// 浏览器等本身支持侧键的应用原样放行；其他应用（例如 Finder）换成 ⌘[ / ⌘]。
+    /// 第 4、5 键（编号 3、4），默认后退、前进，可以在设置里换成别的（见 SideButtons）。
+    /// 后退、前进：浏览器等本身支持侧键的应用原样放行；其他应用（例如 Finder）换成 ⌘[ / ⌘]。
     private func handleButton(event: CGEvent, isDown: Bool, config cfg: AppConfig, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         let pass = Unmanaged.passUnretained(event)
         let button = event.getIntegerValueField(.mouseEventButtonNumber)
-        guard button == 3 || button == 4 else { return pass }
+        guard button == SideButtons.backButton || button == SideButtons.forwardButton else { return pass }
 
         if !isDown {
+            if let other = rewrittenButtons.removeValue(forKey: button) {
+                event.setIntegerValueField(.mouseEventButtonNumber, value: other)
+                return pass
+            }
             return swallowedButtons.remove(button) != nil ? nil : pass
         }
-        guard cfg.mouse.enabled, cfg.mouse.sideButtons, !isExcluded(cfg) else { return pass }
-        guard !AppCatalog.handlesSideButtonsNatively(frontApp.get()) else { return pass }
-
+        guard cfg.mouse.enabled else { return pass }
+        let app = environment.current.get()
+        let setting = button == SideButtons.backButton ? cfg.mouse.backButton : cfg.mouse.forwardButton
+        let decision = SideButtons.decide(
+            button: button, setting: setting, nativeApp: AppCatalog.handlesSideButtonsNatively(app),
+            excluded: AppCatalog.kind(of: app, userExcluded: cfg.keyboard.excludedApps) == .excluded
+        )
+        switch decision {
+        case .pass:
+            return pass
+        case .rewrite(let other):
+            rewrittenButtons[button] = other
+            event.setIntegerValueField(.mouseEventButtonNumber, value: other)
+            return pass
+        case .keystroke(let stroke):
+            Synthetic.keyEvent(stroke, down: true)?.tapPostEvent(proxy)
+            Synthetic.keyEvent(stroke, down: false)?.tapPostEvent(proxy)
+        case .command(let command):
+            DispatchQueue.main.async { [onCommand] in onCommand(command) }
+        case .shortcut(let shortcut):
+            SideButtons.play(shortcut, layout: environment.keyboardLayout.get())
+        }
         swallowedButtons.insert(button)
-        let stroke = KeyStroke(button == 3 ? KeyCode.leftBracket : KeyCode.rightBracket, .maskCommand)
-        Synthetic.keyEvent(stroke, down: true)?.tapPostEvent(proxy)
-        Synthetic.keyEvent(stroke, down: false)?.tapPostEvent(proxy)
         return nil
     }
 
     private func isExcluded(_ cfg: AppConfig) -> Bool {
-        AppCatalog.kind(of: frontApp.get(), userExcluded: cfg.keyboard.excludedApps) == .excluded
+        AppCatalog.kind(of: environment.current.get(), userExcluded: cfg.keyboard.excludedApps) == .excluded
     }
 }

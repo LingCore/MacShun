@@ -24,6 +24,8 @@ enum SystemCommand: Equatable {
     case fileSearch
     /// Win+方向键：分屏（W1）
     case window(WindowShortcut)
+    /// 调度中心（Windows 的任务视图，鼠标侧键可以设成这个）
+    case missionControl
 }
 
 /// 对一次按键的处理结果。

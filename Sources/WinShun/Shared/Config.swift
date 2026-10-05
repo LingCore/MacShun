@@ -114,8 +114,9 @@ struct MouseConfig: Codable, Equatable {
     var defaults = MouseDeviceSettings()
     /// 按设备单独的设置，键是 InputDevice.key。
     var devices: [String: MouseDeviceSettings] = [:]
-    /// M4：侧键前进、后退
-    var sideButtons = true
+    /// M4：侧键（第 4 键后退键、第 5 键前进键）做什么
+    var backButton = SideButtonSetting(.back)
+    var forwardButton = SideButtonSetting(.forward)
     /// M5：Ctrl+滚轮缩放
     var ctrlWheelZoom = true
     /// M6：光标大小，1 到 4 倍。nil 表示和“系统设置 → 辅助功能 → 显示 → 指针大小”一样。
@@ -134,9 +135,20 @@ struct MouseConfig: Codable, Equatable {
         enabled = c.value(.enabled, default: d.enabled)
         defaults = c.value(.defaults, default: d.defaults)
         devices = c.value(.devices, default: d.devices)
-        sideButtons = c.value(.sideButtons, default: d.sideButtons)
+        backButton = c.value(.backButton, default: d.backButton)
+        forwardButton = c.value(.forwardButton, default: d.forwardButton)
+        // 以前只有一个“侧键前进、后退”开关，关掉的人两个侧键都不处理
+        if !c.contains(.backButton), let legacy = try? decoder.container(keyedBy: LegacyKeys.self),
+           (try? legacy.decode(Bool.self, forKey: .sideButtons)) == false {
+            backButton = SideButtonSetting(.none)
+            forwardButton = SideButtonSetting(.none)
+        }
         ctrlWheelZoom = c.value(.ctrlWheelZoom, default: d.ctrlWheelZoom)
         cursorScale = c.value(.cursorScale, default: d.cursorScale)
+    }
+
+    private enum LegacyKeys: String, CodingKey {
+        case sideButtons
     }
 }
 

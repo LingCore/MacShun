@@ -73,6 +73,11 @@ final class KeyboardEngine {
         var cfg = config.get().keyboard
         let device = devices.activeDevice
         var layout = cfg.layout(for: device)
+        environment.keyboardLayout.set(layout)
+        // 设置里正在录快捷键：原样放行，录下实际按的键（也不算连按 Ctrl）
+        if environment.recordingShortcut.get() && !switcherOpen {
+            return Unmanaged.passUnretained(event)
+        }
 
         // 只要 Alt 已经松开，切换器就该关了。万一漏掉了松开 Alt 的事件（例如拦截被系统暂停过），
         // 在这里补上，否则之后每个键都会被加上 ⌘。

@@ -94,8 +94,6 @@
 "按鼠标单独设置" = "Per-mouse settings";
 "接了几个手感不同的鼠标时才需要。" = "Only needed if you use several mice that feel different.";
 "按键" = "Buttons";
-"侧键前进、后退" = "Side buttons go back and forward";
-"鼠标第 4、5 键在所有应用里后退、前进" = "Buttons 4 and 5 go back and forward in every app";
 "Ctrl+滚轮缩放" = "Ctrl+scroll to zoom";
 "在网页、文档、图片里放大缩小" = "Zoom in and out of web pages, documents, and images";
 "指针不加速" = "Turn off pointer acceleration";
@@ -276,3 +274,25 @@
 "正在读取文件内容，结果可能还不全…" = "Still reading file contents, results may be incomplete…";
 "认图片里的文字" = "Recognize Text in Images";
 "截图、照片和扫描版 PDF 里的字也能搜到，在后台慢慢认，第一次要一会儿" = "Find text in screenshots, photos and scanned PDFs. Recognition runs in the background; the first pass takes a while";
+
+/* 鼠标侧键 */
+"鼠标侧键" = "Mouse side buttons";
+"后侧键（第 4 键）" = "Rear side button (button 4)";
+"前侧键（第 5 键）" = "Front side button (button 5)";
+"用罗技、雷蛇等鼠标软件给侧键设了别的功能时，选“不处理”，侧键会原样交给它们。" = "If you set up the side buttons in Logitech, Razer or other mouse software, choose “Leave alone” so the buttons go straight to it.";
+"按下这组键" = "Press these keys";
+"请按快捷键（Esc 取消）" = "Type a shortcut (Esc to cancel)";
+"点这里录快捷键" = "Click to record a shortcut";
+"后退" = "Back";
+"前进" = "Forward";
+"复制（Ctrl+C）" = "Copy (Ctrl+C)";
+"粘贴（Ctrl+V）" = "Paste (Ctrl+V)";
+"关闭标签页（Ctrl+W）" = "Close tab (Ctrl+W)";
+"刷新（F5）" = "Refresh (F5)";
+"任务视图（Win+Tab）" = "Task view (Win+Tab)";
+"显示桌面（Win+D）" = "Show desktop (Win+D)";
+"剪贴板历史（Win+V）" = "Clipboard history (Win+V)";
+"文件搜索（连按两下 Ctrl）" = "File search (press Ctrl twice)";
+"自定义快捷键…" = "Custom shortcut…";
+"不处理（交给系统或其他鼠标软件）" = "Leave alone (for the system or other mouse software)";
+"键 %ld" = "Key %ld";

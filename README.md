@@ -55,7 +55,7 @@
 - **关闭鼠标加速**：指针移动多远只看鼠标移动多远，和 Windows 一样跟手。速度可以调得比系统设置的最快档还快。
 - **滚轮方向和 Windows 一致**：只改鼠标，触控板和妙控鼠标保持苹果的“自然滚动”。
 - **按行滚动**：每格滚动固定行数（默认 3 行），没有滚动加速。
-- **侧键前进、后退**：鼠标第 4、5 键在访达、浏览器等所有程序里都能用。
+- **侧键前进、后退**：鼠标第 4、5 键在访达、浏览器等所有程序里都能用。两个侧键也可以分别改成复制、粘贴、关闭标签页、任务视图、剪贴板历史，或者录一组任意的快捷键（按 Windows 的叫法录，比如 Ctrl+Shift+T）。用罗技、雷蛇等鼠标软件设置侧键的，选“不处理”，侧键原样交给它们，不会冲突。
 - **光标大小**：像 Windows 一样在鼠标设置里直接调，1 到 4 倍。退出 Win顺 后恢复原样。
 - 接了多个鼠标时，可以给每个鼠标单独设置。
 
@@ -212,7 +212,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **Disable mouse acceleration**: pointer movement is linear, just like Windows. Speed can go beyond the fastest system setting.
 - **Windows scroll direction for the mouse only**: the trackpad and Magic Mouse keep Apple's natural scrolling.
 - **Line-by-line scrolling**: a fixed number of lines per notch (3 by default), no scroll acceleration.
-- **Back / forward side buttons** work in Finder, browsers and every other app.
+- **Back / forward side buttons** work in Finder, browsers and every other app. Each side button can also be set to copy, paste, close tab, task view, clipboard history, or any shortcut you record (in Windows terms, e.g. Ctrl+Shift+T). If you set up the side buttons in Logitech, Razer or other mouse software, choose “Leave alone” and the buttons go straight to it.
 - **Cursor size** right in the mouse settings, 1× to 4×, like Windows. Restored when you quit WinShun.
 - Per-device settings when you use more than one mouse.
 
