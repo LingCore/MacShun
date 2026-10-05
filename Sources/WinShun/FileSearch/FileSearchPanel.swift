@@ -448,11 +448,12 @@ final class FileSearchModel: ObservableObject {
     }
 
     #if DEBUG
-    /// 截图用：直接显示给定的结果
-    func showPreview(query: String, results: [FileSearchResult]) {
+    /// 截图用：直接显示给定的结果。假文件不存在，系统只给空白图标，可以按路径给图标。
+    func showPreview(query: String, results: [FileSearchResult], icons: [String: NSImage] = [:]) {
         self.query = query
         generation += 1
         pendingContentSearch?.cancel()
+        self.icons.merge(icons) { $1 }
         self.results = results
         selection = 0
     }

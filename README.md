@@ -89,6 +89,13 @@
 - **可以直接粘贴路径**：`art/gpt/style_reference.png` 这样的相对路径、`桌面/塔防游戏/…` 这样用访达里显示的名字写的、`~/Desktop/…` 和完整路径都行，Windows 的 `D:\资料\合同.docx`（带不带引号都行）也认，盘符不管。文件夹写得不全或不对也没关系，名字对上的文件照样列出来，路径对上得越多排得越前。完整路径的文件即使不在搜索范围里（例如“资源库”里）也能直接打开。
 - 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-dark.png">
+    <img src="docs/images/search-light.png" width="600" alt="Win顺 文件搜索：连按两下 Ctrl 弹出搜索框，同时搜文件名和文件内容">
+  </picture>
+</p>
+
 #### 🪟 分屏（像 Windows 11）
 
 - **Win+← / →** 分到左右半边，半边时 **Win+↑ / ↓** 变成四分之一；按反方向恢复原来的大小，同一方向再按移到隔壁屏幕。
@@ -96,11 +103,25 @@
 - **拖到屏幕边缘分屏**：拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分好的窗口会恢复原来的大小。有两块屏幕时，拖到中间相接的边，光标会先停一下，松开就分到这块屏幕靠那边的一半，继续推才过到另一块屏幕。
 - **贴靠助手**：分好一半后，另一半列出其他窗口，点一个就放进去。这是 Windows 的招牌功能，Rectangle 和 macOS 自带的分屏都没有。
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/snap-dark.png">
+    <img src="docs/images/snap-light.png" width="820" alt="Win顺 分屏：窗口分到左半边后，右半边用贴靠助手选另一个窗口">
+  </picture>
+</p>
+
 #### 🖥️ 显示器缩放和刷新率
 
 - 每块屏幕单独选缩放，像 Windows 一样按百分比（100%、125%、150%…）选，不用去系统设置里猜“看起来像多少”。
 - 只列出文字清晰的档位。2K 这类非高分屏，macOS 只给 100% 和 200% 两个清晰档位，页面上会说明。
 - 每块屏幕单独选刷新率（144 Hz、120 Hz、60 Hz…），高刷屏不用再去系统设置里找。
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/display-dark.png">
+    <img src="docs/images/display-light.png" width="520" alt="Win顺 显示器设置：每块屏幕按百分比选缩放，单独选刷新率">
+  </picture>
+</p>
 
 ### 下载安装
 
@@ -246,6 +267,13 @@ Every option can be found with the **search box** at the top of the settings win
 - **Paste a path**: relative paths like `art/gpt/style_reference.png`, paths written with Finder's localized folder names, `~/Desktop/…` and full paths all work, and so do Windows paths like `D:\Docs\contract.docx` (quoted or not; the drive letter is ignored). If the folders are partly wrong, files with a matching name still show up, ranked by how much of the path matches. A full path opens even when it is outside the indexed folders (e.g. inside Library).
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/search-dark-en.png">
+    <img src="docs/images/search-light-en.png" width="600" alt="WinShun file search: press Ctrl twice to search file names and contents">
+  </picture>
+</p>
+
 #### 🪟 Window snapping (like Windows 11)
 
 - **Win+← / →** snaps to the left or right half; from a half, **Win+↑ / ↓** snaps to a quarter. The opposite arrow restores the window, the same arrow again moves it to the next display.
@@ -253,11 +281,25 @@ Every option can be found with the **search box** at the top of the settings win
 - **Drag to screen edges**: left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size. With two displays, the cursor pauses at the edge where they meet, so you can snap to the inner half; keep pushing to cross over.
 - **Snap Assist**: after snapping to a half, your other windows appear in the other half; click one to fill it. Neither Rectangle nor macOS tiling has this.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/snap-dark-en.png">
+    <img src="docs/images/snap-light-en.png" width="820" alt="WinShun window snapping: after snapping a window to the left half, Snap Assist offers windows for the right half">
+  </picture>
+</p>
+
 #### 🖥️ Display scaling and refresh rate
 
 - Pick scaling for each screen in Windows-style percentages (100%, 125%, 150%…) instead of guessing "looks like" resolutions.
 - Only sharp options are listed. For non-Retina screens such as 1440p monitors, macOS only offers 100% and 200% sharply, and the page says so.
 - Pick the refresh rate for each screen (144 Hz, 120 Hz, 60 Hz…) right next to scaling.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/display-dark-en.png">
+    <img src="docs/images/display-light-en.png" width="520" alt="WinShun display settings: Windows-style scaling percentages and refresh rate for each screen">
+  </picture>
+</p>
 
 ### Download and install
 

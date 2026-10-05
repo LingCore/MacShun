@@ -93,6 +93,7 @@
 - **签名**：开发期间用固定的自签名证书（`scripts/dev-cert.sh`），放在单独的钥匙串里。签名要求绑定这张证书，重新编译后权限不用重新授予。
 - **应用标识**：`io.github.lingcore.winshun`。改了它就要重新授权。
 - **只装 Command Line Tools 时的限制**：macOS 27 SDK 里 SwiftUI 的 `@State` 是宏，它的插件只随 Xcode 提供，所以代码里不用 `@State`；Swift Testing 的宏插件在 `plugins/testing` 子目录里，`scripts/test.sh` 会把路径告诉编译器。
+- **README 截图**：`scripts/readme-shots.sh` 把 `scripts/readme-shots/main.swift` 和程序源码一起编译，用假数据离屏渲染设置窗口、剪贴板面板、文件搜索框和贴靠助手，中文、英文 × 浅色、深色各一套，写到 `docs/images`。不读写真实配置和剪贴板历史；假文件和假显示器通过只在 DEBUG 编译里有的 `showPreview` 塞进去。分屏页底部有一条按真实系统设置显示的提示（系统自带的拖动分屏开着时），截图把窗口底边切在它上面，所以那张图的高度是按两种语言分别调的。
 
 ## 常用软件的快捷键冲突（K9）
 

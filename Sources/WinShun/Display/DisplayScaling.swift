@@ -185,7 +185,23 @@ final class DisplayScalingModel: ObservableObject {
         }
     }
 
+    #if DEBUG
+    /// 截图用：显示给定的显示器，不再读真的
+    private var preview: [DisplayInfo]?
+
+    func showPreview(_ displays: [DisplayInfo]) {
+        preview = displays
+        self.displays = displays
+    }
+    #endif
+
     func refresh() {
+        #if DEBUG
+        if let preview {
+            displays = preview
+            return
+        }
+        #endif
         var ids = [CGDirectDisplayID](repeating: 0, count: 16)
         var count: UInt32 = 0
         guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success else { return }
