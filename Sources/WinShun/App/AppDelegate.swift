@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu = StatusMenu(
             configStore: configStore, state: state,
             openSettings: { [weak self] in self?.settingsWindow.show() },
-            openClipboard: { [weak self] in self?.clipboard.show() }
+            openClipboard: { [weak self] in self?.showClipboard() }
         )
 
         configStore.$config
@@ -163,16 +163,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.keyboard.notice("键盘模式：\(device?.name ?? "默认", privacy: .public) → \(layout.rawValue, privacy: .public)")
     }
 
+    /// 打开剪贴板历史（Win+V、菜单栏）。文件搜索框开着时叠在它上面，选中的直接填进搜索框
+    private func showClipboard() {
+        if fileSearch.isVisible {
+            clipboard.show(in: fileSearch.clipboardHost())
+        } else {
+            clipboard.show()
+        }
+    }
+
     private func run(_ command: SystemCommand) {
         if command == .clipboardHistory {
-            // 文件搜索框开着时，剪贴板面板叠在它上面，选中的直接填进搜索框
-            if clipboard.isVisible {
-                clipboard.close()
-            } else if fileSearch.isVisible {
-                clipboard.show(in: fileSearch.clipboardHost())
-            } else {
-                clipboard.show()
-            }
+            if clipboard.isVisible { clipboard.close() } else { showClipboard() }
         } else if command == .fileSearch {
             clipboard.hide()
             fileSearch.summon()

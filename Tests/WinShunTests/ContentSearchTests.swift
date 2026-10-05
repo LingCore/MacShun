@@ -199,6 +199,21 @@ struct ContentIndexTests {
         #expect(!text.contains("color"))
         #expect(!text.contains("var a"))
         #expect(!text.contains("备注"))
+        // 脚本、样式、注释几乎都占好几行
+        let multiline = ContentExtractor.htmlText("""
+            <p>正文</p>
+            <script>
+              const secret = 1
+            </script>
+            <style>
+              .a { color: red }
+            </style>
+            <!--
+              说明
+            -->
+            """)
+        #expect(multiline.contains("正文"))
+        #expect(!multiline.contains("secret") && !multiline.contains("color") && !multiline.contains("说明"))
     }
 
     @Test func nulCharactersDoNotCutText() throws {
@@ -426,6 +441,24 @@ struct ImageTextAndHistoryTests {
         pdfContext.closePDF()
         let fromPDF = ContentExtractor.extract(path: pdf.path, kind: .pdf)
         #expect(fromPDF?.contains("合同") == true, "\(fromPDF ?? "nil")")
+        // 关掉“认图片里的文字”时扫描版 PDF 也不认
+        #expect(ContentExtractor.pdfTextInProcess(pdf, ocr: false)?.contains("合同") != true)
+
+        // 手机竖着拍的照片：像素是横着存的，靠照片里记的方向转正
+        let rotated: CGImage = {
+            let context = CGContext(data: nil, width: image.height, height: image.width, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+            context.translateBy(x: CGFloat(image.height), y: 0)
+            context.rotate(by: .pi / 2)
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            return context.makeImage()!
+        }()
+        let photo = folder.appendingPathComponent("竖拍.jpg")
+        let photoDestination = CGImageDestinationCreateWithURL(photo as CFURL, "public.jpeg" as CFString, 1, nil)!
+        CGImageDestinationAddImage(photoDestination, rotated, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        #expect(CGImageDestinationFinalize(photoDestination))
+        let fromPhoto = ContentExtractor.extract(path: photo.path, kind: .image)
+        #expect(fromPhoto?.contains("合同") == true, "\(fromPhoto ?? "nil")")
 
         // 图标这种小图不认
         let icon = folder.appendingPathComponent("icon.png")

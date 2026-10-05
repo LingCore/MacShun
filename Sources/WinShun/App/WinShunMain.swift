@@ -10,7 +10,7 @@ enum WinShunMain {
         if let request = ContentExtractor.helperRequest(in: CommandLine.arguments) {
             // 主程序忽略了 SIGTERM（见 AppDelegate），子进程会继承；恢复默认，超时时才结束得了
             signal(SIGTERM, SIG_DFL)
-            ContentExtractor.runHelper(kind: request.kind, path: request.path)
+            ContentExtractor.runHelper(kind: request.kind, path: request.path, ocr: request.ocr)
         }
         let app = NSApplication.shared
         let delegate = AppDelegate()

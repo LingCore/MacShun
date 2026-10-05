@@ -82,8 +82,22 @@ enum ContentExtractor {
         return kind == .image && !readsImages.get() ? nil : kind
     }
 
+    /// 读的结果
+    enum Outcome: Equatable {
+        case text(String)
+        /// 读不了或没有文字
+        case empty
+        /// 这次没读成，但不是文件的问题（子进程起不来、电脑太忙超时了），不记下来，下次再读
+        case retryLater
+    }
+
     /// 读出文字。读不了、没有文字时返回 nil。
     static func extract(path: String, kind: Kind) -> String? {
+        if case .text(let text) = read(path: path, kind: kind) { return text }
+        return nil
+    }
+
+    static func read(path: String, kind: Kind) -> Outcome {
         let url = URL(fileURLWithPath: path)
         let isJSON = path.lowercased().hasSuffix(".json")
         let limit = maxTextBytes
@@ -92,7 +106,7 @@ enum ContentExtractor {
         case .text:
             // 只读开头够用的一段：GBK 两个字节一个汉字，转成 UTF-8 是三个字节，读两倍足够
             guard let handle = try? FileHandle(forReadingFrom: url),
-                  let data = try? handle.read(upToCount: limit * 2) else { return nil }
+                  let data = try? handle.read(upToCount: limit * 2) else { return .empty }
             try? handle.close()
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? data.count
             let ext = (path as NSString).pathExtension.lowercased()
@@ -108,15 +122,17 @@ enum ContentExtractor {
             text = ZipReader(url: url).flatMap(pptxText)
         case .xlsx:
             text = ZipReader(url: url).flatMap(xlsxText)
-        case .pdf:
-            text = helperText(.pdf, url)
-        case .image:
-            text = hasTextSizedPixels(url) ? helperText(.image, url) : nil
+        case .pdf, .image:
+            guard kind == .pdf || hasTextSizedPixels(url) else { return .empty }
+            switch helperText(kind, url) {
+            case .text(let read): text = read
+            case let other: return other
+            }
         }
-        guard var text, text.contains(where: { !$0.isWhitespace }) else { return nil }
+        guard var text, text.contains(where: { !$0.isWhitespace }) else { return .empty }
         // SQLite 按 C 字符串收文字，遇到 0 就停了，后面的搜不到（JSON 里的 \u0000、文本文件后面夹的 0）
         if text.contains("\u{0}") { text = text.replacingOccurrences(of: "\u{0}", with: " ") }
-        return truncated(text, maxBytes: limit)
+        return .text(truncated(text, maxBytes: limit))
     }
 
     // MARK: - 纯文本
@@ -187,7 +203,8 @@ enum ContentExtractor {
     /// 网页里的文字：去掉脚本、样式、注释和标签，段落处换行，换回常见的字符实体。
     static func htmlText(_ html: String) -> String {
         var text = html
-        for pattern in ["<script\\b[^>]*>.*?</script\\s*>", "<style\\b[^>]*>.*?</style\\s*>", "<!--.*?-->"] {
+        // (?s)：. 也匹配换行，脚本、样式、注释几乎都占好几行
+        for pattern in ["(?s)<script\\b[^>]*>.*?</script\\s*>", "(?s)<style\\b[^>]*>.*?</style\\s*>", "(?s)<!--.*?-->"] {
             text = text.replacingOccurrences(of: pattern, with: " ", options: [.regularExpression, .caseInsensitive])
         }
         text = text.replacingOccurrences(of: "<(br|/p|/div|/li|/tr|/h[1-6]|/title)\\b[^>]*>", with: "\n",
@@ -318,18 +335,25 @@ enum ContentExtractor {
 
     static let helperArguments: [Kind: String] = [.pdf: "--extract-pdf-text", .image: "--extract-image-text"]
 
+    /// 扫描版 PDF 要不要认字（跟着“认图片里的文字”）
+    static let ocrArgument = "--ocr"
+
     /// 是读 PDF 或认图片文字的子进程时，返回要读的种类和文件
-    static func helperRequest(in arguments: [String]) -> (kind: Kind, path: String)? {
+    static func helperRequest(in arguments: [String]) -> (kind: Kind, path: String, ocr: Bool)? {
         for (kind, argument) in helperArguments {
-            if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count { return (kind, arguments[index + 1]) }
+            if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count {
+                return (kind, arguments[index + 1], arguments.contains(ocrArgument))
+            }
         }
         return nil
     }
 
     /// 子进程：把文字写到标准输出后退出。
-    static func runHelper(kind: Kind, path: String) -> Never {
+    static func runHelper(kind: Kind, path: String, ocr: Bool) -> Never {
+        // 主程序一分钟就会结束卡住的子进程；主程序退出或崩了没人管时，自己最多活一分半
+        alarm(90)
         let url = URL(fileURLWithPath: path)
-        guard let text = kind == .pdf ? pdfTextInProcess(url) : imageTextInProcess(url) else { exit(1) }
+        guard let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageTextInProcess(url) else { exit(1) }
         FileHandle.standardOutput.write(Data(text.utf8))
         exit(0)
     }
@@ -338,23 +362,27 @@ enum ContentExtractor {
     private static let helperExecutable: URL? =
         Bundle.main.bundleIdentifier == "io.github.lingcore.winshun" ? Bundle.main.executableURL : nil
 
-    private static func helperText(_ kind: Kind, _ url: URL) -> String? {
+    private static func helperText(_ kind: Kind, _ url: URL) -> Outcome {
+        let ocr = readsImages.get()
         guard let executable = helperExecutable, let argument = helperArguments[kind] else {
-            return kind == .pdf ? pdfTextInProcess(url) : imageTextInProcess(url)
+            let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageTextInProcess(url)
+            return text.map { .text($0) } ?? .empty
         }
         let process = Process()
         process.executableURL = executable
-        process.arguments = [argument, url.path]
-        // 认图片文字不急，让给前台的程序
-        process.qualityOfService = kind == .image ? .background : .utility
+        process.arguments = [argument, url.path] + (ocr ? [ocrArgument] : [])
+        // 建索引不急（扫描版 PDF、图片还要认字），让给前台的程序
+        process.qualityOfService = .background
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
+        do { try process.run() } catch { return .retryLater }
         // 卡住的文件最多等一分钟（扫描版 PDF 要认好几页）；不理 SIGTERM 时再过 3 秒强制结束
         let pid = process.processIdentifier
+        let timedOut = Locked(false)
         let timeout = DispatchWorkItem {
             guard process.isRunning else { return }
+            timedOut.set(true)
             process.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
                 if process.isRunning { kill(pid, SIGKILL) }
@@ -364,14 +392,16 @@ enum ContentExtractor {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         timeout.cancel()
+        // 超时多半是电脑太忙（子进程优先级最低），下次再读；子进程崩了是文件的问题，记下来不再读
+        if timedOut.get() { return .retryLater }
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             Log.app.notice("内容索引：读不了 \(url.path, privacy: .public)")
-            return nil
+            return .empty
         }
-        return String(decoding: data, as: UTF8.self)
+        return .text(String(decoding: data, as: UTF8.self))
     }
 
-    private static func pdfTextInProcess(_ url: URL) -> String? {
+    static func pdfTextInProcess(_ url: URL, ocr: Bool) -> String? {
         autoreleasepool {
             // 有密码的打不开，跳过
             guard let document = PDFDocument(url: url), !document.isLocked else { return nil }
@@ -386,7 +416,7 @@ enum ContentExtractor {
             }
             // PDFKit 用 U+FFFC 表示图片
             text = text.replacingOccurrences(of: "\u{FFFC}", with: "")
-            guard !text.contains(where: { !$0.isWhitespace }) else { return text }
+            guard ocr, !text.contains(where: { !$0.isWhitespace }) else { return text }
             // 没有文字层：扫描件，把前面几页画出来认字
             var recognized = ""
             for index in 0 ..< min(document.pageCount, maxOCRPages) {
@@ -425,10 +455,24 @@ enum ContentExtractor {
         return min(width, height) >= minImageSide / 2 && max(width, height) >= minImageSide
     }
 
+    /// 认字时图片最多这么多像素：全景照片、超大扫描图缩小再认，免得解出来占几 GB 内存
+    static let maxOCRPixels = 30_000_000
+
     private static func imageTextInProcess(_ url: URL) -> String? {
         autoreleasepool {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0
+            else { return nil }
+            // 按照片里记的方向转正（手机竖着拍的照片存的是横的），太大的按比例缩小
+            let scale = min(1, (Double(maxOCRPixels) / (Double(width) * Double(height))).squareRoot())
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(1, Int(Double(max(width, height)) * scale)),
+            ]
+            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
             return recognizeText(in: image)
         }
     }

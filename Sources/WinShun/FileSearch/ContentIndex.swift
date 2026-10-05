@@ -154,6 +154,16 @@ final class ContentIndex: ObservableObject {
         searchRoots.set(roots)
     }
 
+    /// 打开“认图片里的文字”时：之前没读出字的 PDF 可能是扫描件，忘掉，下次同步时重新读（认字）
+    func forgetTextlessPDFs() {
+        workQueue.async {
+            guard self.database != nil else { return }
+            let paths = self.known.filter { !$0.value.hasText && $0.key.lowercased().hasSuffix(".pdf") }.map(\.key)
+            guard !paths.isEmpty else { return }
+            self.transaction { paths.forEach(self.remove) }
+        }
+    }
+
     /// 程序正常退出时调用（主线程）：正在读的那批文件不算“读的时候崩了”，下次启动照常读。
     func prepareForQuit() {
         quitting.set(true)
@@ -329,8 +339,14 @@ final class ContentIndex: ObservableObject {
             let tasks = nextTasks()
             guard !tasks.isEmpty else { break }
             tasks.forEach { todo[$0.path] = nil }
-            // 路径里可能有换行，用 0 分开
-            try? Data(tasks.map(\.path).joined(separator: "\0").utf8).write(to: readingMarker)
+            // 记下正在本进程里读的文件，读的时候崩了下次知道是谁（路径里可能有换行，用 0 分开）。
+            // PDF 和图片在子进程里读，崩了也不影响本进程，不用记
+            let inProcess = tasks.filter { $0.kind != .pdf && $0.kind != .image }.map(\.path)
+            if inProcess.isEmpty {
+                try? FileManager.default.removeItem(at: readingMarker)
+            } else {
+                try? Data(inProcess.joined(separator: "\0").utf8).write(to: readingMarker)
+            }
             let results = Self.read(tasks)
             transaction {
                 for (task, result) in zip(tasks, results) {
@@ -394,7 +410,7 @@ final class ContentIndex: ObservableObject {
     private enum ReadResult {
         /// 文件没了
         case missing
-        /// iCloud 里还没下载的，先不读
+        /// iCloud 里还没下载的、这次没读成要下次再读的，先不记
         case skipped
         /// 读完了：压缩好的原文和交给全文索引的文字（没有文字时都是 nil）
         case read(FileInfo, Data?, String?)
@@ -410,7 +426,12 @@ final class ContentIndex: ObservableObject {
                 let task = tasks[index]
                 guard let info = fileInfo(task.path) else { return .missing }
                 guard !info.isDataless else { return .skipped }
-                guard let text = ContentExtractor.extract(path: task.path, kind: task.kind) else { return .read(info, nil, nil) }
+                let text: String
+                switch ContentExtractor.read(path: task.path, kind: task.kind) {
+                case .text(let read): text = read
+                case .empty: return .read(info, nil, nil)
+                case .retryLater: return .skipped
+                }
                 let compressed = try? (Data(text.utf8) as NSData).compressed(using: .zlib) as Data
                 return .read(info, compressed, compressed == nil ? nil : ftsText(text))
             }

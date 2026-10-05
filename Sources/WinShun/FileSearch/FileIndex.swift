@@ -275,27 +275,45 @@ enum FileMatcher {
         let folders: [Set<String>]
         /// 写的是完整路径（/ 开头）：存在的话直接放在最前面，没收录的位置（例如“资源库”里）也能打开
         let absolutePath: String?
+        /// 带 / 但不像完整路径时，也可能是名字里的 /（访达把名字里的 : 显示成 /，例如“AC/DC”）：
+        /// 整个查询再按名字搜一遍，取好的那个
+        let nameTerms: [Term]?
 
         init(_ query: String) {
-            var text = query.trimmingCharacters(in: .whitespaces)
+            let quotes = CharacterSet(charactersIn: "\"'“”‘’")
+            // 两边的空格、换行（从别处复制常带着）和引号
+            var text = query.trimmingCharacters(in: .whitespacesAndNewlines.union(quotes))
             guard text.contains("/") || text.contains("\\") else {
-                (terms, folders, absolutePath) = (FileMatcher.terms(of: query), [], nil)
+                (terms, folders, absolutePath, nameTerms) = (FileMatcher.terms(of: query), [], nil, nil)
                 return
             }
-            let quotes: Set<Character> = ["\"", "'", "“", "”", "‘", "’"]
-            while let first = text.first, quotes.contains(first) { text.removeFirst() }
-            while let last = text.last, quotes.contains(last) { text.removeLast() }
             if text.hasPrefix("file://"), let url = URL(string: text), url.isFileURL { text = url.path }
-            text = text.replacingOccurrences(of: "\\", with: "/")
+            if text.contains("/") {
+                // Mac 的路径：\ 是终端里的转义（“My\ Project”）
+                text = text.replacingOccurrences(of: #"\\(.)"#, with: "$1", options: .regularExpression)
+            } else {
+                // Windows 的路径；\\服务器\共享 是网络上的共享文件夹，接上以后在 /Volumes/共享 里
+                text = text.replacingOccurrences(of: "\\", with: "/")
+                if text.hasPrefix("//") {
+                    let parts = text.split(separator: "/", omittingEmptySubsequences: true)
+                    text = parts.count >= 2 ? "/Volumes/" + parts.dropFirst().joined(separator: "/") : text
+                }
+            }
+            let looksAbsolute = text.hasPrefix("/") || text.hasPrefix("~")
             if text == "~" || text.hasPrefix("~/") { text = NSHomeDirectory() + text.dropFirst() }
             let chars = Array(text.prefix(3))
             if chars.count >= 2, chars[0].isASCII, chars[0].isLetter, chars[1] == ":", chars.count == 2 || chars[2] == "/" {
                 text.removeFirst(2)
             }
-            // 一段一段，去掉每段两边的空格（“桌面 / 塔防游戏”）和 “.”
-            let parts = text.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != "." }
+            // 一段一段，去掉每段两边的空格（“桌面 / 塔防游戏”）和 “.”，“..” 回到上一层
+            var parts: [String] = []
+            for raw in text.split(separator: "/") {
+                let part = raw.trimmingCharacters(in: .whitespaces)
+                if part == ".." { _ = parts.popLast() } else if !part.isEmpty && part != "." { parts.append(part) }
+            }
             let absolute = text.hasPrefix("/") ? "/" + parts.joined(separator: "/") : nil
             absolutePath = absolute.flatMap { $0.count > 1 ? $0 : nil }
+            nameTerms = looksAbsolute || query.contains("\\") ? nil : FileMatcher.terms(of: text.replacingOccurrences(of: "/", with: ":"))
             terms = FileMatcher.terms(of: parts.last ?? "")
             folders = parts.dropLast().map { part in
                 let form = FolderEntries.matchForm(part, isASCII: part.utf8.allSatisfy { $0 < 0x80 })
@@ -572,7 +590,12 @@ final class FileIndex: ObservableObject {
         "node_modules", "site-packages", "dist-packages", "__pycache__", "bower_components", "Pods", "DerivedData",
         // 编译、打包、测试覆盖率生成的文件，和第三方依赖
         "dist", "build", "coverage", "vendor", "venv", "target", "Carthage",
+        // 装在个人文件夹里的 Python 发行版、第三方源码
+        "anaconda3", "miniconda3", "miniforge3", "third_party",
     ]
+
+    /// 这些位置只按名字搜，不读内容
+    private static let systemContentRoots = ["/Applications", "/System"]
 
     /// 把这些文件夹里要读内容的文件交给内容索引（在 queue 上）。
     private func sendContent(_ folders: [String: FolderEntries], scopes: [ContentIndex.Scope]) {
@@ -583,6 +606,8 @@ final class FileIndex: ObservableObject {
     }
 
     private static func collectContentFiles(_ folder: String, _ entries: FolderEntries, into files: inout [String]) {
+        // 只读用户自己的文件：“应用程序”和系统文件夹里不是 .app 的文件夹（素材库、自带文档）不读内容
+        guard !systemContentRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) else { return }
         // 缓存文件夹里是程序生成的东西（例如成千上万张缩略图），不读
         guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) || $0.lowercased().contains("cache") })
         else { return }
@@ -622,15 +647,23 @@ final class FileIndex: ObservableObject {
             for (folder, entries) in self.folders where !terms.isEmpty {
                 let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
                 var folderBonus: Double?
-                entries.forEachMatch(terms, depth: depth) { index, score in
-                    if folderBonus == nil { folderBonus = parsed.folderBonus(folder) }
-                    let bonus = folderBonus ?? 0
+                func add(_ index: Int, _ score: Double) {
                     let name = entries.name(at: index)
                     let path = folder == "/" ? "/" + name : folder + "/" + name
                     matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
-                                                    isDirectory: entries.isDirectory(at: index),
-                                                    score: score + bonus + (boosts[path] ?? 0)))
+                                                    isDirectory: entries.isDirectory(at: index), score: score + (boosts[path] ?? 0)))
                 }
+                entries.forEachMatch(terms, depth: depth) { index, score in
+                    if folderBonus == nil { folderBonus = parsed.folderBonus(folder) }
+                    add(index, score + (folderBonus ?? 0))
+                }
+                if let nameTerms = parsed.nameTerms { entries.forEachMatch(nameTerms, depth: depth, add) }
+            }
+            if parsed.nameTerms != nil {
+                // 两种搜法都搜到的，留分高的那个
+                var best: [String: FileSearchResult] = [:]
+                for match in matches where match.score > best[match.path]?.score ?? -.infinity { best[match.path] = match }
+                matches = Array(best.values)
             }
             if let path = parsed.absolutePath, let hit = Self.existingFile(path, among: &matches) {
                 matches.append(hit)

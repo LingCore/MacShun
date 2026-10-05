@@ -475,6 +475,8 @@ struct SearchField: NSViewRepresentable {
         field.delegate = context.coordinator
         field.cell?.isScrollable = true
         field.cell?.wraps = false
+        // 粘贴进来的换行变成空格（从终端、聊天里复制的路径后面常带一个换行）
+        field.cell?.usesSingleLineMode = true
         return field
     }
 
@@ -504,6 +506,10 @@ struct SearchField: NSViewRepresentable {
             case #selector(NSResponder.moveUp(_:)): parent.onMove(-1); return true
             case #selector(NSResponder.moveDown(_:)): parent.onMove(1); return true
             case #selector(NSResponder.insertNewline(_:)): parent.onSubmit(); return true
+            // Alt+Enter（⌥↩）、Ctrl+Enter、⌥Tab 会往一行的搜索框里插入真的换行、Tab，不要
+            case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), #selector(NSResponder.insertLineBreak(_:)),
+                 #selector(NSResponder.insertTabIgnoringFieldEditor(_:)):
+                return true
             case #selector(NSResponder.cancelOperation(_:)): parent.onCancel(); return true
             case #selector(NSResponder.insertTab(_:)):
                 guard let onTab = parent.onTab else { return false }

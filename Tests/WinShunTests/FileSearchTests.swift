@@ -234,6 +234,32 @@ struct FilePathQueryTests {
         #expect(names("My Docs/Q3 report.pdf") == ["q3", "report.pdf"])
     }
 
+    @Test func copiedPathsWithNewlinesEscapesAndShares() {
+        // 从终端、聊天里复制的路径后面常带换行
+        #expect(FileMatcher.Query("/Users/me/a.txt\n").absolutePath == "/Users/me/a.txt")
+        #expect(FileMatcher.Query("\"C:\\Users\\me\\a.txt\"\n").absolutePath == "/Users/me/a.txt")
+        #expect(names("\"C:\\Users\\me\\a.txt\"\n") == ["a.txt"])
+        // 拖进终端的路径：空格前面有 \
+        #expect(FileMatcher.Query(#"/Users/me/My\ Project/a\ b.txt"#).absolutePath == "/Users/me/My Project/a b.txt")
+        #expect(folders(#"My\ Project/a\ b.txt"#) == ["my project"])
+        // Windows 网络共享：接上以后在 /Volumes 里
+        #expect(FileMatcher.Query(#"\\NAS\资料\a.docx"#).absolutePath == "/Volumes/资料/a.docx")
+        // .. 回到上一层
+        #expect(FileMatcher.Query("/Users/me/Desktop/../a.txt").absolutePath == "/Users/me/a.txt")
+        #expect(folders("../shared/util.ts") == ["shared"])
+    }
+
+    @Test func slashInsideAFinderName() {
+        // 访达里显示“AC/DC”的文件，存的名字是“AC:DC”
+        let query = FileMatcher.Query("AC/DC")
+        let nameTerms = try! #require(query.nameTerms)
+        let entry = FileEntry(name: "AC:DC.mp3", isDirectory: false, isPackage: false)
+        #expect(FileMatcher.score(query: nameTerms, entry: entry, depth: 3) > FileMatcher.score(query: query.terms, entry: entry, depth: 3))
+        // 完整路径、Windows 路径不会是名字
+        #expect(FileMatcher.Query("/Users/me/a.txt").nameTerms == nil)
+        #expect(FileMatcher.Query(#"D:\a\b.txt"#).nameTerms == nil)
+    }
+
     @Test func absoluteHomeAndFileURLs() {
         #expect(FileMatcher.Query("/Users/me/a.txt").absolutePath == "/Users/me/a.txt")
         #expect(FileMatcher.Query("~/Desktop/a.txt").absolutePath == NSHomeDirectory() + "/Desktop/a.txt")

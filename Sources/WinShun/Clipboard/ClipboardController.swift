@@ -54,6 +54,11 @@ final class ClipboardController {
 
     func show(in host: Host? = nil) {
         guard configStore.config.clipboard.enabled else { return }
+        // 已经开着：放到前面就行，别把原来的搜索框、输入法记录换掉
+        if panel.isVisible {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
         model.prepareForShow()
         self.host = host
         if let host { position(panel, below: host.anchor) } else { position(panel) }
@@ -66,16 +71,20 @@ final class ClipboardController {
     /// Esc、再按一次 Win+V：关掉；从搜索框打开的回到搜索框
     func close() {
         let host = self.host
+        self.host = nil
         hide()
         host?.back()
     }
 
+    /// 关掉。从搜索框打开的，告诉它面板没了（点了别处、在设置里关掉了剪贴板历史），它自己决定接着用还是一起关
     func hide() {
-        host = nil
+        let host = self.host
+        self.host = nil
         removeKeyMonitor()
         FrontAppTracker.shared.clipboardPanelActive.set(false)
         if panel.isVisible { panel.orderOut(nil) }
         restoreInputSource()
+        host?.resigned()
     }
 
     private func restoreInputSource() {
@@ -90,6 +99,7 @@ final class ClipboardController {
     /// 把选中的条目放进剪贴板，再模拟 ⌘V 粘贴到原来的应用里。
     func paste(_ item: ClipboardItem) {
         if let host {
+            self.host = nil
             hide()
             store.markUsed(item.id)
             host.insert(item.kind == .text ? item.text : nil)
@@ -145,11 +155,7 @@ final class ClipboardController {
     private func makePanel() -> ClipboardPanel {
         let panel = ClipboardPanel()
         panel.contentView = NSHostingView(rootView: ClipboardPanelView(model: model))
-        panel.onResignKey = { [weak self] in
-            let host = self?.host
-            self?.hide()
-            host?.resigned()
-        }
+        panel.onResignKey = { [weak self] in self?.hide() }
         return panel
     }
 

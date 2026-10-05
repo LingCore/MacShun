@@ -16,6 +16,8 @@ final class FileSearchController {
     private var subscriptions: Set<AnyCancellable> = []
     /// 接住 Ctrl+Enter 的事件监听（见 makePanel）
     private var keyMonitor: Any?
+    /// 剪贴板面板正叠在搜索框上（见 clipboardHost）
+    private var hostingClipboard = false
     /// 打开前的输入法。打开时切到英文（直接打拼音首字母），关闭时切回来。
     private var savedInputSource: TISInputSource?
 
@@ -30,17 +32,21 @@ final class FileSearchController {
             index.includeExternalDrives = cfg.includeExternalDrives
             if cfg.enabled && cfg.activated && (index.isIndexing || index.lastIndexed != nil) { index.rebuild() }
         }
+        // 认不认图片文字变了：重新扫一遍，把图片交给内容索引，或者从内容索引里去掉。
+        // 要在 start 之前设好：启动时不然会先按默认值扫一遍、马上又重扫一遍
+        if ContentExtractor.readsImages.get() != cfg.searchImageText {
+            ContentExtractor.readsImages.set(cfg.searchImageText)
+            if cfg.searchImageText { contentIndex.forgetTextlessPDFs() }
+            if cfg.enabled && cfg.activated && cfg.searchContents && (index.isIndexing || index.lastIndexed != nil) {
+                index.rebuild()
+            }
+        }
         if cfg.enabled && cfg.activated {
             index.start()
         } else if !cfg.enabled {
             index.stop()
             hide()
             history.clear()
-        }
-        // 认不认图片文字变了：重新扫一遍，把图片交给内容索引，或者从内容索引里去掉
-        if ContentExtractor.readsImages.get() != cfg.searchImageText {
-            ContentExtractor.readsImages.set(cfg.searchImageText)
-            if cfg.enabled && cfg.activated && (index.isIndexing || index.lastIndexed != nil) { index.rebuild() }
         }
         // 内容索引里有文件的原文，不用了就删掉
         let searchesContent = cfg.enabled && cfg.activated && cfg.searchContents
@@ -65,11 +71,19 @@ final class FileSearchController {
         let frame = panel.frame
         let capsuleBottom = frame.maxY - FileSearchView.margin - FileSearchView.capsuleHeight
         let anchor = NSRect(x: frame.minX + 64, y: capsuleBottom, width: 0, height: FileSearchView.capsuleHeight)
+        hostingClipboard = true
         return .init(
             anchor: anchor,
-            insert: { [weak self] text in self?.insert(text) },
-            back: { [weak self] in self?.refocus() },
+            insert: { [weak self] text in
+                self?.hostingClipboard = false
+                self?.insert(text)
+            },
+            back: { [weak self] in
+                self?.hostingClipboard = false
+                self?.refocus()
+            },
             resigned: { [weak self] in
+                self?.hostingClipboard = false
                 // 点回了搜索框就接着用；点了别的程序，搜索框也关掉
                 DispatchQueue.main.async {
                     guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
@@ -173,14 +187,18 @@ final class FileSearchController {
         panel.contentView = host
         // 在搜索框里按 Win+V 打开的剪贴板面板叠在上面时不关
         panel.onResignKey = { [weak self] in
-            if !FrontAppTracker.shared.clipboardPanelActive.get() { self?.hide() }
+            guard let self, !self.hostingClipboard else { return }
+            self.hide()
         }
         // Ctrl+Enter 是系统“显示快捷菜单”的快捷键：系统在把按键交给窗口之前就处理了，输入框上会弹出右键菜单。
         // 本程序的事件监听在那之前，在这里接住。⌘+Enter 输入框不处理，也在这里接。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
-            guard let self, let panel, event.window === panel, Self.isRevealKey(event),
-                  (panel.firstResponder as? NSTextView)?.hasMarkedText() != true   // 输入法还在拼字时，回车留给输入法
-            else { return event }
+            guard let self, let panel, event.window === panel, Self.isRevealKey(event) else { return event }
+            // 输入法还在拼字时交给输入法（放过去的话系统会弹出右键菜单）
+            if let editor = panel.firstResponder as? NSTextView, editor.hasMarkedText() {
+                _ = editor.inputContext?.handleEvent(event)
+                return nil
+            }
             self.model.openSelected(reveal: true)
             return nil
         }
@@ -314,7 +332,8 @@ final class FileSearchModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self, self.isShown, !self.query.isEmpty else { return }
-                self.scheduleSearch(resetSelection: false)
+                // 只重搜文件名：内容搜索不跟着重来，不然文件一直在变时（扫描外接硬盘、装依赖）内容结果总被丢掉
+                self.scheduleSearch(resetSelection: false, includingContent: false)
             }
             .store(in: &subscriptions)
         // 内容索引读完一批文件后也重新搜一次（每次最多半秒发布一次）
@@ -361,7 +380,7 @@ final class FileSearchModel: ObservableObject {
     }
 
     /// 打了字时从第一条选起；文件有变化重新搜时，选中的那条不动
-    private func scheduleSearch(resetSelection: Bool = true) {
+    private func scheduleSearch(resetSelection: Bool = true, includingContent: Bool = true) {
         generation += 1
         let current = generation
         let q = query
@@ -370,7 +389,7 @@ final class FileSearchModel: ObservableObject {
             self.nameResults = found
             self.merge(resetSelection: resetSelection)
         }
-        scheduleContentSearch()
+        if includingContent { scheduleContentSearch() }
     }
 
     /// 内容搜索稍等一下再发（打字很快时只搜最后一次），旧的结果先留着，新的来了再换，免得列表一闪一闪。
@@ -385,12 +404,12 @@ final class FileSearchModel: ObservableObject {
             }
             return
         }
-        let current = generation
         searchingContent = true
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.contentIndex.search(q) { [weak self] hits in
-                guard let self, current == self.generation else { return }
+                // 关键词、范围变了就不要了（只看关键词：文件名重搜不影响内容结果）
+                guard let self, self.isShown, q == self.query, self.effectiveScope != .files else { return }
                 // 打开过的文件往前放，其余按相关程度
                 let boosts = self.history?.boosts() ?? [:]
                 self.contentResults = hits.enumerated().map { position, hit in

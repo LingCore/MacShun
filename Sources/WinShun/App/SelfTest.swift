@@ -287,7 +287,21 @@ final class SelfTest {
             let filled = await waitUntil(timeout: 4) { fileSearch.visibleResults.first?.path == file.path }
             check("从剪贴板历史选的路径填进搜索框并搜到", filled && !clipboard.isVisible && fileSearch.isKey,
                   "搜索框里：\(fileSearch.currentQuery.debugDescription)，第一条：\(fileSearch.visibleResults.first?.path ?? "无")")
+
+            // 剪贴板面板叠在上面时连按两下 Ctrl：剪贴板面板关掉，回到搜索框
+            await press(KeyCode.v, [.win], settle: 500)
+            await tapControl()
+            await tapControl()
+            let back = await waitUntil(timeout: 2) { !self.clipboard.isVisible && fileSearch.isVisible && fileSearch.isKey }
+            check("剪贴板面板开着时连按两下 Ctrl：回到搜索框", back,
+                  "剪贴板面板：\(clipboard.isVisible)，搜索框：\(fileSearch.isVisible)，在接收按键：\(fileSearch.isKey)")
         }
+
+        // Alt+Enter（Windows 上是“属性”）不往搜索框里插换行
+        let before = fileSearch.currentQuery
+        await press(KeyCode.returnKey, [.alt], settle: 300)
+        check("Alt+Enter 不往搜索框里插换行", fileSearch.currentQuery == before && fileSearch.isVisible,
+              "搜索框里：\(fileSearch.currentQuery.debugDescription)")
 
         menus = 0
         await press(KeyCode.returnKey, [.ctrl], settle: 300)
