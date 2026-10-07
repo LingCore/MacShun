@@ -23,7 +23,7 @@ let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
 NSApp.appearance = appearance
 func wants(_ name: String) -> Bool { only == nil || only == name }
 
-let suite = "winshun-readme-shots-\(UUID().uuidString)"
+let suite = "macshun-readme-shots-\(UUID().uuidString)"
 let defaults = UserDefaults(suiteName: suite)!
 let config = ConfigStore(defaults: defaults)
 let state = AppState()
@@ -38,12 +38,12 @@ state.keyboards = [
     InputDevice(key: "1452:641:Apple Internal Keyboard", name: "Apple Internal Keyboard / Trackpad", vendorID: 1452, productID: 641),
     InputDevice(key: "1133:50475:Logitech K845", name: "Logitech K845 Mechanical Keyboard", vendorID: 1133, productID: 50475),
 ]
-let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("winshun-shots-\(UUID().uuidString)")
+let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("macshun-shots-\(UUID().uuidString)")
 let store = ClipboardStore(directory: scratch.appendingPathComponent("clip"))
 let now = Date()
 let samples: [(String, String, Double)] = en ? [
     ("Meeting notes: release planning, Friday 3 pm, Room 3", "Notes", 3600),
-    ("https://github.com/LingCore/WinShun", "Safari", 1800),
+    ("https://github.com/LingCore/MacShun", "Safari", 1800),
     ("git commit -m \"Fix scroll direction\"", "Terminal", 900),
     ("Thank you for your email. I'll get back to you by Monday.", "Mail", 600),
     ("221B Baker Street, London NW1 6XE", "Messages", 300),
@@ -51,7 +51,7 @@ let samples: [(String, String, Double)] = en ? [
     ("Please send me the design draft before Tuesday. Thanks!", "Slack", 30),
 ] : [
     ("会议纪要：周五下午三点在 3 号会议室讨论新版发布计划", "备忘录", 3600),
-    ("https://github.com/LingCore/WinShun", "Safari 浏览器", 1800),
+    ("https://github.com/LingCore/MacShun", "Safari 浏览器", 1800),
     ("git commit -m \"修复滚轮方向\"", "终端", 900),
     ("Thank you for your email. I'll get back to you by Monday.", "邮件", 600),
     ("北京市朝阳区建国路 88 号", "微信", 300),
@@ -313,14 +313,14 @@ if wants("snap") {
     func icon(_ path: String) -> NSImage { NSWorkspace.shared.icon(forFile: path) }
     let model = SnapAssistModel()
     let apps: [(String, String, String)] = en ? [
-        ("WinShun — README.md", "Visual Studio Code", "/Applications/Visual Studio Code.app"),
-        ("GitHub - LingCore/WinShun", "Google Chrome", "/Applications/Google Chrome.app"),
+        ("MacShun — README.md", "Visual Studio Code", "/Applications/Visual Studio Code.app"),
+        ("GitHub - LingCore/MacShun", "Google Chrome", "/Applications/Google Chrome.app"),
         ("Documents", "Finder", "/System/Library/CoreServices/Finder.app"),
         ("Inbox", "Mail", "/System/Applications/Mail.app"),
         ("Shopping list", "Notes", "/System/Applications/Notes.app"),
         ("Calendar", "Calendar", "/System/Applications/Calendar.app"),
     ] : [
-        ("Win顺 — README.md", "Visual Studio Code", "/Applications/Visual Studio Code.app"),
+        ("Mac顺 — README.md", "Visual Studio Code", "/Applications/Visual Studio Code.app"),
         ("LINUX DO - 新的理想型社区", "Google Chrome", "/Applications/Google Chrome.app"),
         ("文稿", "访达", "/System/Library/CoreServices/Finder.app"),
         ("微信", "微信", "/Applications/WeChat.app"),

@@ -14,10 +14,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# 和程序一起编译（不要 WinShunMain.swift 里的入口），DEBUG 才有截图用的假数据入口
+# 和程序一起编译（不要 MacShunMain.swift 里的入口），DEBUG 才有截图用的假数据入口
 SOURCES=()
 while IFS= read -r -d '' file; do SOURCES+=("$file"); done \
-    < <(find "$ROOT/Sources/WinShun" -name '*.swift' ! -name WinShunMain.swift -print0)
+    < <(find "$ROOT/Sources/MacShun" -name '*.swift' ! -name MacShunMain.swift -print0)
 swiftc -O -D DEBUG -swift-version 5 -o "$WORK/shots" "$ROOT/scripts/readme-shots/main.swift" "${SOURCES[@]}" -lsqlite3
 # 界面文字和图片从程序旁边的 .lproj 里找
 rsync -a --exclude Info.plist "$ROOT/Resources/" "$WORK/"

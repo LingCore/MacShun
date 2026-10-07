@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# 打包发布版：同时支持 Apple Silicon 和 Intel 的通用程序，装进 dist/WinShun-<版本>.dmg，
+# 打包发布版：同时支持 Apple Silicon 和 Intel 的通用程序，装进 dist/MacShun-<版本>.dmg，
 # 旁边生成 .sha256 校验文件。版本号取自 Resources/Info.plist 的 CFBundleShortVersionString。
 #
 # 用法：
@@ -14,17 +14,17 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="Win顺"
+APP_NAME="Mac顺"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist")"
 DIST="$ROOT/dist"
-DMG="$DIST/WinShun-$VERSION.dmg"
+DMG="$DIST/MacShun-$VERSION.dmg"
 
 cd "$ROOT"
 scripts/test.sh
 UNIVERSAL=1 scripts/build-app.sh
 
 APP="$ROOT/build/$APP_NAME.app"
-ARCHS="$(lipo -archs "$APP/Contents/MacOS/WinShun")"
+ARCHS="$(lipo -archs "$APP/Contents/MacOS/MacShun")"
 [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "错误：程序不是通用版（${ARCHS}）" >&2; exit 1; }
 
 # 磁盘映像里放程序和一个指向“应用程序”文件夹的替身，用户拖过去就装好了

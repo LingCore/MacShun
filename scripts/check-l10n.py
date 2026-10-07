@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = ROOT / "Sources" / "WinShun"
+SOURCES = ROOT / "Sources" / "MacShun"
 STRINGS = ROOT / "Resources" / "en.lproj" / "Localizable.strings"
 STRINGSDICT = ROOT / "Resources" / "en.lproj" / "Localizable.stringsdict"
 

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- Win顺 app icon: ⌘ drawn as one stroke, its loops squared off like Windows tiles, in the four Windows colours;
+  <!-- Mac顺 app icon: ⌘ drawn as one stroke, its loops squared off like Windows tiles, in the four Windows colours;
        the top-right loop comes to a leaf tip -->
   <defs>
     <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E9EDF4"/></linearGradient>

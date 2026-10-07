@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="252 252 520 520" width="520" height="520">
-  <!-- Win顺 mark without the plate: one-stroke ⌘ in the four Windows colours, the top-right loop is a leaf -->
+  <!-- Mac顺 mark without the plate: one-stroke ⌘ in the four Windows colours, the top-right loop is a leaf -->
   <defs>
     <linearGradient id="gL" gradientUnits="userSpaceOnUse" x1="372" y1="0" x2="652" y2="0"><stop offset="0" stop-color="#FFF"/><stop offset="1" stop-color="#000"/></linearGradient>
     <mask id="mL" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024"><rect width="1024" height="1024" fill="url(#gL)"/></mask>

@@ -4,12 +4,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "WinShun",
+    name: "MacShun",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "WinShun",
-            path: "Sources/WinShun",
+            name: "MacShun",
+            path: "Sources/MacShun",
             exclude: [],
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -19,9 +19,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "WinShunTests",
-            dependencies: ["WinShun"],
-            path: "Tests/WinShunTests"
+            name: "MacShunTests",
+            dependencies: ["MacShun"],
+            path: "Tests/MacShunTests"
         ),
     ],
     // 事件拦截在独立线程上运行，和界面线程共享状态时用锁保护；

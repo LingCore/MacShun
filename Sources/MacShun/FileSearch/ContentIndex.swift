@@ -1,0 +1,853 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import Combine
+import Foundation
+import SQLite3
+
+/// 文件内容索引（F2）：把 txt、csv、json、Word、Excel、PowerPoint、PDF 里的文字存进 SQLite 的全文索引（FTS5），
+/// 在搜索框里按内容搜。索引放在 ~/Library/Application Support/MacShun/ContentIndex/，只在这台电脑上，不联网。
+///
+/// - 要读哪些文件由文件名索引（FileIndex）告诉它：扫描完一遍、FSEvents 报告有变化时，把文件列表和范围交过来；
+///   这里按修改时间和大小判断哪些要重新读，读完的不再重复读。
+/// - 中文没有空格分词。存进去之前把每个汉字前后加上空格，变成一个个单字，搜“合同”时按短语找连在一起的“合 同”。
+///   这样一两个字也能搜，不需要词典。
+/// - 原文压缩后另存一份，搜到以后从里面截一段显示在结果里，不用再去读文件。
+///
+/// 写数据库在 workQueue 上，搜索在 searchQueue 上用另一个连接（WAL 模式下读写互不阻塞）。状态在主线程上发布。
+final class ContentIndex: ObservableObject {
+    static let shared = ContentIndex(directory: FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("MacShun/ContentIndex", isDirectory: true))
+
+    /// 收录了内容的文件数
+    @Published private(set) var documentCount = 0
+    /// 还没读的文件数。大于 0 时表示正在建立索引
+    @Published private(set) var pendingCount = 0
+    /// 索引占的磁盘空间（字节）
+    @Published private(set) var diskSize: Int64 = 0
+
+    /// 一个范围：某个文件夹下面（recursive 为 false 时只算直接在这个文件夹里的文件）
+    struct Scope {
+        let folder: String
+        let recursive: Bool
+        private let prefix: String
+
+        init(folder: String, recursive: Bool) {
+            self.folder = folder
+            self.recursive = recursive
+            prefix = folder == "/" ? "/" : folder + "/"
+        }
+
+        func contains(_ path: String) -> Bool {
+            guard path.hasPrefix(prefix) else { return false }
+            return recursive || !path[path.index(path.startIndex, offsetBy: prefix.count)...].contains("/")
+        }
+    }
+
+    /// 一组范围。范围很多时（FSEvents 一次报告几千个文件夹）按文件夹查，每个路径只往上走一遍，不用和每个范围比
+    struct ScopeSet {
+        private let scopes: [Scope]
+        private var direct = Set<String>()
+        private var recursive = Set<String>()
+
+        init(_ scopes: [Scope]) {
+            self.scopes = scopes
+            for scope in scopes {
+                if scope.recursive { recursive.insert(scope.folder) } else { direct.insert(scope.folder) }
+            }
+        }
+
+        func contains(_ path: String) -> Bool {
+            if scopes.count <= 8 { return scopes.contains { $0.contains(path) } }
+            var folder = (path as NSString).deletingLastPathComponent
+            if direct.contains(folder) { return true }
+            while true {
+                if recursive.contains(folder) { return true }
+                if folder == "/" || folder.isEmpty { return false }
+                folder = (folder as NSString).deletingLastPathComponent
+            }
+        }
+    }
+
+    struct Hit: Equatable {
+        let path: String
+        /// 匹配处附近的一段文字，一行
+        let snippet: String
+    }
+
+    private let directory: URL
+    private var databasePath: String { directory.appendingPathComponent("content.sqlite").path }
+    /// 正在读的文件。读的时候程序崩了（文件损坏），下次启动跳过它，免得一启动就崩
+    private var readingMarker: URL { directory.appendingPathComponent("reading") }
+    /// 改了存储格式或分词方式就加一，旧索引会删掉重建
+    private static let schemaVersion: Int32 = 4   // 3：两个汉字之间隔着标点时加分隔记号；4：JSON 也收 512 KB
+
+    private let workQueue = DispatchQueue(label: "MacShun.ContentIndex", qos: .utility, autoreleaseFrequency: .workItem)
+    private let searchQueue = DispatchQueue(label: "MacShun.ContentIndex.search", qos: .userInitiated)
+
+    private struct Document {
+        let id: Int64
+        let mtime: Double
+        let size: Int
+        let hasText: Bool
+    }
+
+    /// 以下只在 workQueue 上读写
+    private var database: SQLiteDatabase?
+    private var known: [String: Document] = [:]
+    /// 要读的文件。buckets 按种类分开排队，取的时候核对一下 todo，已经不用读的跳过
+    private var todo: [String: ContentExtractor.Kind] = [:]
+    private var buckets: [[String]] = []
+    private var textCount = 0
+    private var working = false
+    private var lastPublish = Date.distantPast
+    /// 上次和别的文件一起读时程序退出了的文件：这次一个一个单独读，再出事就知道是哪个
+    private var suspects = Set<String>()
+    /// 这个事务里有一步写失败了（例如磁盘满），结束时回滚
+    private var transactionFailed = false
+
+    /// 程序正在退出：不再开始读新的一批
+    private let quitting = Locked(false)
+
+    /// 以下只在 searchQueue 上读写
+    private var reader: SQLiteDatabase?
+
+    /// 搜索结果只要这些位置下面的（拔掉或者不再包括的外接硬盘上的文件，索引里还有，但不显示）
+    private let searchRoots = Locked<[String]>([])
+
+    init(directory: URL) {
+        self.directory = directory
+    }
+
+    // MARK: - 开始、停止
+
+    /// 打开（没有就新建）索引。只在主线程上调用，重复调用没关系。
+    func start() {
+        workQueue.async {
+            guard self.database == nil else { return }
+            self.open()
+            self.publish(force: true)
+        }
+    }
+
+    /// 停止读文件。deleteData 为 true 时把索引文件也删掉。
+    func stop(deleteData: Bool) {
+        workQueue.async {
+            guard self.database != nil || deleteData else { return }
+            self.database = nil
+            self.known = [:]
+            self.todo = [:]
+            self.buckets = []
+            self.textCount = 0
+            self.suspects = []
+            // 先关掉搜索用的连接再删文件，不然还能从删掉的索引里搜到，重新打开时还可能删掉新索引的日志文件
+            self.searchQueue.sync { self.reader = nil }
+            if deleteData, FileManager.default.fileExists(atPath: self.directory.path) {
+                try? FileManager.default.removeItem(at: self.directory)
+                Log.app.notice("内容索引：已删除")
+            }
+            self.publish(force: true)
+        }
+    }
+
+    func setSearchRoots(_ roots: [String]) {
+        searchRoots.set(roots)
+    }
+
+    /// 打开“认图片里的文字”时：之前没读出字的 PDF 可能是扫描件，忘掉，下次同步时重新读（认字）
+    func forgetTextlessPDFs() {
+        workQueue.async {
+            guard self.database != nil else { return }
+            let paths = self.known.filter { !$0.value.hasText && $0.key.lowercased().hasSuffix(".pdf") }.map(\.key)
+            guard !paths.isEmpty else { return }
+            self.transaction { paths.forEach(self.remove) }
+        }
+    }
+
+    /// 程序正常退出时调用（主线程）：正在读的那批文件不算“读的时候崩了”，下次启动照常读。
+    func prepareForQuit() {
+        quitting.set(true)
+        try? FileManager.default.removeItem(at: readingMarker)
+    }
+
+    private func open() {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !openDatabase() {
+            // 数据库坏了：索引只是缓存，删掉重建
+            Log.app.error("内容索引：数据库打不开或已损坏，重新建立")
+            removeDatabaseFiles()
+            guard openDatabase() else { return }
+        }
+        // 上次读这一批文件时程序退出了（崩溃或被强制结束）。只有一个文件时就是它：记成“没有内容”，
+        // 文件改过之后才会再读；有好几个时不知道是哪个，这次一个一个单独读
+        let marker = (try? String(contentsOf: readingMarker, encoding: .utf8)) ?? ""
+        let crashed = marker.split(separator: marker.contains("\0") ? "\0" : "\n").map(String.init)
+        if crashed.count == 1, let path = crashed.first {
+            Log.app.error("内容索引：上次读这个文件时退出了，跳过：\(path, privacy: .public)")
+            transaction {
+                if let info = Self.fileInfo(path) { upsert(path, mtime: info.mtime, size: info.size, compressed: nil, body: nil) }
+            }
+        } else if crashed.count > 1 {
+            Log.app.notice("内容索引：上次读一批文件时退出了，这些文件改为单独读")
+            suspects = Set(crashed)
+        }
+        try? FileManager.default.removeItem(at: readingMarker)
+    }
+
+    /// 打开数据库、建表、读出已经收录的文件。失败时返回 false。
+    private func openDatabase() -> Bool {
+        guard var db = SQLiteDatabase(path: databasePath) else { return false }
+        if db.int("PRAGMA user_version") != Self.schemaVersion && db.int("SELECT count(*) FROM sqlite_master") != 0 {
+            // 旧格式：整个删掉重建
+            Log.app.notice("内容索引：格式变了，重新建立")
+            removeDatabaseFiles()
+            guard let fresh = SQLiteDatabase(path: databasePath) else { return false }
+            db = fresh
+        }
+        let ok = db.execute("""
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            CREATE TABLE IF NOT EXISTS docs (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                mtime REAL NOT NULL,
+                size INTEGER NOT NULL,
+                text BLOB
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+                body, content = '', tokenize = 'unicode61 remove_diacritics 2'
+            );
+            PRAGMA user_version = \(Self.schemaVersion);
+            """)
+        guard ok else { return false }
+        database = db
+        return loadKnown()
+    }
+
+    /// 从数据库读出已经收录的文件（打开时，和写失败回滚以后）。
+    private func loadKnown() -> Bool {
+        guard let database, let statement = database.prepare("SELECT id, path, mtime, size, text IS NOT NULL FROM docs") else {
+            self.database = nil
+            return false
+        }
+        var loaded: [String: Document] = [:]
+        var texts = 0
+        while statement.step() {
+            let hasText = statement.int(4) != 0
+            loaded[statement.string(1)] = Document(id: statement.int(0), mtime: statement.double(2),
+                                                   size: Int(statement.int(3)), hasText: hasText)
+            if hasText { texts += 1 }
+        }
+        known = loaded
+        textCount = texts
+        return true
+    }
+
+    private func removeDatabaseFiles() {
+        database = nil
+        searchQueue.sync { reader = nil }
+        for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: databasePath + suffix) }
+    }
+
+    // MARK: - 跟着文件变化更新
+
+    /// 文件名索引扫描完或者有变化时调用（哪个线程都可以）：scopes 范围里现在有的文件就是 files。
+    /// 新的、改过的排队去读；范围里索引有、files 里没有的（删掉、改名、移走了）从索引里去掉。
+    func sync(files: [String], scopes: [Scope]) {
+        workQueue.async {
+            guard self.database != nil else { return }
+            var present = Set<String>()
+            present.reserveCapacity(files.count)
+            // 外接硬盘上查一个文件的大小和修改时间要零点几毫秒，几个线程一起查
+            let candidates = files.compactMap { path in
+                ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent).map { (path, $0) }
+            }
+            let infos = Self.fileInfos(candidates.map(\.0))
+            present.formUnion(files)
+            for ((path, kind), info) in zip(candidates, infos) {
+                guard let info else { continue }
+                // iCloud 里还没下载到这台电脑的文件，读一下就会开始下载，不读
+                if info.isDataless { continue }
+                if info.size == 0 || info.size > kind.maxFileSize {
+                    self.todo[path] = nil
+                    if self.known[path] != nil { self.transaction { self.remove(path) } }
+                    continue
+                }
+                if let doc = self.known[path], doc.mtime == info.mtime, doc.size == info.size {
+                    self.todo[path] = nil
+                } else {
+                    self.enqueue(path, kind: kind)
+                }
+            }
+            let scopes = ScopeSet(scopes)
+            let gone = self.known.keys.filter { !present.contains($0) && scopes.contains($0) }
+            for path in self.todo.keys where !present.contains(path) && scopes.contains(path) { self.todo[path] = nil }
+            if !gone.isEmpty { self.transaction { gone.forEach(self.remove) } }
+            self.publish(force: !gone.isEmpty)
+            self.scheduleWork()
+        }
+    }
+
+    /// 去掉 scopes 范围里、不在 present 里的文件（全部扫完以后调用，前面分批 sync 时只增不删）。
+    func removeMissing(present: Set<String>, scopes: [Scope]) {
+        workQueue.async {
+            guard self.database != nil else { return }
+            let scopes = ScopeSet(scopes)
+            let gone = self.known.keys.filter { !present.contains($0) && scopes.contains($0) }
+            for path in self.todo.keys where !present.contains(path) && scopes.contains(path) { self.todo[path] = nil }
+            guard !gone.isEmpty else { return }
+            self.transaction { gone.forEach(self.remove) }
+            self.publish(force: true)
+        }
+    }
+
+    /// 去掉不在这些位置下面的文件（例如关掉了“包括外接硬盘”）。
+    func prune(keeping roots: [String]) {
+        let scopes = roots.map { Scope(folder: $0, recursive: true) }
+        workQueue.async {
+            guard self.database != nil else { return }
+            let outside = self.known.keys.filter { path in !scopes.contains { $0.contains(path) } }
+            for path in self.todo.keys where !scopes.contains(where: { $0.contains(path) }) { self.todo[path] = nil }
+            guard !outside.isEmpty else { return }
+            self.transaction { outside.forEach(self.remove) }
+            Log.app.notice("内容索引：去掉范围外的 \(outside.count, privacy: .public) 个文件")
+            self.publish(force: true)
+        }
+    }
+
+    private func enqueue(_ path: String, kind: ContentExtractor.Kind) {
+        guard todo[path] != kind else { return }
+        todo[path] = kind
+        while buckets.count <= kind.rawValue { buckets.append([]) }
+        buckets[kind.rawValue].append(path)
+    }
+
+    private func scheduleWork() {
+        guard !working, !todo.isEmpty else { return }
+        working = true
+        workQueue.async { self.workBatch() }
+    }
+
+    /// 读一批文件：先读快的（文本，再 Word、PowerPoint、Excel，最后 PDF）。一批里的文件几个核同时读，
+    /// 读完在一个事务里写进数据库；读满半秒就让出队列，让排在后面的文件变化先处理，搜索也能尽早搜到。
+    private func workBatch() {
+        working = false
+        guard database != nil, !todo.isEmpty else { return }
+        let begin = Date()
+        while Date().timeIntervalSince(begin) < 0.5 {
+            guard !quitting.get() else { return }
+            let tasks = nextTasks()
+            guard !tasks.isEmpty else { break }
+            tasks.forEach { todo[$0.path] = nil }
+            // 记下正在本进程里读的文件，读的时候崩了下次知道是谁（路径里可能有换行，用 0 分开）。
+            // PDF 和图片在子进程里读，崩了也不影响本进程，不用记
+            let inProcess = tasks.filter { $0.kind != .pdf && $0.kind != .image }.map(\.path)
+            if inProcess.isEmpty {
+                try? FileManager.default.removeItem(at: readingMarker)
+            } else {
+                try? Data(inProcess.joined(separator: "\0").utf8).write(to: readingMarker)
+            }
+            let results = Self.read(tasks)
+            transaction {
+                for (task, result) in zip(tasks, results) {
+                    switch result {
+                    case .missing: remove(task.path)
+                    case .skipped: break
+                    case let .read(info, compressed, body):
+                        upsert(task.path, mtime: info.mtime, size: info.size, compressed: compressed, body: body)
+                    }
+                }
+            }
+        }
+        try? FileManager.default.removeItem(at: readingMarker)
+        publish(force: todo.isEmpty)
+        if todo.isEmpty {
+            Log.app.notice("内容索引：读完了，共 \(self.textCount, privacy: .public) 个文件有内容")
+            // 并行读文件时用过的大块内存，系统分配器会留着备用，读完了就还给系统
+            malloc_zone_pressure_relief(nil, 0)
+        } else {
+            scheduleWork()
+        }
+    }
+
+    private struct Task {
+        let path: String
+        let kind: ContentExtractor.Kind
+    }
+
+    /// 下一批：同一种文件取十几个；PDF 在子进程里读，个别图片多的会占几百 MB 内存，一次只取四个；
+    /// 认图片文字最慢，放在最后，一次两张，不抢电脑
+    private func nextTasks() -> [Task] {
+        for rank in buckets.indices {
+            let limit = switch ContentExtractor.Kind(rawValue: rank) {
+            case .pdf: 4
+            case .image: 2
+            default: 16
+            }
+            var tasks: [Task] = []
+            var seen = Set<String>()
+            var later: [String] = []
+            while tasks.count < limit, let path = buckets[rank].popLast() {
+                guard let kind = todo[path], kind.rawValue == rank, seen.insert(path).inserted else { continue }
+                if suspects.contains(path) {
+                    // 单独一批
+                    if tasks.isEmpty {
+                        suspects.remove(path)
+                        buckets[rank].append(contentsOf: later)
+                        return [Task(path: path, kind: kind)]
+                    }
+                    later.append(path)
+                    continue
+                }
+                tasks.append(Task(path: path, kind: kind))
+            }
+            buckets[rank].append(contentsOf: later)
+            if !tasks.isEmpty { return tasks }
+        }
+        return []
+    }
+
+    private enum ReadResult {
+        /// 文件没了
+        case missing
+        /// iCloud 里还没下载的、这次没读成要下次再读的，先不记
+        case skipped
+        /// 读完了：压缩好的原文和交给全文索引的文字（没有文字时都是 nil）
+        case read(FileInfo, Data?, String?)
+    }
+
+    /// 几个核同时读一批文件（哪个线程都可以）。解析、压缩、分词都在这里做，写数据库的线程只管写。
+    private static func read(_ tasks: [Task]) -> [ReadResult] {
+        var results = [ReadResult](repeating: .skipped, count: tasks.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: tasks.count) { index in
+            // 每个文件读完就释放临时对象，不然 Data、XML 解析器会堆在一起
+            let result: ReadResult = autoreleasepool {
+                let task = tasks[index]
+                guard let info = fileInfo(task.path) else { return .missing }
+                guard !info.isDataless else { return .skipped }
+                let text: String
+                switch ContentExtractor.read(path: task.path, kind: task.kind) {
+                case .text(let read): text = read
+                case .empty: return .read(info, nil, nil)
+                case .retryLater: return .skipped
+                }
+                let compressed = try? (Data(text.utf8) as NSData).compressed(using: .zlib) as Data
+                return .read(info, compressed, compressed == nil ? nil : ftsText(text))
+            }
+            lock.lock()
+            results[index] = result
+            lock.unlock()
+        }
+        return results
+    }
+
+    // MARK: - 数据库读写（workQueue 上）
+
+    /// 一个事务里写。有一步失败（例如磁盘满）就整个回滚，重新读出数据库里的文件列表，免得和数据库对不上。
+    private func transaction(_ body: () -> Void) {
+        guard let database else { return }
+        transactionFailed = !database.execute("BEGIN")
+        if !transactionFailed { body() }
+        if transactionFailed || !database.execute("COMMIT") {
+            database.execute("ROLLBACK")
+            transactionFailed = false
+            Log.app.error("内容索引：写入失败，已回滚")
+            _ = loadKnown()
+        }
+    }
+
+    private func upsert(_ path: String, mtime: Double, size: Int, compressed: Data?, body: String?) {
+        guard let database else { return }
+        let id: Int64
+        if let old = known[path] {
+            deleteFromFTS(old)
+            guard let statement = database.prepare("UPDATE docs SET mtime = ?, size = ?, text = ? WHERE id = ?") else { return }
+            statement.bind(1, mtime)
+            statement.bind(2, Int64(size))
+            statement.bind(3, compressed)
+            statement.bind(4, old.id)
+            guard statement.run() else {
+                transactionFailed = true
+                return
+            }
+            id = old.id
+            if old.hasText { textCount -= 1 }
+        } else {
+            guard let statement = database.prepare("INSERT INTO docs (path, mtime, size, text) VALUES (?, ?, ?, ?)") else { return }
+            statement.bind(1, path)
+            statement.bind(2, mtime)
+            statement.bind(3, Int64(size))
+            statement.bind(4, compressed)
+            guard statement.run() else {
+                transactionFailed = true
+                return
+            }
+            id = database.lastInsertID
+        }
+        let hasText = compressed != nil && body != nil
+        if hasText, let body, let statement = database.prepare("INSERT INTO docs_fts (rowid, body) VALUES (?, ?)") {
+            statement.bind(1, id)
+            statement.bind(2, body)
+            guard statement.run() else {
+                transactionFailed = true
+                return
+            }
+            textCount += 1
+        }
+        known[path] = Document(id: id, mtime: mtime, size: size, hasText: hasText)
+    }
+
+    private func remove(_ path: String) {
+        guard let database, let doc = known[path] else { return }
+        deleteFromFTS(doc)
+        if doc.hasText { textCount -= 1 }
+        if let statement = database.prepare("DELETE FROM docs WHERE id = ?") {
+            statement.bind(1, doc.id)
+            if !statement.run() { transactionFailed = true }
+        }
+        known[path] = nil
+    }
+
+    /// 没有存原文的全文索引（contentless），删除时要交回当初存进去的同样的文字，所以从原文重新算一遍。
+    private func deleteFromFTS(_ doc: Document) {
+        guard doc.hasText, let database,
+              let select = database.prepare("SELECT text FROM docs WHERE id = ?") else { return }
+        select.bind(1, doc.id)
+        guard select.step(), let text = Self.decompress(select.data(0)),
+              let delete = database.prepare("INSERT INTO docs_fts (docs_fts, rowid, body) VALUES ('delete', ?, ?)")
+        else { return }
+        delete.bind(1, doc.id)
+        delete.bind(2, Self.ftsText(text))
+        if !delete.run() { transactionFailed = true }
+    }
+
+    private func publish(force: Bool) {
+        guard force || Date().timeIntervalSince(lastPublish) > 0.5 else { return }
+        lastPublish = Date()
+        let documents = textCount, pending = todo.count
+        let size = ["", "-wal"].reduce(Int64(0)) { total, suffix in
+            let attributes = try? FileManager.default.attributesOfItem(atPath: databasePath + suffix)
+            return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+        DispatchQueue.main.async {
+            if self.documentCount != documents { self.documentCount = documents }
+            if self.pendingCount != pending { self.pendingCount = pending }
+            if self.diskSize != size { self.diskSize = size }
+        }
+    }
+
+    private struct FileInfo {
+        let mtime: Double
+        let size: Int
+        let isDataless: Bool
+    }
+
+    private static func fileInfos(_ paths: [String]) -> [FileInfo?] {
+        var infos = [FileInfo?](repeating: nil, count: paths.count)
+        let chunks = 8
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: chunks) { chunk in
+            let range = stride(from: chunk, to: paths.count, by: chunks)
+            let local = range.map { (index: $0, info: fileInfo(paths[$0])) }
+            lock.lock()
+            for item in local { infos[item.index] = item.info }
+            lock.unlock()
+        }
+        return infos
+    }
+
+    /// 只要普通文件（不跟着替身走，免得同一个文件收录两遍）
+    private static func fileInfo(_ path: String) -> FileInfo? {
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        let mtime = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+        return FileInfo(mtime: mtime, size: Int(info.st_size),
+                        isDataless: info.st_flags & 0x4000_0000 != 0)   // SF_DATALESS
+    }
+
+    private static func decompress(_ data: Data?) -> String? {
+        guard let data, let raw = try? (data as NSData).decompressed(using: .zlib) else { return nil }
+        return String(decoding: raw as Data, as: UTF8.self)
+    }
+
+    // MARK: - 搜索
+
+    /// 按内容搜，结果在主线程上回调。查询太短（一个汉字、两个字母）时直接返回空，免得一个“的”字搜出整个硬盘。
+    func search(_ query: String, limit: Int = 30, completion: @escaping ([Hit]) -> Void) {
+        guard let match = Self.matchExpression(for: query) else {
+            completion([])
+            return
+        }
+        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
+        searchQueue.async {
+            let hits = self.runSearch(match, terms: terms, roots: roots, limit: limit)
+            DispatchQueue.main.async { completion(hits) }
+        }
+    }
+
+    /// 测试用：同步搜索
+    func searchNow(_ query: String, limit: Int = 30) -> [Hit] {
+        guard let match = Self.matchExpression(for: query) else { return [] }
+        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
+        return searchQueue.sync { runSearch(match, terms: terms, roots: roots, limit: limit) }
+    }
+
+    /// 测试用：等到排队的文件都读完
+    func waitUntilIdle() {
+        while workQueue.sync(execute: { !todo.isEmpty || working }) { usleep(5_000) }
+    }
+
+    /// 测试用：收录了内容的文件数（不经过主线程）
+    var documentCountNow: Int { workQueue.sync { textCount } }
+
+    private func runSearch(_ match: String, terms: [String], roots: [Scope], limit: Int) -> [Hit] {
+        if reader == nil {
+            guard FileManager.default.fileExists(atPath: databasePath) else { return [] }
+            reader = SQLiteDatabase(path: databasePath, create: false)
+        }
+        // 原文只给最后用上的几个取，排序时不带着它
+        guard let reader, let statement = reader.prepare("""
+            SELECT d.id, d.path FROM
+                (SELECT rowid, rank FROM docs_fts WHERE docs_fts MATCH ? ORDER BY rank LIMIT ?) AS f
+            JOIN docs AS d ON d.id = f.rowid
+            ORDER BY f.rank
+            """), let textStatement = reader.prepare("SELECT text FROM docs WHERE id = ?")
+        else {
+            self.reader = nil   // 可能索引还没建好，下次再试
+            return []
+        }
+        // 多取很多：拔掉的外接硬盘上的文件还在索引里，可能排在前面，要跳过它们往下找
+        statement.bind(1, match)
+        statement.bind(2, Int64(max(limit * 2, 1000)))
+        var hits: [Hit] = []
+        while hits.count < limit && statement.step() {
+            let path = statement.string(1)
+            guard roots.isEmpty || roots.contains(where: { $0.contains(path) }),
+                  FileManager.default.fileExists(atPath: path) else { continue }
+            textStatement.reset()
+            textStatement.bind(1, statement.int(0))
+            guard textStatement.step(), let text = Self.decompress(textStatement.data(0)) else { continue }
+            hits.append(Hit(path: path, snippet: Self.snippet(in: text, terms: terms)))
+        }
+        return hits
+    }
+
+    // MARK: - 分词和摘要（纯函数，方便测试）
+
+    /// 中日韩文字：每个字单独成词
+    static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xAC00...0xD7AF, 0xF900...0xFAFF, 0x20000...0x3134F: true
+        default: false
+        }
+    }
+
+    /// 两个汉字之间隔着标点时放的分隔记号（私用区字符，分词器会把它当成一个词）：
+    /// 搜“合同”时，“符合。同时”里隔着句号的两个字连不起来。
+    /// 空格、换行不算（中文硬换行也可能把一个词断开）；英文本来按词分，隔着标点也没关系，不加（代码里标点很多，加了索引会大很多）。
+    static let boundary: Unicode.Scalar = "\u{E000}"
+
+    /// 交给 FTS5 的文字：每个汉字前后加空格，英文、数字不变，两个汉字之间隔着标点时加一个分隔记号。
+    static func ftsText(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var lastWasCJK = false
+        var punctuation = false
+        for scalar in text.unicodeScalars {
+            let cjk = isCJK(scalar)
+            if cjk || isWordCharacter(scalar) {
+                if cjk && lastWasCJK && punctuation {
+                    out.append(" ")
+                    out.append(boundary)
+                    out.append(" ")
+                }
+                punctuation = false
+                lastWasCJK = cjk
+                if cjk {
+                    out.append(" ")
+                    out.append(scalar)
+                    out.append(" ")
+                } else {
+                    out.append(scalar)
+                }
+            } else {
+                if !scalar.properties.isWhitespace { punctuation = true }
+                out.append(scalar)
+            }
+        }
+        return String(out)
+    }
+
+    /// 分词器当成词的一部分的字符：字母、数字、附加符号、私用区字符（和 unicode61 一样）
+    private static func isWordCharacter(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber, .nonspacingMark, .spacingMark, .enclosingMark, .privateUse:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 查询够不够长：汉字算 2，字母数字算 1，至少 3（两个汉字、三个字母、一个汉字加一个字母）。
+    static func qualifies(_ query: String) -> Bool {
+        var weight = 0
+        for scalar in query.unicodeScalars {
+            if isCJK(scalar) { weight += 2 } else if CharacterSet.alphanumerics.contains(scalar) { weight += 1 }
+            if weight >= 3 { return true }
+        }
+        return false
+    }
+
+    /// 把搜索框里的字变成 FTS5 查询：空格分开的每个词都要出现，一个词里的字要连在一起（短语），
+    /// 最后是字母或数字时按前缀找（打 “inv” 能找到 “invoice”）。
+    static func matchExpression(for query: String) -> String? {
+        guard qualifies(query) else { return nil }
+        var phrases: [String] = []
+        func isLetter(_ scalar: Unicode.Scalar) -> Bool { !isCJK(scalar) && CharacterSet.alphanumerics.contains(scalar) }
+        for term in query.split(whereSeparator: { $0.isWhitespace }) {
+            let scalars = Array(term.unicodeScalars)
+            let hasCJK = scalars.contains(where: isCJK)
+            // 只有一个字母或数字的词太宽（以它开头的词成千上万），搜起来慢，不参与内容搜索；继续打字就有了
+            guard hasCJK || scalars.filter(isLetter).count >= 2 else { continue }
+            let escaped = ftsText(String(term)).replacingOccurrences(of: "\"", with: "\"\"")
+            var phrase = "\"" + escaped + "\""
+            // 结尾至少两个字母或数字时按前缀找
+            if scalars.count >= 2, isLetter(scalars[scalars.count - 1]), isLetter(scalars[scalars.count - 2]) {
+                phrase += " *"
+            }
+            phrases.append(phrase)
+        }
+        return phrases.isEmpty ? nil : phrases.joined(separator: " AND ")
+    }
+
+    /// 从原文里截出第一次匹配附近的一段，压成一行：匹配处前面留十几个字，后面留到够显示一行。
+    static func snippet(in text: String, terms: [String], before: Int = 14, after: Int = 90) -> String {
+        let haystack = asciiLowercased(Array(text.utf8))
+        var position: Int?
+        for term in terms {
+            if let found = FileMatcher.find(asciiLowercased(Array(term.utf8)), in: haystack), found < position ?? .max {
+                position = found
+            }
+        }
+        let utf8 = text.utf8
+        var start = utf8.index(utf8.startIndex, offsetBy: position ?? 0)
+        while start > utf8.startIndex && UTF8.isContinuation(utf8[start]) { start = utf8.index(before: start) }
+        let match = start
+        // 往前退几个字，碰到换行就停
+        var steps = 0
+        while start > text.startIndex && steps < before {
+            let previous = text.index(before: start)
+            if text[previous].isNewline { break }
+            start = previous
+            steps += 1
+        }
+        let end = text.index(match, offsetBy: after, limitedBy: text.endIndex) ?? text.endIndex
+        var line = ""
+        var lastWasSpace = false
+        for character in text[start ..< end] {
+            if character.isWhitespace {
+                if !lastWasSpace && !line.isEmpty { line.append(" ") }
+                lastWasSpace = true
+            } else {
+                line.append(character)
+                lastWasSpace = false
+            }
+        }
+        let cut = start > text.startIndex && !text[text.index(before: start)].isNewline
+        return (cut ? "…" : "") + line.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func asciiLowercased(_ bytes: [UInt8]) -> [UInt8] {
+        bytes.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 0x20 : $0 }
+    }
+}
+
+// MARK: - SQLite
+
+/// SQLite 连接的小包装。一个连接只在一个队列上用。
+final class SQLiteDatabase {
+    private let handle: OpaquePointer
+
+    init?(path: String, create: Bool = true) {
+        var db: OpaquePointer?
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX | (create ? SQLITE_OPEN_CREATE : 0)
+        guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK, let db else {
+            Log.app.error("内容索引：打不开数据库 \(path, privacy: .public)")
+            sqlite3_close_v2(db)
+            return nil
+        }
+        handle = db
+        sqlite3_busy_timeout(db, 2000)
+    }
+
+    deinit { sqlite3_close_v2(handle) }
+
+    @discardableResult
+    func execute(_ sql: String) -> Bool {
+        var error: UnsafeMutablePointer<CChar>?
+        guard sqlite3_exec(handle, sql, nil, nil, &error) == SQLITE_OK else {
+            let message = error.map { String(cString: $0) } ?? ""
+            Log.app.error("内容索引：\(message, privacy: .public)")
+            sqlite3_free(error)
+            return false
+        }
+        return true
+    }
+
+    func prepare(_ sql: String) -> SQLiteStatement? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
+            Log.app.error("内容索引：\(String(cString: sqlite3_errmsg(self.handle)), privacy: .public)")
+            return nil
+        }
+        return SQLiteStatement(statement)
+    }
+
+    func int(_ sql: String) -> Int32 {
+        guard let statement = prepare(sql), statement.step() else { return 0 }
+        return Int32(statement.int(0))
+    }
+
+    var lastInsertID: Int64 { sqlite3_last_insert_rowid(handle) }
+}
+
+final class SQLiteStatement {
+    private let handle: OpaquePointer
+    /// 让 SQLite 自己复制一份绑定的数据
+    private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    init(_ handle: OpaquePointer) { self.handle = handle }
+    deinit { sqlite3_finalize(handle) }
+
+    func bind(_ index: Int32, _ value: String) { sqlite3_bind_text(handle, index, value, -1, Self.transient) }
+    func bind(_ index: Int32, _ value: Int64) { sqlite3_bind_int64(handle, index, value) }
+    func bind(_ index: Int32, _ value: Double) { sqlite3_bind_double(handle, index, value) }
+    func bind(_ index: Int32, _ value: Data?) {
+        guard let value else {
+            sqlite3_bind_null(handle, index)
+            return
+        }
+        _ = value.withUnsafeBytes { sqlite3_bind_blob(handle, index, $0.baseAddress, Int32($0.count), Self.transient) }
+    }
+
+    /// 还有下一行时返回 true
+    func step() -> Bool { sqlite3_step(handle) == SQLITE_ROW }
+    /// 执行不返回结果的语句，成功时返回 true
+    func run() -> Bool { sqlite3_step(handle) == SQLITE_DONE }
+    /// 重新执行前调用
+    func reset() {
+        sqlite3_reset(handle)
+        sqlite3_clear_bindings(handle)
+    }
+
+    func int(_ column: Int32) -> Int64 { sqlite3_column_int64(handle, column) }
+    func double(_ column: Int32) -> Double { sqlite3_column_double(handle, column) }
+    func string(_ column: Int32) -> String { sqlite3_column_text(handle, column).map { String(cString: $0) } ?? "" }
+    func data(_ column: Int32) -> Data? {
+        guard let bytes = sqlite3_column_blob(handle, column) else { return nil }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(handle, column)))
+    }
+}

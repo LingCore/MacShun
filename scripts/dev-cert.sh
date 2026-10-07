@@ -12,6 +12,7 @@
 
 set -euo pipefail
 
+# 名字沿用改名前（Win顺）的：build-app.sh 按这个名字找证书，换一张证书所有人都要重新授权
 IDENTITY="WinShun Development"
 KEYCHAIN="$HOME/Library/Keychains/winshun-dev.keychain-db"
 KEYCHAIN_PASSWORD="winshun-dev"

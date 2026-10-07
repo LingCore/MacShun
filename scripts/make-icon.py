@@ -121,7 +121,7 @@ def svg(size, plate, rim_w, g, blend, midrib_w, leaf=("square", 0)):
     x, w, rx = plate
     c = size / 2
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {size} {size}" width="{size}" height="{size}">
-  <!-- Win顺 app icon: ⌘ drawn as one stroke, its loops squared off like Windows tiles, in the four Windows colours;
+  <!-- Mac顺 app icon: ⌘ drawn as one stroke, its loops squared off like Windows tiles, in the four Windows colours;
        the top-right loop comes to a leaf tip -->
   <defs>
     <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{PLATE[0]}"/><stop offset="1" stop-color="{PLATE[1]}"/></linearGradient>
@@ -139,7 +139,7 @@ def glyph_only_svg(size, g, blend, midrib_w, leaf=("square", 0)):
     reach = h + 2 * R + w / 2
     box = f"{c - reach:g} {c - reach:g} {2 * reach:g} {2 * reach:g}"
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="{box}" width="{2 * reach:g}" height="{2 * reach:g}">
-  <!-- Win顺 mark without the plate: one-stroke ⌘ in the four Windows colours, the top-right loop is a leaf -->
+  <!-- Mac顺 mark without the plate: one-stroke ⌘ in the four Windows colours, the top-right loop is a leaf -->
   <defs>
 {ramps(c, c, blend, size)}  </defs>
 {glyph(c, c, *g, midrib_w, leaf)}</svg>

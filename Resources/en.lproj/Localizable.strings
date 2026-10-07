@@ -1,12 +1,12 @@
-/* 界面文字的英文。键是简体中文原文，见 Sources/WinShun/Shared/Localization.swift。
+/* 界面文字的英文。键是简体中文原文，见 Sources/MacShun/Shared/Localization.swift。
    带数字的单复数在 Localizable.stringsdict。改完运行 scripts/check-l10n.py 检查。 */
 
 "光标与稻穗" = "Cursor and wheat ear";
 "作者 LingCore 的头像" = "Avatar of LingCore, the author";
-"Win顺" = "WinShun";
+"Mac顺" = "MacShun";
 "拾穗计划" = "Gleanings";
 "且将新火试新茶，诗酒趁年华" = "Fresh fire, new tea — poetry and wine while we're young";
-"把 Windows 的顺手带到 Mac" = "Windows habits, on Mac";
+"让 Mac 用得更顺手" = "Make your Mac smoother to use";
 "%ld 个开源" = "%ld open source";
 "%ld 个付费" = "%ld paid";
 "每一个作品，都是认真生活留下的痕迹" = "Every project is a trace of a life lived with care";
@@ -40,16 +40,16 @@
 "读取剪贴板" = "Clipboard access";
 "设备控制和数据访问" = "Device Control and Data Access";
 "从其他App粘贴" = "Paste from Other Apps";
-"在列表里找到 Win顺，打开右边的开关" = "Find WinShun in the list and turn on its switch";
-"在列表里找到 Win顺，选择“始终允许”" = "Find WinShun in the list and choose “Allow”";
-"列表里没有 Win顺？把左边的图标拖进列表" = "Not in the list? Drag the icon on the left into it";
+"在列表里找到 Mac顺，打开右边的开关" = "Find MacShun in the list and turn on its switch";
+"在列表里找到 Mac顺，选择“始终允许”" = "Find MacShun in the list and choose “Allow”";
+"列表里没有 Mac顺？把左边的图标拖进列表" = "Not in the list? Drag the icon on the left into it";
 "关闭引导" = "Close guide";
-"重启 Win顺 后生效" = "Restart WinShun to finish";
+"重启 Mac顺 后生效" = "Restart MacShun to finish";
 "“%@”已开启" = "“%@” is on";
 "开启“%@”" = "Turn on “%@”";
-"macOS 要重启 Win顺 才会应用新权限，马上就好…" = "macOS applies new permissions after a restart. Just a moment…";
+"macOS 要重启 Mac顺 才会应用新权限，马上就好…" = "macOS applies new permissions after a restart. Just a moment…";
 "马上进入下一步…" = "On to the next step…";
-"全部完成，Win顺 可以工作了" = "All set — WinShun is ready to go";
+"全部完成，Mac顺 可以工作了" = "All set — MacShun is ready to go";
 "拖进“系统设置”的列表" = "Drag into the list in System Settings";
 "键盘" = "Keyboard";
 "鼠标" = "Mouse";
@@ -58,14 +58,14 @@
 "快捷键像 Windows" = "Windows shortcuts";
 "鼠标像 Windows" = "Windows-style mouse";
 "剪贴板历史" = "Clipboard history";
-"Win顺 设置" = "WinShun Settings";
+"Mac顺 设置" = "MacShun Settings";
 "需要授权" = "Needs permission";
 "搜索设置" = "Search settings";
 "没有找到相关设置" = "No matching settings";
 "Ctrl+C/V 复制粘贴，Alt+Tab 切换程序" = "Ctrl+C/V to copy and paste, Alt+Tab to switch apps";
 "打几个字，用过的键盘就会出现在这里" = "Type a few keys and your keyboards will show up here";
 "键盘模式" = "Keyboard type";
-"自动识别，一般不用改。键盘切换 Win/Mac 模式后，Win顺 会从你按 Alt+Tab、Alt+F4 的方式自动跟上。" = "Detected automatically, so you rarely need to change it. If you flip a keyboard between Win and Mac mode, WinShun picks it up from how you press Alt+Tab and Alt+F4.";
+"自动识别，一般不用改。键盘切换 Win/Mac 模式后，Mac顺 会从你按 Alt+Tab、Alt+F4 的方式自动跟上。" = "Detected automatically, so you rarely need to change it. If you flip a keyboard between Win and Mac mode, MacShun picks it up from how you press Alt+Tab and Alt+F4.";
 "改写的按键" = "Remapped keys";
 "Ctrl 组合键" = "Ctrl shortcuts";
 "Ctrl+C/V/X/Z/S/A/F 当作 ⌘ 组合键，Ctrl+Y 重做" = "Ctrl+C/V/X/Z/S/A/F act like their ⌘ versions, Ctrl+Y redoes";
@@ -127,33 +127,33 @@
 "固定的条目会保留。清空后不能恢复。" = "Pinned items are kept. This can’t be undone.";
 "清空" = "Clear";
 "取消" = "Cancel";
-"已经授权，Win顺 正在工作" = "All set — WinShun is running";
-"还需要授权，Win顺 才能工作" = "WinShun needs a few permissions to work";
+"已经授权，Mac顺 正在工作" = "All set — MacShun is running";
+"还需要授权，Mac顺 才能工作" = "MacShun needs a few permissions to work";
 "一键授权" = "Grant Access";
 "改写按键、粘贴、找到文字光标的位置" = "Remap keys, paste, and locate the text cursor";
 "识别是哪个鼠标、哪把键盘在输入，随“%@”一起开启" = "Tell which mouse or keyboard is in use. Turns on along with “%@”.";
 "识别是哪个鼠标、哪把键盘在输入" = "Tell which mouse or keyboard is in use";
 "重启生效" = "Restart to Apply";
 "去授权" = "Grant";
-"已经授权但还没生效，请重新启动 Win顺。" = "Permission granted but not active yet. Please restart WinShun.";
+"已经授权但还没生效，请重新启动 Mac顺。" = "Permission granted but not active yet. Please restart MacShun.";
 "权限" = "Permissions";
-"在“系统设置 → 隐私与安全性”里打开 Win顺 的开关，一般马上生效。" = "Turn on WinShun in System Settings → Privacy & Security. It usually takes effect right away.";
-"重新启动 Win顺" = "Restart WinShun";
+"在“系统设置 → 隐私与安全性”里打开 Mac顺 的开关，一般马上生效。" = "Turn on MacShun in System Settings → Privacy & Security. It usually takes effect right away.";
+"重新启动 Mac顺" = "Restart MacShun";
 "登录时自动启动" = "Open at login";
 "语言" = "Language";
 "跟随系统" = "System default";
-"切换语言后 Win顺 会自动重启。" = "WinShun restarts automatically when you change the language.";
+"切换语言后 Mac顺 会自动重启。" = "MacShun restarts automatically when you change the language.";
 "版本" = "Version";
-"Windows 是微软公司的商标，Mac 是苹果公司的商标。本程序与微软、苹果没有任何关联。" = "Windows is a trademark of Microsoft Corporation. Mac is a trademark of Apple Inc. WinShun is not affiliated with Microsoft or Apple.";
-"已被拒绝。请在“粘贴”设置里把 Win顺 改成“始终允许”" = "Denied. In Paste from Other Apps, set WinShun to “Allow”.";
+"Windows 是微软公司的商标，Mac 是苹果公司的商标。本程序与微软、苹果没有任何关联。" = "Windows is a trademark of Microsoft Corporation. Mac is a trademark of Apple Inc. MacShun is not affiliated with Microsoft or Apple.";
+"已被拒绝。请在“粘贴”设置里把 Mac顺 改成“始终允许”" = "Denied. In Paste from Other Apps, set MacShun to “Allow”.";
 "记录剪贴板历史，复制时不再每次弹出询问" = "Record clipboard history without a prompt every time you copy";
 "已授权" = "Granted";
-"Win顺：需要授权" = "WinShun: needs permission";
+"Mac顺：需要授权" = "MacShun: needs permission";
 "需要授权才能工作…" = "Needs Permission to Work…";
 "剪贴板历史需要授权…" = "Clipboard History Needs Permission…";
 "打开剪贴板历史" = "Open Clipboard History";
 "设置…" = "Settings…";
-"退出 Win顺" = "Quit WinShun";
+"退出 Mac顺" = "Quit MacShun";
 "搜索剪贴板，支持拼音和首字母" = "Search clipboard history";
 "已固定" = "Pinned";
 "最近" = "Recent";
@@ -194,7 +194,7 @@
 "%@（主显示器）" = "%@ (main display)";
 "这块屏幕不是高分屏，macOS 只给它 100% 和 200% 两个清晰的档位，其他档位文字会发虚，所以没有列出。" = "This isn't a high-resolution (Retina) screen, so macOS only offers two sharp options for it: 100% and 200%. Other sizes look blurry and aren't listed.";
 "和系统设置里改分辨率、刷新率一样" = "Same as changing resolution or refresh rate in System Settings";
-"只列出文字清晰的档位。改动会一直保留，退出 Win顺 也不会恢复。" = "Only sharp options are listed. Changes stay in effect, even after you quit WinShun.";
+"只列出文字清晰的档位。改动会一直保留，退出 Mac顺 也不会恢复。" = "Only sharp options are listed. Changes stay in effect, even after you quit MacShun.";
 
 /* 文件搜索 */
 "文件搜索" = "File Search";
@@ -209,7 +209,7 @@
 "已收录" = "Indexed";
 "搜不到“%@”里的文件" = "Files in “%@” can't be found";
 "、" = ", ";
-"系统询问时选了“不允许”。到“隐私与安全性 → 文件与文件夹”里给 Win顺 打开，再重新建立索引。" = "Access was denied when macOS asked. Allow WinShun in Privacy & Security › Files and Folders, then rebuild the index.";
+"系统询问时选了“不允许”。到“隐私与安全性 → 文件与文件夹”里给 Mac顺 打开，再重新建立索引。" = "Access was denied when macOS asked. Allow MacShun in Privacy & Security › Files and Folders, then rebuild the index.";
 "打开系统设置" = "Open System Settings";
 "索引" = "Index";
 "不包括“资源库”、隐藏文件和应用程序包里的内容。文件名索引只放在内存里，不联网。" = "Excludes Library, hidden files and the inside of app bundles. The file name index stays in memory and never goes online.";
