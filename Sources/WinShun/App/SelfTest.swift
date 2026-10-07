@@ -224,23 +224,40 @@ final class SelfTest {
         let rootName = "Win顺自测-\(Int(Date().timeIntervalSince1970))"
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop").appendingPathComponent(rootName)
         let file = root.appendingPathComponent("art/gpt/style_reference.png")
+        // 右键菜单测试用：一个同名文件夹（左键点它打开），一个要移到废纸篓的文件
+        let folder = root.appendingPathComponent("art/gpt/style_reference")
+        let junk = root.appendingPathComponent("art/gpt/style_reference \(rootName).txt")
         do {
-            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             try Data().write(to: file)
+            try Data().write(to: junk)
         } catch {
             return fail("文件搜索测试准备", error.localizedDescription)
         }
         var menus = 0
+        /// 弹出菜单时（已经取消了）要做的事
+        var onMenu: ((NSMenu) -> Void)?
+        var menusClosed = 0
         let menuObserver = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
                                                                   object: nil, queue: nil) { note in
             menus += 1
-            (note.object as? NSMenu)?.cancelTrackingWithoutAnimation()
+            guard let menu = note.object as? NSMenu else { return }
+            guard let handle = onMenu else { return menu.cancelTrackingWithoutAnimation() }
+            // 等菜单真的开始跟踪再关、再选里面的项
+            DispatchQueue.main.async {
+                handle(menu)
+                menu.cancelTrackingWithoutAnimation()
+            }
         }
+        let menuEndObserver = NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification,
+                                                                     object: nil, queue: nil) { _ in menusClosed += 1 }
         defer {
             NotificationCenter.default.removeObserver(menuObserver)
+            NotificationCenter.default.removeObserver(menuEndObserver)
             fileSearch.hide()
-            closeFinderWindows { $0 == "gpt" }
+            closeFinderWindows { $0 == "gpt" || $0 == "style_reference" }
             try? fm.removeItem(at: root)
+            try? fm.removeItem(at: fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash/\(junk.lastPathComponent)"))
         }
 
         await tapControl()
@@ -315,6 +332,71 @@ final class SelfTest {
         }
         check("Ctrl+Enter 在访达中显示", revealed && !fileSearch.isVisible && menus == 0,
               "访达窗口：\(finderTitle() ?? "无")，搜索框还开着：\(fileSearch.isVisible)，弹出菜单 \(menus) 次")
+
+        // 右键菜单
+        let menuQuery = "桌面/\(rootName)/art/gpt/style_reference"
+        func search(_ expected: [URL]) async -> Bool {
+            await tapControl()
+            await tapControl()
+            guard await waitUntil(timeout: 2, { fileSearch.isVisible }) else { return false }
+            await pause(300)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(menuQuery, forType: .string)
+            await press(KeyCode.a, [.ctrl], settle: 100)
+            await press(KeyCode.v, [.ctrl], settle: 300)
+            return await waitUntil(timeout: 6) {
+                Set(fileSearch.visibleResults.map(\.path)).isSuperset(of: expected.map(\.path))
+            }
+        }
+        func row(_ url: URL) -> Int { fileSearch.visibleResults.firstIndex { $0.path == url.path } ?? -1 }
+        /// 在这一条上点右键，选菜单里的某一项
+        func rightClick(_ url: URL, choose title: String) async -> (titles: [String], selected: Int, visible: Bool, onTop: Bool) {
+            var seen: (titles: [String], selected: Int, visible: Bool, onTop: Bool) = ([], -1, false, false)
+            let closedBefore = menusClosed
+            onMenu = { menu in
+                seen = (menu.items.filter { !$0.isSeparatorItem }.map(\.title), fileSearch.selectedIndex, fileSearch.isVisible,
+                        self.menuAbove(fileSearch.windowNumber))
+                if let index = menu.items.firstIndex(where: { $0.title == title }) {
+                    DispatchQueue.main.async { menu.performActionForItem(at: index) }
+                }
+            }
+            defer { onMenu = nil }
+            postRightClick(at: fileSearch.rowCenter(row(url)))
+            // 菜单关掉了才算完，不然下一次点击会被还开着的菜单接走
+            if !(await waitUntil(timeout: 2) { menusClosed > closedBefore }) { seen.titles.append("（菜单没关掉）") }
+            await pause(200)
+            return seen
+        }
+        guard await search([folder, file, junk]) else {
+            return fail("右键菜单测试准备", "没搜到：\(fileSearch.visibleResults.map(\.name))")
+        }
+        let junkRow = row(junk), selectedBefore = fileSearch.selectedIndex
+        let expected = [L("打开"), L("打开方式"), L("在访达中显示"), L("复制"), L("复制路径"), L("移到废纸篓")]
+        let trashMenu = await rightClick(junk, choose: L("移到废纸篓"))
+        check("在没选中的一条上点右键：弹出菜单，在搜索框上面，先选中这一条，搜索框不关",
+              trashMenu.titles == expected && trashMenu.onTop && junkRow != selectedBefore && trashMenu.selected == junkRow && trashMenu.visible,
+              "菜单：\(trashMenu.titles)，在上面：\(trashMenu.onTop)，选中第 \(selectedBefore) → \(trashMenu.selected) 条（点的第 \(junkRow) 条），"
+                + "搜索框开着：\(trashMenu.visible)")
+        let trashed = await waitUntil(timeout: 4) { !fm.fileExists(atPath: junk.path) && row(junk) < 0 }
+        check("右键“移到废纸篓”：文件进了废纸篓，从结果里拿掉，搜索框不关", trashed && fileSearch.isVisible,
+              "文件还在：\(fm.fileExists(atPath: junk.path))，结果里还有：\(row(junk) >= 0)，搜索框开着：\(fileSearch.isVisible)")
+
+        NSPasteboard.general.clearContents()
+        let fileRow = row(file)
+        let copyMenu = await rightClick(file, choose: L("复制路径"))
+        let copied = await waitUntil(timeout: 2) { NSPasteboard.general.string(forType: .string) == file.path }
+        check("右键“复制路径”：完整路径放进剪贴板，搜索框关掉", copied && !fileSearch.isVisible,
+              "剪贴板：\(NSPasteboard.general.string(forType: .string)?.debugDescription ?? "空")，搜索框开着：\(fileSearch.isVisible)，"
+                + "点的第 \(fileRow) 条，菜单：\(copyMenu.titles)，结果：\(fileSearch.visibleResults.map(\.path))")
+
+        // 盖在结果上接右键的那层不能挡住左键
+        if await search([folder, file]) {
+            postClick(at: fileSearch.rowCenter(row(folder)))
+            let opened = await waitUntil(timeout: 4) { self.finderTitle() == "style_reference" && !fileSearch.isVisible }
+            check("左键点一条照常打开", opened, "访达窗口：\(finderTitle() ?? "无")，搜索框还开着：\(fileSearch.isVisible)")
+        } else {
+            fail("左键点一条照常打开", "没搜到：\(fileSearch.visibleResults.map(\.name))")
+        }
     }
 
     /// 单独按一下 Ctrl
@@ -836,6 +918,22 @@ final class SelfTest {
     private func postClick(at point: CGPoint) {
         for type in [CGEventType.leftMouseDown, .leftMouseUp] {
             CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
+                .post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 本程序的窗口里，排在这个窗口前面的有没有一个是弹出的菜单（窗口层级不低于它）
+    private func menuAbove(_ windowNumber: Int) -> Bool {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let mine = list.filter { ($0[kCGWindowOwnerPID as String] as? Int32) == getpid() }
+        guard let target = mine.firstIndex(where: { $0[kCGWindowNumber as String] as? Int == windowNumber }) else { return false }
+        let layer = mine[target][kCGWindowLayer as String] as? Int ?? 0
+        return mine[..<target].contains { ($0[kCGWindowLayer as String] as? Int ?? 0) >= layer }
+    }
+
+    private func postRightClick(at point: CGPoint) {
+        for type in [CGEventType.rightMouseDown, .rightMouseUp] {
+            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .right)?
                 .post(tap: .cghidEventTap)
         }
     }

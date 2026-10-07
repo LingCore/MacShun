@@ -864,6 +864,11 @@ final class FileIndex: ObservableObject {
         self.stream = stream
     }
 
+    /// 本程序自己动了这个文件夹里的文件（右键“移到废纸篓”）：马上重新列出来，不等 FSEvents。
+    func refresh(folder: String) {
+        queue.async { self.apply([(folder, false)]) }
+    }
+
     /// FSEvents 告诉我们哪些文件夹里有变化（在 queue 上）。重新列出这些文件夹，新出现的子文件夹整个扫描，消失的整个删掉。
     private func apply(_ changes: [(path: String, mustScanSubfolders: Bool)]) {
         var touched = false

@@ -65,6 +65,17 @@ final class FileSearchController {
     var currentQuery: String { model.query }
     var isKey: Bool { panel.isKeyWindow }
     var visibleResults: [FileSearchResult] { model.results }
+    var selectedIndex: Int { model.selection }
+    var windowNumber: Int { panel.windowNumber }
+
+    /// 自测用：第几条结果的中心在屏幕上的位置（左上角为原点）。只在没往下滚、只有文件名结果时准
+    func rowCenter(_ index: Int) -> CGPoint {
+        let frame = panel.frame
+        let top = FileSearchView.margin + FileSearchView.capsuleHeight + FileSearchView.gap + FileSearchView.listPadding
+            + (CGFloat(index) + 0.5) * FileSearchView.rowHeight
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: frame.minX + 200, y: primaryHeight - (frame.maxY - top))
+    }
 
     /// 在搜索框里按 Win+V：剪贴板面板放在胶囊下面，选中的文字填到光标处，关掉以后回到搜索框。
     func clipboardHost() -> ClipboardController.Host {
@@ -153,14 +164,45 @@ final class FileSearchController {
         }
     }
 
-    private func open(_ result: FileSearchResult, reveal: Bool) {
+    /// 打开、在访达中显示，和右键菜单里的操作。除了移到废纸篓，做完都关掉搜索框。
+    private func perform(_ action: FileAction, on result: FileSearchResult) {
+        let url = URL(fileURLWithPath: result.path)
+        if case .trash = action { return trash(url) }
         hide()
         history.record(result.path)
-        let url = URL(fileURLWithPath: result.path)
-        if reveal {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } else {
+        switch action {
+        case .open:
             NSWorkspace.shared.open(url)
+        case .reveal:
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .openWith(let app):
+            NSWorkspace.shared.open([url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
+        case .copy:
+            // 文件本身，可以粘贴到访达、聊天窗口里
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([url as NSURL])
+        case .copyPath:
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(result.path, forType: .string)
+        case .trash:
+            break
+        }
+    }
+
+    /// 移到废纸篓：搜索框不关，这一条马上从结果里拿掉
+    private func trash(_ url: URL) {
+        NSWorkspace.shared.recycle([url]) { [weak self] _, error in
+            DispatchQueue.main.async {
+                if let error {
+                    Log.app.error("文件搜索：移到废纸篓失败：\(error.localizedDescription, privacy: .public)")
+                    NSSound.beep()
+                    return
+                }
+                guard let self else { return }
+                self.model.remove(url.path)
+                // 不等 FSEvents（要一秒左右），免得接着打字时又搜出来
+                self.index.refresh(folder: url.deletingLastPathComponent().path)
+            }
         }
     }
 
@@ -169,7 +211,7 @@ final class FileSearchController {
     private func makeModel() -> FileSearchModel {
         let model = FileSearchModel(index: index, contentIndex: contentIndex)
         model.history = history
-        model.onOpen = { [weak self] result, reveal in self?.open(result, reveal: reveal) }
+        model.onAction = { [weak self] result, action in self?.perform(action, on: result) }
         model.onClose = { [weak self] in self?.hide() }
         // 结果多少变了，面板跟着变高变矮
         model.$results.combineLatest(model.$query, index.$isIndexing, model.$searchingContent)
@@ -280,6 +322,11 @@ enum FileSearchScope: Int, CaseIterable, Identifiable {
     }
 }
 
+/// 对一条结果做的事：Enter、Ctrl+Enter 和右键菜单里的。
+enum FileAction {
+    case open, reveal, openWith(URL), copy, copyPath, trash
+}
+
 /// 搜索框的数据和操作。
 final class FileSearchModel: ObservableObject {
     @Published var query = "" {
@@ -310,7 +357,7 @@ final class FileSearchModel: ObservableObject {
     let contentIndex: ContentIndex
     /// 打开过的文件排在前面
     var history: OpenHistory?
-    var onOpen: (FileSearchResult, Bool) -> Void = { _, _ in }
+    var onAction: (FileSearchResult, FileAction) -> Void = { _, _ in }
     var onClose: () -> Void = {}
 
     private var generation = 0
@@ -476,7 +523,24 @@ final class FileSearchModel: ObservableObject {
 
     func openSelected(reveal: Bool) {
         guard let result = selectedResult else { return }
-        onOpen(result, reveal)
+        onAction(result, reveal ? .reveal : .open)
+    }
+
+    /// 右键菜单。先选中这一条（像访达那样），看得出菜单是对哪一条的
+    func contextMenu(for result: FileSearchResult) -> NSMenu? {
+        guard let position = results.firstIndex(where: { $0.path == result.path }) else { return nil }
+        selection = position
+        return FileContextMenu.make(for: result) { [weak self] action in self?.onAction(result, action) }
+    }
+
+    /// 文件已经不在了（移到了废纸篓）：从结果里拿掉，选中的位置不动，下一条顶上来
+    func remove(_ path: String) {
+        let removingSelected = selectedResult?.path == path
+        let position = selection
+        nameResults.removeAll { $0.path == path }
+        contentResults.removeAll { $0.path == path }
+        merge(resetSelection: false)
+        if removingSelected { selection = min(position, max(results.count - 1, 0)) }
     }
 
     func icon(for result: FileSearchResult) -> NSImage {
@@ -500,7 +564,8 @@ struct FileSearchView: View {
     static let maxVisibleRows = 8
     /// 四周给阴影留的空白
     static let margin: CGFloat = 12
-    private static let gap: CGFloat = 8
+    static let gap: CGFloat = 8
+    static let listPadding: CGFloat = 6
     private static let footerHeight: CGFloat = 30
     private static let statusHeight: CGFloat = 56
     static let sectionHeaderHeight: CGFloat = 26
@@ -585,9 +650,10 @@ struct FileSearchView: View {
                                     model.selection = position
                                     model.openSelected()
                                 }
+                                .overlay(ContextMenuArea { model.contextMenu(for: result) })
                         }
                     }
-                    .padding(6)
+                    .padding(Self.listPadding)
                 }
                 .scrollIndicators(.never)
                 .onChange(of: model.selection) { _, newValue in
@@ -737,6 +803,92 @@ private struct FileResultRow: View {
             }
         }
         return text
+    }
+}
+
+/// 结果的右键菜单：打开、打开方式、在访达中显示、复制、复制路径、移到废纸篓。
+enum FileContextMenu {
+    static func make(for result: FileSearchResult, perform: @escaping (FileAction) -> Void) -> NSMenu {
+        let url = URL(fileURLWithPath: result.path)
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem(L("打开"), symbol: "arrow.up.forward.app") { perform(.open) })
+        if let openWith = openWithItem(url, perform: perform) { menu.addItem(openWith) }
+        menu.addItem(ActionMenuItem(L("在访达中显示"), symbol: "folder") { perform(.reveal) })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(L("复制"), symbol: "doc.on.doc") { perform(.copy) })
+        menu.addItem(ActionMenuItem(L("复制路径"), symbol: "link") { perform(.copyPath) })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(L("移到废纸篓"), symbol: "trash") { perform(.trash) })
+        return menu
+    }
+
+    /// 能打开它的应用，默认的那个放最上面。应用程序本身不用选
+    private static func openWithItem(_ url: URL, perform: @escaping (FileAction) -> Void) -> NSMenuItem? {
+        guard url.pathExtension.lowercased() != "app" else { return nil }
+        let workspace = NSWorkspace.shared
+        let preferred = workspace.urlForApplication(toOpen: url)?.standardizedFileURL
+        // 同一个应用装了几份时（比如“下载”里还有一份）只列一个
+        var seen = Set<String>()
+        let apps = workspace.urlsForApplications(toOpen: url)
+            .map { (url: $0.standardizedFileURL, name: FileManager.default.displayName(atPath: $0.path)) }
+            .sorted { a, b in
+                if (a.url == preferred) != (b.url == preferred) { return a.url == preferred }
+                return a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+            .filter { seen.insert($0.name).inserted }
+        guard !apps.isEmpty else { return nil }
+
+        let submenu = NSMenu()
+        for app in apps {
+            let isDefault = app.url == preferred
+            let item = ActionMenuItem(isDefault ? L("%@（默认）", app.name) : app.name) { perform(.openWith(app.url)) }
+            let icon = workspace.icon(forFile: app.url.path)
+            icon.size = NSSize(width: 16, height: 16)
+            item.image = icon
+            submenu.addItem(item)
+            if isDefault && apps.count > 1 { submenu.addItem(.separator()) }
+        }
+        let item = NSMenuItem(title: L("打开方式"), action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: nil)
+        item.submenu = submenu
+        return item
+    }
+}
+
+/// 点了就执行一段代码的菜单项
+final class ActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, symbol: String? = nil, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+        if let symbol { image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func run() { handler() }
+}
+
+/// 盖在一条结果上：右键（和按着 Ctrl 点）弹出菜单，左键、滚轮照常交给下面的 SwiftUI。
+private struct ContextMenuArea: NSViewRepresentable {
+    let menu: () -> NSMenu?
+
+    func makeNSView(context: Context) -> MenuView { MenuView() }
+
+    func updateNSView(_ view: MenuView, context: Context) { view.makeMenu = menu }
+
+    final class MenuView: NSView {
+        var makeMenu: (() -> NSMenu?)?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let event = NSApp.currentEvent else { return nil }
+            let wantsMenu = event.type == .rightMouseDown || event.type == .leftMouseDown && event.modifierFlags.contains(.control)
+            return wantsMenu ? super.hitTest(point) : nil
+        }
+
+        override func menu(for event: NSEvent) -> NSMenu? { makeMenu?() }
     }
 }
 

@@ -231,6 +231,10 @@
 "搜索文件，支持拼音和首字母" = "Search files";
 "打开" = "Open";
 "在访达中显示" = "Show in Finder";
+"打开方式" = "Open With";
+"%@（默认）" = "%@ (default)";
+"复制路径" = "Copy Path";
+"移到废纸篓" = "Move to Trash";
 "正在建立索引，马上就好…" = "Indexing, almost there…";
 "没有找到，换个关键词或试试拼音首字母" = "Nothing found. Try another word.";
 "个人文件夹和应用程序" = "Home folder and Applications";
