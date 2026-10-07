@@ -43,9 +43,14 @@ final class ClipboardPanel: NSPanel {
 /// 面板的数据和操作。
 final class ClipboardPanelModel: ObservableObject {
     @Published var query = "" {
-        didSet { refresh() }
+        didSet {
+            cancelClear()
+            refresh()
+        }
     }
     @Published private(set) var results: [ClipboardItem] = []
+    /// 点了一次“全部清除”，等着再点一次确认（过几秒自动取消）
+    @Published private(set) var confirmingClear = false
     @Published var selection = 0
     /// 鼠标停在哪一条上
     @Published var hoveredID: UUID?
@@ -58,6 +63,7 @@ final class ClipboardPanelModel: ObservableObject {
 
     private var thumbnails: [UUID: NSImage] = [:]
     private var subscription: AnyCancellable?
+    private var clearTimeout: DispatchWorkItem?
 
     init(store: ClipboardStore) {
         self.store = store
@@ -69,8 +75,32 @@ final class ClipboardPanelModel: ObservableObject {
     func prepareForShow() {
         query = ""
         selection = 0
+        cancelClear()
         refresh()
         focusToken += 1
+    }
+
+    /// 有没固定的记录可以清。搜索时不显示“全部清除”，免得以为只清搜到的那些
+    var canClear: Bool { query.isEmpty && store.items.contains { !$0.pinned } }
+
+    /// 全部清除：点两下才清，免得误点。固定的条目保留（和 Windows 一样）
+    func clearTapped() {
+        guard confirmingClear else {
+            confirmingClear = true
+            let timeout = DispatchWorkItem { [weak self] in self?.confirmingClear = false }
+            clearTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeout)
+            return
+        }
+        cancelClear()
+        store.clearUnpinned()
+        selection = 0
+    }
+
+    private func cancelClear() {
+        clearTimeout?.cancel()
+        clearTimeout = nil
+        if confirmingClear { confirmingClear = false }
     }
 
     func refresh() {
@@ -147,21 +177,46 @@ struct ClipboardPanelView: View {
                 .foregroundStyle(.secondary)
             SearchField(
                 text: $model.query,
-                placeholder: L("搜索剪贴板历史，支持拼音和首字母"),
+                placeholder: L("搜索剪贴板，支持拼音和首字母"),
                 focusToken: model.focusToken,
                 onMove: { model.move($0) },
                 onSubmit: { model.pasteSelected() },
                 onCancel: { model.onClose() }
             )
-            if !model.results.isEmpty {
+            // 等着确认清除时，按钮变宽，条数先不显示
+            if !model.results.isEmpty && !model.confirmingClear {
                 Text(L("%ld 条", model.results.count))
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(.tertiary)
+                    .fixedSize()
+            }
+            if model.canClear {
+                clearButton
             }
         }
         .padding(.horizontal, 16)
         .frame(height: 50)
+    }
+
+    /// 右上角的“全部清除”，和 Windows 的剪贴板历史一样的位置。点一下变红，再点一下才清
+    private var clearButton: some View {
+        let confirming = model.confirmingClear
+        return Button { model.clearTapped() } label: {
+            Text(confirming ? L("再点一次清除") : L("全部清除"))
+                .font(.system(size: 11, weight: confirming ? .semibold : .regular))
+                .foregroundStyle(confirming ? AnyShapeStyle(Color.white) : AnyShapeStyle(.secondary))
+                .padding(.horizontal, 8)
+                .frame(height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(confirming ? Color.red.opacity(0.85) : Color.primary.opacity(0.08))
+                )
+                .contentShape(Rectangle())
+                .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .help(L("清除没固定的记录，固定的保留"))
     }
 
     private var list: some View {

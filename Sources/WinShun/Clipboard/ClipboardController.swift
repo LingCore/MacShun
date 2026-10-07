@@ -37,6 +37,15 @@ final class ClipboardController {
     }
 
     var isVisible: Bool { panel.isVisible }
+    /// 自测用
+    var query: String { model.query }
+    var confirmingClear: Bool { model.confirmingClear }
+    /// 自测用：“全部清除”按钮上的一点，屏幕坐标（左上角为原点）
+    var clearButtonPoint: CGPoint {
+        let frame = panel.frame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: frame.maxX - 16 - 20, y: primaryHeight - (frame.maxY - 25))
+    }
     /// 面板里当前显示的条目（自测用）。
     var visibleResults: [ClipboardItem] { model.results }
 

@@ -209,7 +209,18 @@ final class SelfTest {
         let option: Mod = mapper.altFlag == .maskAlternate ? .alt : .win
         await press(KeyCode.v, [option], settle: 600)
         check("⌥V 也能打开剪贴板历史", clipboard.isVisible)
+
+        // “全部清除”只点一下（不真的清，免得清掉自己的历史）：等着确认；搜索框还在接收按键，一打字就取消
+        let count = store.items.count
+        postClick(at: clipboard.clearButtonPoint)
+        let confirming = await waitUntil(timeout: 1) { self.clipboard.confirmingClear }
+        await press(KeyCode.y, settle: 300)
+        check("点一下“全部清除”等着确认，搜索框照样能打字，一打字就取消", confirming && clipboard.query == "y"
+                && !clipboard.confirmingClear && store.items.count == count && clipboard.isVisible,
+              "等确认：\(confirming)，搜索框里：\(clipboard.query.debugDescription)，还在等确认：\(clipboard.confirmingClear)，"
+                + "条数 \(count) → \(store.items.count)，面板开着：\(clipboard.isVisible)")
         await press(KeyCode.escape, settle: 300)
+        check("然后 Esc 照样关掉面板", !clipboard.isVisible)
         clipboard.hide()
     }
 

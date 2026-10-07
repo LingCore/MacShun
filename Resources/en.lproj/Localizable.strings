@@ -121,6 +121,9 @@
 "清空历史…" = "Clear History…";
 "隐私" = "Privacy";
 "清空剪贴板历史？" = "Clear clipboard history?";
+"全部清除" = "Clear All";
+"再点一次清除" = "Click again to clear";
+"清除没固定的记录，固定的保留" = "Clears everything except pinned items";
 "固定的条目会保留。清空后不能恢复。" = "Pinned items are kept. This can’t be undone.";
 "清空" = "Clear";
 "取消" = "Cancel";
@@ -151,7 +154,7 @@
 "打开剪贴板历史" = "Open Clipboard History";
 "设置…" = "Settings…";
 "退出 Win顺" = "Quit WinShun";
-"搜索剪贴板历史，支持拼音和首字母" = "Search clipboard history";
+"搜索剪贴板，支持拼音和首字母" = "Search clipboard history";
 "已固定" = "Pinned";
 "最近" = "Recent";
 "还没有记录" = "Nothing here yet";

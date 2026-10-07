@@ -113,6 +113,32 @@ extension ClipboardStoreTests {
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         #expect(names.contains { $0.hasPrefix("history-unreadable-") })
     }
+
+    /// 面板上的“全部清除”：点两下才清，固定的保留；中间打了字就不算
+    @Test func clearAllNeedsTwoClicks() {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ClipboardStore(directory: dir)
+        store.add(text("固定"), maxItems: 10)
+        store.togglePin(store.items[0].id)
+        store.add(text("一"), maxItems: 10)
+        store.add(text("二"), maxItems: 10)
+        let model = ClipboardPanelModel(store: store)
+        #expect(model.canClear)
+
+        model.clearTapped()
+        #expect(model.confirmingClear && store.items.count == 3)
+        model.query = "y"
+        #expect(!model.confirmingClear && !model.canClear)
+        model.query = ""
+        model.clearTapped()
+        #expect(store.items.count == 3)
+
+        model.clearTapped()
+        #expect(!model.confirmingClear)
+        #expect(store.items.map(\.text) == ["固定"])
+        #expect(!model.canClear)
+    }
 }
 
 @Suite("配置")
