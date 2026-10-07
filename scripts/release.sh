@@ -25,7 +25,9 @@ UNIVERSAL=1 scripts/build-app.sh
 
 APP="$ROOT/build/$APP_NAME.app"
 # 自动更新只装和正在运行的版本同一张证书签的程序（见 Sources/MacShun/App/Updater.swift），临时签名的发出去，旧版本更新不了
-codesign -dvv "$APP" 2>&1 | grep -qx "Authority=WinShun Development" \
+# 先存下输出再查：pipefail 下 grep -q 提前退出会让整条管道算失败
+SIGNING="$(codesign -dvv "$APP" 2>&1)"
+grep -qx "Authority=WinShun Development" <<< "$SIGNING" \
     || { echo "错误：程序没有用开发证书签名（先运行 scripts/dev-cert.sh），发出去旧版本没法自动更新" >&2; exit 1; }
 ARCHS="$(lipo -archs "$APP/Contents/MacOS/MacShun")"
 [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]] || { echo "错误：程序不是通用版（${ARCHS}）" >&2; exit 1; }
