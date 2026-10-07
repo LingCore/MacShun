@@ -288,28 +288,31 @@ struct SettingsSearchResults: View {
             }
             ForEach(results) { item in
                 let selected = selection.opened == item.id
+                let ink = warm ? palette.ink : Color.primary
                 Button { open(item) } label: {
-                    HStack(spacing: 8) {
-                        IconBadge(symbol: item.tab.symbol, tint: item.tab.tint, size: 18)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(item.localizedTitle)
-                                .lineLimit(1)
-                            Text(item.tab.title)
-                                .font(.caption)
-                                .opacity(0.7)
+                    HoverReader { hovering in
+                        HStack(spacing: 8) {
+                            IconBadge(symbol: item.tab.symbol, tint: item.tab.tint, size: 18)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(item.localizedTitle)
+                                    .lineLimit(1)
+                                Text(item.tab.title)
+                                    .font(.caption)
+                                    .opacity(0.7)
+                            }
+                            Spacer(minLength: 0)
                         }
-                        Spacer(minLength: 0)
+                        .foregroundStyle(selected ? Color.white : ink)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(selected ? (warm ? AnyShapeStyle(palette.accent.gradient) : AnyShapeStyle(Color.accentColor))
+                                      : AnyShapeStyle(ink.opacity(hovering ? 0.07 : 0)))
+                        )
+                        .contentShape(Rectangle())
                     }
-                    .foregroundStyle(selected ? Color.white : (warm ? palette.ink : Color.primary))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(selected ? (warm ? AnyShapeStyle(palette.accent.gradient) : AnyShapeStyle(Color.accentColor))
-                                  : AnyShapeStyle(Color.clear))
-                    )
-                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

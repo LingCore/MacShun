@@ -326,11 +326,9 @@ struct PermissionGuideView: View {
             Button(action: close) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
                     .frame(width: 18, height: 18)
-                    .background(Circle().fill(Color.primary.opacity(0.08)))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChipButtonStyle(shape: Circle()))
             .help(L("关闭引导"))
             .padding(8)
         }

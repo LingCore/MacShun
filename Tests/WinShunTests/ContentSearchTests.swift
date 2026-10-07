@@ -387,6 +387,39 @@ struct FileSearchScopeTests {
         model.query = "合"
         #expect(!model.needsLongerQuery)
     }
+
+    /// 结果右边的“删除”：点两下才删，双击的第二下不算，点别的、打字就取消
+    @Test func deleteButtonNeedsTwoClicks() {
+        let model = makeModel()
+        var done: [String] = []
+        model.onAction = { result, action in
+            switch action {
+            case .trash: done.append("删 " + result.name)
+            case .copy: done.append("复制 " + result.name)
+            default: done.append("其他")
+            }
+        }
+        let a = FileSearchResult(path: "/x/a.txt", name: "a.txt", isDirectory: false, score: 1)
+        let b = FileSearchResult(path: "/x/b.txt", name: "b.txt", isDirectory: false, score: 1)
+
+        model.tapped(.delete, on: a)
+        #expect(model.confirmingDelete == a.path && done.isEmpty)
+        model.tapped(.delete, on: a, clickCount: 2)
+        #expect(model.confirmingDelete == a.path && done.isEmpty)
+        // 点了另一条的删除：改成等那一条确认
+        model.tapped(.delete, on: b)
+        #expect(model.confirmingDelete == b.path)
+        model.tapped(.delete, on: a)
+        model.tapped(.delete, on: a)
+        #expect(model.confirmingDelete == nil && done == ["删 a.txt"])
+
+        model.tapped(.delete, on: b)
+        model.query = "b"
+        #expect(model.confirmingDelete == nil)
+        model.tapped(.delete, on: b)
+        model.tapped(.copy, on: b)
+        #expect(model.confirmingDelete == nil && done == ["删 a.txt", "复制 b.txt"])
+    }
 }
 
 @Suite("F2 图片文字和常用排序")

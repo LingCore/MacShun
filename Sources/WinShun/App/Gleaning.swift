@@ -182,8 +182,9 @@ struct GleaningPage: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(Capsule().fill(palette.chip))
+                        .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverTintStyle(shape: Capsule()))
             }
         }
         .onAppear { AuthorMarkClock.shared.play() }
@@ -598,10 +599,10 @@ private struct FeedbackNote: View {
                     .shadow(color: palette.accent.opacity(0.4), radius: 8, y: 4)
                     .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverTintStyle(shape: Capsule()))
                 .help(L("用邮件程序写信"))
                 Button(L("复制"), action: copy)
-                    .buttonStyle(.plain)
+                    .buttonStyle(HoverLinkStyle(color: nil))
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(palette.ink.opacity(0.85))
                     .shadow(color: palette.halo, radius: 3)

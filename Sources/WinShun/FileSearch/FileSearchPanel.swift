@@ -67,6 +67,24 @@ final class FileSearchController {
     var visibleResults: [FileSearchResult] { model.results }
     var selectedIndex: Int { model.selection }
     var windowNumber: Int { panel.windowNumber }
+    var confirmingDelete: String? { model.confirmingDelete }
+
+    /// 自测用：某一条结果上某个按钮的中心在屏幕上的位置（左上角为原点）；按钮没显示时为 nil
+    func buttonCenter(_ button: FileRowButton, for path: String) -> CGPoint? {
+        guard let rect = model.buttonFrames[.init(path: path, button: button)] else { return nil }
+        let frame = panel.frame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: frame.minX + rect.midX, y: primaryHeight - (frame.maxY - rect.midY))
+    }
+
+    /// 自测用：按钮里靠左边缘一点的颜色（避开文字），看鼠标停在上面时底色变没变
+    func buttonFill(_ button: FileRowButton, for path: String) -> NSColor? {
+        guard let rect = model.buttonFrames[.init(path: path, button: button)], let view = panel.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / max(view.bounds.width, 1)
+        return rep.colorAt(x: Int((rect.minX + 3) * scale), y: Int(rect.midY * scale))?.usingColorSpace(.deviceRGB)
+    }
 
     /// 自测用：第几条结果的中心在屏幕上的位置（左上角为原点）。只在没往下滚、只有文件名结果时准
     func rowCenter(_ index: Int) -> CGPoint {
@@ -164,7 +182,7 @@ final class FileSearchController {
         }
     }
 
-    /// 打开、在访达中显示，和右键菜单里的操作。除了移到废纸篓，做完都关掉搜索框。
+    /// 打开、在访达中显示，和右键菜单、结果右边按钮里的操作。除了移到废纸篓，做完都关掉搜索框。
     private func perform(_ action: FileAction, on result: FileSearchResult) {
         let url = URL(fileURLWithPath: result.path)
         if case .trash = action { return trash(url) }
@@ -322,15 +340,29 @@ enum FileSearchScope: Int, CaseIterable, Identifiable {
     }
 }
 
-/// 对一条结果做的事：Enter、Ctrl+Enter 和右键菜单里的。
+/// 对一条结果做的事：Enter、Ctrl+Enter、右键菜单和结果右边的按钮里的。
 enum FileAction {
     case open, reveal, openWith(URL), copy, copyPath, trash
+}
+
+/// 结果右边的按钮：定位（在访达中显示）、复制、删除（移到废纸篓）
+enum FileRowButton: Hashable {
+    case reveal, copy, delete
+
+    /// 哪一条上的哪个按钮
+    struct Slot: Hashable {
+        let path: String
+        let button: FileRowButton
+    }
 }
 
 /// 搜索框的数据和操作。
 final class FileSearchModel: ObservableObject {
     @Published var query = "" {
-        didSet { scheduleSearch() }
+        didSet {
+            cancelDelete()
+            scheduleSearch()
+        }
     }
     /// 文件名结果在前，内容结果在后
     @Published private(set) var results: [FileSearchResult] = []
@@ -350,6 +382,12 @@ final class FileSearchModel: ObservableObject {
     var effectiveScope: FileSearchScope { searchesContent ? scope : .files }
     /// 内容搜索已经发出去、结果还没回来
     @Published private(set) var searchingContent = false
+    /// 鼠标停在哪一条上。这一条和选中的那条右边显示按钮
+    @Published var hoveredPath: String?
+    /// 点了一次“删除”的那一条，等着再点一次“确定删除”（过几秒自动取消）
+    @Published private(set) var confirmingDelete: String?
+    /// 自测用：显示着的按钮在窗口里的位置（左上角为原点）
+    var buttonFrames: [FileRowButton.Slot: CGRect] = [:]
     /// 搜索框开着
     var isShown = false
 
@@ -364,6 +402,7 @@ final class FileSearchModel: ObservableObject {
     private var nameResults: [FileSearchResult] = []
     private var contentResults: [FileSearchResult] = []
     private var pendingContentSearch: DispatchWorkItem?
+    private var deleteTimeout: DispatchWorkItem?
     private var icons: [String: NSImage] = [:]
     private var subscriptions: Set<AnyCancellable> = []
 
@@ -423,6 +462,8 @@ final class FileSearchModel: ObservableObject {
         selection = 0
         scope = .files
         searchingContent = false
+        hoveredPath = nil
+        cancelDelete()
         focusToken += 1
     }
 
@@ -531,6 +572,42 @@ final class FileSearchModel: ObservableObject {
         guard let position = results.firstIndex(where: { $0.path == result.path }) else { return nil }
         selection = position
         return FileContextMenu.make(for: result) { [weak self] action in self?.onAction(result, action) }
+    }
+
+    /// 结果右边的按钮。定位、复制做完关掉搜索框（和右键菜单一样）；删除要点两下
+    func tapped(_ button: FileRowButton, on result: FileSearchResult, clickCount: Int = 1) {
+        switch button {
+        case .reveal:
+            cancelDelete()
+            onAction(result, .reveal)
+        case .copy:
+            cancelDelete()
+            onAction(result, .copy)
+        case .delete:
+            deleteTapped(result, clickCount: clickCount)
+        }
+    }
+
+    /// “删除”点一下变成“确定删除”，再点一下才移到废纸篓。双击的第二下不算，免得一双击就删了；
+    /// 3 秒内没再点、打了字就取消（双击速度调得很慢时多等一会儿，不然等过了双击时间就取消了）
+    private func deleteTapped(_ result: FileSearchResult, clickCount: Int) {
+        guard confirmingDelete == result.path else {
+            cancelDelete()
+            confirmingDelete = result.path
+            let timeout = DispatchWorkItem { [weak self] in self?.confirmingDelete = nil }
+            deleteTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(3, NSEvent.doubleClickInterval + 2), execute: timeout)
+            return
+        }
+        guard clickCount < 2 else { return }
+        cancelDelete()
+        onAction(result, .trash)
+    }
+
+    private func cancelDelete() {
+        deleteTimeout?.cancel()
+        deleteTimeout = nil
+        if confirmingDelete != nil { confirmingDelete = nil }
     }
 
     /// 文件已经不在了（移到了废纸篓）：从结果里拿掉，选中的位置不动，下一条顶上来
@@ -654,6 +731,7 @@ struct FileSearchView: View {
                         }
                     }
                     .padding(Self.listPadding)
+                    .onPreferenceChange(RowButtonFrames.self) { model.buttonFrames = $0 }
                 }
                 .scrollIndicators(.never)
                 .onChange(of: model.selection) { _, newValue in
@@ -733,6 +811,9 @@ private struct FileResultRow: View {
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
+    private var hovering: Bool { model.hoveredPath == result.path }
+    private var confirmingDelete: Bool { model.confirmingDelete == result.path }
+
     /// 所在的文件夹，个人文件夹写成 ~
     private var folder: String {
         let parent = (result.path as NSString).deletingLastPathComponent
@@ -781,14 +862,63 @@ private struct FileResultRow: View {
                 }
             }
             Spacer(minLength: 0)
+            // 选中的、鼠标停着的、等着确认删除的那条才显示，免得每条都是按钮
+            if isSelected || hovering || confirmingDelete {
+                actions
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: FileSearchView.rowHeight)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.22) : .clear)
+                .fill(rowFill)
         )
         .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                model.hoveredPath = result.path
+            } else if model.hoveredPath == result.path {
+                model.hoveredPath = nil
+            }
+        }
+    }
+
+    private var rowFill: Color {
+        if isSelected { return Color.accentColor.opacity(0.22) }
+        if hovering { return Color.primary.opacity(0.05) }
+        return .clear
+    }
+
+    /// 定位、复制、删除。删除放最右边：点一下变成红色的“确定删除”，往左变宽，鼠标下面还是它
+    private var actions: some View {
+        HStack(spacing: 4) {
+            button(.reveal, L("定位"), symbol: "folder", help: L("在访达中显示"))
+            button(.copy, L("复制"), symbol: "doc.on.doc", help: L("复制文件，可以粘贴到访达或聊天窗口"))
+            button(.delete, confirmingDelete ? L("确定删除") : L("删除"), symbol: "trash",
+                   help: L("移到废纸篓，要点两下"), destructive: confirmingDelete)
+        }
+    }
+
+    private func button(_ kind: FileRowButton, _ title: String, symbol: String, help: String, destructive: Bool = false) -> some View {
+        Button {
+            model.tapped(kind, on: result, clickCount: NSApp.currentEvent?.clickCount ?? 1)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(.system(size: 10, weight: .medium))
+                Text(title)
+                    .font(.system(size: 11, weight: destructive ? .semibold : .regular))
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 22)
+            .fixedSize()
+        }
+        .buttonStyle(.chip(destructive: destructive))
+        .help(help)
+        .background(GeometryReader { geo in
+            Color.clear.preference(key: RowButtonFrames.self,
+                                   value: [FileRowButton.Slot(path: result.path, button: kind): geo.frame(in: .global)])
+        })
     }
 
     /// 搜索词在摘要里加粗、用正文颜色
@@ -803,6 +933,15 @@ private struct FileResultRow: View {
             }
         }
         return text
+    }
+}
+
+/// 显示着的按钮在窗口里的位置（自测用）
+private struct RowButtonFrames: PreferenceKey {
+    static let defaultValue: [FileRowButton.Slot: CGRect] = [:]
+
+    static func reduce(value: inout [FileRowButton.Slot: CGRect], nextValue: () -> [FileRowButton.Slot: CGRect]) {
+        value.merge(nextValue()) { $1 }
     }
 }
 
@@ -900,20 +1039,23 @@ private struct ScopePicker: View {
         HStack(spacing: 2) {
             ForEach(FileSearchScope.allCases) { scope in
                 let selected = scope == selection
-                Text(scope.title)
-                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .padding(.horizontal, 11)
-                    .frame(height: 26)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(selected ? Color.primary.opacity(0.14) : .clear)
-                            .shadow(color: .black.opacity(selected ? 0.15 : 0), radius: 1, y: 0.5)
-                    )
-                    .contentShape(Capsule(style: .continuous))
-                    .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.15)) { selection = scope }
-                    }
+                // 没选中的那几个：鼠标停在上面时浅浅的底色，字变清楚
+                HoverReader { hovering in
+                    Text(scope.title)
+                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected || hovering ? .primary : .secondary)
+                        .padding(.horizontal, 11)
+                        .frame(height: 26)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.primary.opacity(selected ? 0.14 : hovering ? 0.07 : 0))
+                                .shadow(color: .black.opacity(selected ? 0.15 : 0), radius: 1, y: 0.5)
+                        )
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.15)) { selection = scope }
+                }
             }
         }
         .padding(3)

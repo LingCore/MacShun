@@ -205,17 +205,11 @@ struct ClipboardPanelView: View {
         return Button { model.clearTapped() } label: {
             Text(confirming ? L("再点一次清除") : L("全部清除"))
                 .font(.system(size: 11, weight: confirming ? .semibold : .regular))
-                .foregroundStyle(confirming ? AnyShapeStyle(Color.white) : AnyShapeStyle(.secondary))
                 .padding(.horizontal, 8)
                 .frame(height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(confirming ? Color.red.opacity(0.85) : Color.primary.opacity(0.08))
-                )
-                .contentShape(Rectangle())
                 .fixedSize()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.chip(destructive: confirming))
         .help(L("清除没固定的记录，固定的保留"))
     }
 
@@ -478,14 +472,8 @@ private struct RowButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .medium))
                 .frame(width: 24, height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Color.primary.opacity(0.08))
-                )
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .buttonStyle(.chip())
         .help(help)
     }
 }

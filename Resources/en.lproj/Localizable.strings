@@ -238,6 +238,10 @@
 "%@（默认）" = "%@ (default)";
 "复制路径" = "Copy Path";
 "移到废纸篓" = "Move to Trash";
+"定位" = "Reveal";
+"确定删除" = "Confirm Delete";
+"复制文件，可以粘贴到访达或聊天窗口" = "Copies the file to paste into Finder or a chat";
+"移到废纸篓，要点两下" = "Moves to Trash (click twice)";
 "正在建立索引，马上就好…" = "Indexing, almost there…";
 "没有找到，换个关键词或试试拼音首字母" = "Nothing found. Try another word.";
 "个人文件夹和应用程序" = "Home folder and Applications";

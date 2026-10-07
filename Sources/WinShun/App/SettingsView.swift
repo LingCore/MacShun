@@ -220,19 +220,23 @@ struct SettingsView: View {
 
     private func sidebarButton(_ tab: SettingsTab) -> some View {
         let selected = selection.tab == tab
+        let ink = warm ? palette.ink : Color.primary
         return Button {
             selection.tab = tab
         } label: {
-            SidebarRow(tab: tab, needsAttention: needsAttention(tab))
-                .foregroundStyle(selected ? Color.white : (warm ? palette.ink : Color.primary))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(selected ? (warm ? AnyShapeStyle(palette.accent.gradient) : AnyShapeStyle(Color.accentColor)) : AnyShapeStyle(Color.clear))
-                )
-                .contentShape(Rectangle())
+            HoverReader { hovering in
+                SidebarRow(tab: tab, needsAttention: needsAttention(tab))
+                    .foregroundStyle(selected ? Color.white : ink)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(selected ? (warm ? AnyShapeStyle(palette.accent.gradient) : AnyShapeStyle(Color.accentColor))
+                                  : AnyShapeStyle(ink.opacity(hovering ? 0.07 : 0)))
+                    )
+                    .contentShape(Rectangle())
+            }
         }
         .buttonStyle(.plain)
     }
@@ -398,9 +402,8 @@ private struct ExcludedAppsEditor: View {
                 } label: {
                     Image(systemName: "minus.circle.fill")
                         .font(.body)
-                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(HoverIconStyle(color: .red))
                 .help(L("移除"))
             }
         }
@@ -409,6 +412,7 @@ private struct ExcludedAppsEditor: View {
                 .foregroundStyle(bundleIDs.isEmpty ? .secondary : .primary)
             Spacer()
             Button(L("添加应用…"), action: addApp)
+                .nativeButtonHover()
         }
     }
 
@@ -467,7 +471,7 @@ private struct MouseSettings: View {
                         Text(cursorDetail)
                         if config.cursorScale != nil {
                             Button(L("恢复成系统的指针大小")) { config.cursorScale = nil }
-                                .buttonStyle(.link)
+                                .buttonStyle(.hoverLink)
                         }
                     }
                 }
@@ -599,7 +603,7 @@ private struct DeviceSettingsEditor: View {
                 Text(speedDetail)
                 if settings.pointerSpeed != nil {
                     Button(L("恢复成系统的跟踪速度")) { settings.pointerSpeed = nil }
-                        .buttonStyle(.link)
+                        .buttonStyle(.hoverLink)
                 }
             }
         }
@@ -692,9 +696,11 @@ private struct ClipboardSettings: View {
                     Button(L("在 Finder 中显示")) {
                         NSWorkspace.shared.activateFileViewerSelecting([store.directory])
                     }
+                    .nativeButtonHover()
                     .settingsAnchor(.showInFinder)
                     Spacer()
                     Button(L("清空历史…"), role: .destructive, action: confirmClear)
+                        .nativeButtonHover()
                         .disabled(store.items.allSatisfy(\.pinned))
                         .settingsAnchor(.clearHistory)
                 }
@@ -739,6 +745,7 @@ private struct FileSearchSettings: View {
                         Button(L("现在试试")) {
                             NotificationCenter.default.post(name: .openFileSearch, object: nil)
                         }
+                        .nativeButtonHover()
                     }
                 }
                 InfoRow(
@@ -770,11 +777,13 @@ private struct FileSearchSettings: View {
                                 NSWorkspace.shared.open(url)
                             }
                         }
+                        .nativeButtonHover()
                     }
                 }
                 HStack {
                     Spacer()
                     Button(L("重新建立索引")) { index.rebuild() }
+                        .nativeButtonHover()
                         .disabled(index.isIndexing || !config.activated)
                 }
             } header: {
@@ -910,8 +919,9 @@ private struct WindowSettings: View {
                         Spacer()
                         VStack(alignment: .trailing, spacing: 6) {
                             Button(L("关掉系统的拖动分屏")) { tiling.disable() }
+                                .nativeButtonHover()
                             Button(L("打开系统设置")) { NativeTiling.openSystemSettings() }
-                                .buttonStyle(.link)
+                                .buttonStyle(.hoverLink)
                         }
                     }
                 }
@@ -1075,6 +1085,7 @@ private struct GeneralSettings: View {
                             PermissionGuide.shared.start(missingPermissions, state: state)
                         }
                         .buttonStyle(.borderedProminent)
+                        .nativeButtonHover()
                     }
                 }
                 .settingsAnchor(.grantAll)
@@ -1117,7 +1128,7 @@ private struct GeneralSettings: View {
                         .settingsFooter()
                     Spacer()
                     Button(L("重新启动 Win顺")) { AppState.relaunch() }
-                        .buttonStyle(.link)
+                        .buttonStyle(.hoverLink)
                         .font(.caption)
                         .settingsAnchor(.relaunch)
                 }
@@ -1203,6 +1214,7 @@ private struct PermissionRow: View {
             } else {
                 Button(actionTitle, action: request)
                     .buttonStyle(.borderedProminent)
+                    .nativeButtonHover()
                     .controlSize(.small)
             }
         }

@@ -235,13 +235,15 @@ final class SelfTest {
         let rootName = "Win顺自测-\(Int(Date().timeIntervalSince1970))"
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop").appendingPathComponent(rootName)
         let file = root.appendingPathComponent("art/gpt/style_reference.png")
-        // 右键菜单测试用：一个同名文件夹（左键点它打开），一个要移到废纸篓的文件
+        // 右键菜单测试用：一个同名文件夹（左键点它打开），一个要移到废纸篓的文件；还有一个用结果右边的“删除”删
         let folder = root.appendingPathComponent("art/gpt/style_reference")
         let junk = root.appendingPathComponent("art/gpt/style_reference \(rootName).txt")
+        let junk2 = root.appendingPathComponent("art/gpt/style_reference \(rootName) 2.txt")
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             try Data().write(to: file)
             try Data().write(to: junk)
+            try Data().write(to: junk2)
         } catch {
             return fail("文件搜索测试准备", error.localizedDescription)
         }
@@ -268,7 +270,9 @@ final class SelfTest {
             fileSearch.hide()
             closeFinderWindows { $0 == "gpt" || $0 == "style_reference" }
             try? fm.removeItem(at: root)
-            try? fm.removeItem(at: fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash/\(junk.lastPathComponent)"))
+            for trashed in [junk, junk2] {
+                try? fm.removeItem(at: fm.homeDirectoryForCurrentUser.appendingPathComponent(".Trash/\(trashed.lastPathComponent)"))
+            }
         }
 
         await tapControl()
@@ -399,6 +403,63 @@ final class SelfTest {
         check("右键“复制路径”：完整路径放进剪贴板，搜索框关掉", copied && !fileSearch.isVisible,
               "剪贴板：\(NSPasteboard.general.string(forType: .string)?.debugDescription ?? "空")，搜索框开着：\(fileSearch.isVisible)，"
                 + "点的第 \(fileRow) 条，菜单：\(copyMenu.titles)，结果：\(fileSearch.visibleResults.map(\.path))")
+
+        // 结果右边的按钮：鼠标移上去才显示；删除点两下才删，双击不算；复制、定位做完关掉搜索框
+        func hoverButton(_ button: FileRowButton, on url: URL) async -> CGPoint? {
+            let index = row(url)
+            guard index >= 0 else { return nil }
+            postMouse(.mouseMoved, at: fileSearch.rowCenter(index))
+            guard await waitUntil(timeout: 2, { fileSearch.buttonCenter(button, for: url.path) != nil }) else { return nil }
+            return fileSearch.buttonCenter(button, for: url.path)
+        }
+        if await search([folder, file, junk2]), let delete = await hoverButton(.delete, on: junk2) {
+            postClick(at: delete, clickState: 1)
+            postClick(at: delete, clickState: 2)
+            await pause(400)
+            check("双击结果右边的“删除”：只变成“确定删除”，文件还在，搜索框不关",
+                  fileSearch.confirmingDelete == junk2.path && fm.fileExists(atPath: junk2.path) && fileSearch.isVisible,
+                  "等确认的：\(fileSearch.confirmingDelete ?? "无")，文件还在：\(fm.fileExists(atPath: junk2.path))，"
+                    + "搜索框开着：\(fileSearch.isVisible)")
+            // 过了双击时间再点才算确认
+            await pause(UInt64(min(NSEvent.doubleClickInterval, 2) * 1000) + 150)
+            postClick(at: fileSearch.buttonCenter(.delete, for: junk2.path) ?? delete, clickState: 1)
+            let deleted = await waitUntil(timeout: 4) { !fm.fileExists(atPath: junk2.path) && row(junk2) < 0 }
+            check("再点一下“确定删除”：移到废纸篓，从结果里拿掉，搜索框不关", deleted && fileSearch.isVisible,
+                  "文件还在：\(fm.fileExists(atPath: junk2.path))，结果里还有：\(row(junk2) >= 0)，搜索框开着：\(fileSearch.isVisible)")
+
+            NSPasteboard.general.clearContents()
+            if let copy = await hoverButton(.copy, on: file) {
+                // 鼠标在这一条的文字上（按钮显示着），再移到“复制”上：按钮底色变深
+                let before = fileSearch.buttonFill(.copy, for: file.path)
+                postMouse(.mouseMoved, at: copy)
+                await pause(300)
+                let after = fileSearch.buttonFill(.copy, for: file.path)
+                func level(_ c: NSColor?) -> CGFloat { c.map { $0.redComponent + $0.greenComponent + $0.blueComponent } ?? -1 }
+                check("鼠标停在结果右边的按钮上：底色变了", before != nil && after != nil && abs(level(after) - level(before)) > 0.04,
+                      "停上去之前：\(before.map(String.init(describing:)) ?? "无")，之后：\(after.map(String.init(describing:)) ?? "无")")
+                postClick(at: copy)
+                let copied = await waitUntil(timeout: 2) {
+                    (NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL])?.first?.path == file.path
+                }
+                check("点结果右边的“复制”：文件放进剪贴板，搜索框关掉", copied && !fileSearch.isVisible,
+                      "剪贴板：\(NSPasteboard.general.types?.map(\.rawValue) ?? [])，搜索框开着：\(fileSearch.isVisible)")
+            } else {
+                fail("点结果右边的“复制”", "按钮没显示，结果：\(fileSearch.visibleResults.map(\.name))")
+            }
+        } else {
+            fail("双击结果右边的“删除”", "没搜到或按钮没显示：\(fileSearch.visibleResults.map(\.name))")
+        }
+        closeFinderWindows { $0 == "gpt" }
+        if await search([file]), let reveal = await hoverButton(.reveal, on: file) {
+            postClick(at: reveal)
+            let revealed = await waitUntil(timeout: 4) {
+                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == AppCatalog.finder && self.finderTitle() == "gpt"
+            }
+            check("点结果右边的“定位”：在访达中显示，搜索框关掉", revealed && !fileSearch.isVisible,
+                  "访达窗口：\(finderTitle() ?? "无")，搜索框还开着：\(fileSearch.isVisible)")
+        } else {
+            fail("点结果右边的“定位”", "没搜到或按钮没显示：\(fileSearch.visibleResults.map(\.name))")
+        }
 
         // 盖在结果上接右键的那层不能挡住左键
         if await search([folder, file]) {
@@ -926,10 +987,13 @@ final class SelfTest {
         event.post(tap: .cghidEventTap)
     }
 
-    private func postClick(at point: CGPoint) {
+    /// clickState 是连点的第几下（双击的第二下是 2）
+    private func postClick(at point: CGPoint, clickState: Int64? = nil) {
         for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-            CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?
-                .post(tap: .cghidEventTap)
+            guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+            else { continue }
+            if let clickState { event.setIntegerValueField(.mouseEventClickState, value: clickState) }
+            event.post(tap: .cghidEventTap)
         }
     }
 
