@@ -37,7 +37,7 @@
 
 **Mac顺 是什么？** 一个让 Mac 用得更顺手的小工具。Mac 自带的没有、或者藏得很深的常用功能，装上就有：剪贴板历史、连按两下 Ctrl 搜文件（文件里的字也能搜）、窗口分屏、关掉鼠标加速、每块屏幕按百分比调缩放。从 Windows 换过来的人，还能直接用熟悉的习惯：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样。不用学新的快捷键，也不用写任何配置。
 
-它常驻在屏幕顶部的菜单栏，不占程序坞，不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
+它常驻在屏幕顶部的菜单栏，不占程序坞，除了检查更新不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
 
 ### 功能
 
@@ -178,7 +178,10 @@ Mac顺 的文件搜索也能按内容搜：txt、CSV、JSON、代码、Word、Ex
 macOS 本来就支持每块屏幕单独设置。Mac顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
 **收费吗？会上传我的数据吗？**
-完全免费，源代码公开。Mac顺 不联网，剪贴板内容只保存在你自己的电脑上。
+完全免费，源代码公开。Mac顺 只在检查更新时访问 GitHub，不发送任何个人信息（设置里可以关掉自动检查）；剪贴板内容只保存在你自己的电脑上。
+
+**怎么更新到新版本？**
+Mac顺 每天会到 GitHub 看一眼有没有新版本，有的话弹出窗口，写着新版本改了什么，点“立即更新”就会自动下载、装好、重新打开，设置和授权都保留。也可以在菜单栏图标里选“检查更新…”。0.3.0 以前的版本没有这个功能，要手动下载一次。
 
 **以前装的是 Win顺？**
 Win顺 改名叫 Mac顺 了。在菜单栏里退出 Win顺，把“应用程序”里的 Win顺 拖到废纸篓，再装 Mac顺。权限、设置和剪贴板历史都会保留，不用重新授权。
@@ -212,7 +215,7 @@ scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 
 
 **What is MacShun?** MacShun (Mac顺, "a Mac that feels smooth"; formerly WinShun) is a small macOS menu bar app that makes your Mac smoother to use. It adds everyday tools that macOS lacks or hides away: clipboard history, press-Ctrl-twice file search (including text inside files), window snapping, turning off pointer acceleration, and per-display scaling in percentages. If you come from Windows, your habits work too: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction. No new shortcuts to learn and no configuration files to write.
 
-It lives in the menu bar, stays out of the Dock, works offline, needs no account, and is completely free.
+It lives in the menu bar, stays out of the Dock, works offline apart from checking for updates, needs no account, and is completely free.
 
 The interface is available in **English** and **Simplified Chinese**. It follows your system language, or you can pick one in Settings › General.
 
@@ -364,7 +367,10 @@ macOS supports per-display scaling; MacShun's Displays page shows it as Windows-
 WinShun has been renamed MacShun. Quit WinShun from the menu bar, drag Win顺 from Applications to the Trash, then install MacShun. Permissions, settings and clipboard history carry over, so there is nothing to grant again.
 
 **Is it free? Does it collect data?**
-Free and open source. MacShun never connects to the internet; your clipboard history stays on your Mac.
+Free and open source. MacShun only goes online to check GitHub for updates, without sending any personal information (you can turn automatic checks off in Settings); your clipboard history stays on your Mac.
+
+**How do I update?**
+MacShun checks GitHub for a new version about once a day. When there is one, a window shows what's new; click Update Now and it downloads, installs and reopens itself, keeping your settings and permissions. You can also choose Check for Updates… from the menu bar icon. Versions before 0.3.0 don't have this, so update those by hand once.
 
 ### Feedback
 

@@ -16,6 +16,7 @@ struct SettingsItem: Identifiable {
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, relaunch, launchAtLogin, language, version
+        case autoUpdate
         case works, feedback
     }
 
@@ -144,8 +145,10 @@ extension SettingsItem {
               keywords: "开机 启动 自启 login startup boot"),
         .init(id: .language, tab: .general, title: "语言",
               keywords: "language english chinese 中文 英文 简体"),
-        .init(id: .version, tab: .general, title: "版本",
-              keywords: "version 关于 about 更新 update"),
+        .init(id: .version, tab: .general, title: "检查更新",
+              keywords: "版本 version 关于 about 更新 升级 新版本 update upgrade github"),
+        .init(id: .autoUpdate, tab: .general, title: "自动检查更新",
+              keywords: "更新 升级 新版本 自动 update upgrade automatic github"),
 
         .init(id: .works, tab: .gleaning, title: "拾穗计划",
               keywords: "作品 开源 作者 lingcore projects author gleaning"),

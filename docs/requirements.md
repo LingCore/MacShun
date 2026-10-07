@@ -42,7 +42,7 @@
 
 - 用 Developer ID 签名，并交给 Apple 公证。
 - 不上架 Mac App Store，因为商店版要运行在沙盒里，改键和鼠标功能会受限。
-- 用 Sparkle 做自动更新。国内下载另外准备渠道。
+- 自动更新：新版本发在 GitHub Releases 上，程序自己检查、下载、换掉自己（`App/Updater.swift`）。没有用 Sparkle：它要额外打包框架和维护一对 EdDSA 密钥，这里用“新版本必须和正在运行的是同一张证书签的”代替。国内下载另外准备渠道。
 - 最低支持 macOS 14。同时支持 Intel 和 Apple Silicon（开发期间先只编译 Apple Silicon）。
 
 ## 4.4 文件搜索

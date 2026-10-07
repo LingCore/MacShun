@@ -39,6 +39,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let cfg = configStore.config
 
+        let updater = Updater.shared
+        if let release = updater.available, !updater.isSkipped(release) {
+            menu.addItem(action(L("更新到 Mac顺 %@…", release.version), #selector(showUpdate), symbol: "arrow.down.circle.fill"))
+            menu.addItem(.separator())
+        }
+
         if !state.allGood {
             menu.addItem(action(L("需要授权才能工作…"), #selector(showSettings), symbol: "exclamationmark.triangle.fill"))
             menu.addItem(.separator())
@@ -57,6 +63,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         history.isEnabled = cfg.clipboard.enabled
         menu.addItem(history)
         menu.addItem(action(L("设置…"), #selector(showSettings), key: ",", symbol: "gearshape"))
+        menu.addItem(action(L("检查更新…"), #selector(checkForUpdates), symbol: "arrow.triangle.2.circlepath"))
         menu.addItem(.separator())
         menu.addItem(action(L("退出 Mac顺"), #selector(quit), key: "q", symbol: "power"))
     }
@@ -82,4 +89,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func showClipboard() { openClipboard() }
     @objc private func showSettings() { openSettings() }
     @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func showUpdate() { UpdateWindowController.shared.show(activate: true) }
+
+    @objc private func checkForUpdates() {
+        // 已经知道有新版本就直接给看；否则先开始检查，窗口里显示“正在检查”
+        if Updater.shared.available == nil { Updater.shared.check(manual: true) }
+        UpdateWindowController.shared.show(activate: true)
+    }
 }

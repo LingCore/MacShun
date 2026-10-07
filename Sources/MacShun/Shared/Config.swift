@@ -214,12 +214,25 @@ struct WindowConfig: Codable, Equatable {
     }
 }
 
+struct UpdateConfig: Codable, Equatable {
+    /// 定期到 GitHub 看有没有新版本（见 Updater）
+    var automatic = true
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        automatic = c.value(.automatic, default: UpdateConfig().automatic)
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var keyboard = KeyboardConfig()
     var mouse = MouseConfig()
     var clipboard = ClipboardConfig()
     var fileSearch = FileSearchConfig()
     var window = WindowConfig()
+    var update = UpdateConfig()
 
     init() {}
 
@@ -230,6 +243,7 @@ struct AppConfig: Codable, Equatable {
         clipboard = c.value(.clipboard, default: ClipboardConfig())
         fileSearch = c.value(.fileSearch, default: FileSearchConfig())
         window = c.value(.window, default: WindowConfig())
+        update = c.value(.update, default: UpdateConfig())
     }
 }
 

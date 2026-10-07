@@ -45,13 +45,15 @@ final class AppState: ObservableObject {
     /// 重启后要打开设置窗口时带的参数
     static let showSettingsArgument = "--show-settings"
 
-    /// 重新启动本程序。有时授予“输入监控”权限后要重启才生效。
+    /// 重新启动本程序。有时授予“输入监控”权限后要重启才生效；更新装好后也用它打开新版本。
     static func relaunch(showSettings: Bool = false) {
         let path = Bundle.main.bundlePath
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
         let args = showSettings ? " --args \(showSettingsArgument)" : ""
-        task.arguments = ["-c", "sleep 0.5; /usr/bin/open \"$0\"\(args)", path]
+        // 等这个进程真的退出了（最多 10 秒）再打开：还没退出时 open 只会把旧的切到前台
+        let wait = "i=0; while /bin/kill -0 $1 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done"
+        task.arguments = ["-c", "\(wait); /usr/bin/open \"$0\"\(args)", path, "\(getpid())"]
         try? task.run()
         NSApp.terminate(nil)
     }

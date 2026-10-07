@@ -58,13 +58,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openClipboard: { [weak self] in self?.showClipboard() }
         )
 
+        // 发现新版本时弹出“软件更新”窗口。自动检查发现的不抢键盘
+        Updater.shared.onFound = { _, manual in UpdateWindowController.shared.show(activate: manual) }
+
         configStore.$config
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] config in
                 self?.clipboard.applyConfig()
                 self?.fileSearch.applyConfig()
                 self?.windowSnapper.applyConfig()
                 self?.applyPointer()
+                Updater.shared.setAutomatic(config.update.automatic)
             }
             .store(in: &subscriptions)
 

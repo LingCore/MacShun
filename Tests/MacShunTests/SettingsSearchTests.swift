@@ -28,6 +28,9 @@ struct SettingsSearchTests {
         #expect(finds("开机", .launchAtLogin))
         #expect(finds("copy", .ctrlAsCommand))
         #expect(finds("language", .language))
+        #expect(finds("更新", .version))
+        #expect(finds("update", .autoUpdate))
+        #expect(finds("版本", .version))
     }
 
     @Test func titlesComeFirst() {

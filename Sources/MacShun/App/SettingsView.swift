@@ -260,7 +260,7 @@ struct SettingsView: View {
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
-            GeneralSettings(state: state)
+            GeneralSettings(state: state, update: $configStore.config.update, updater: Updater.shared)
         case .gleaning:
             GleaningPage()
         }
@@ -1062,6 +1062,8 @@ private struct DisplaySettings: View {
 
 private struct GeneralSettings: View {
     @ObservedObject var state: AppState
+    @Binding var update: UpdateConfig
+    @ObservedObject var updater: Updater
 
     /// 还没授权的几项，按页面上的顺序
     private var missingPermissions: [PermissionKind] {
@@ -1157,13 +1159,78 @@ private struct GeneralSettings: View {
             }
 
             Section {
-                LabeledContent(L("版本"), value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? L("开发版"))
+                UpdateRow(updater: updater)
                     .settingsAnchor(.version)
+                Toggle(L("自动检查更新"), isOn: $update.automatic)
+                    .settingsAnchor(.autoUpdate)
+            } header: {
+                Text(L("更新"))
             } footer: {
-                Text(L("Windows 是微软公司的商标，Mac 是苹果公司的商标。本程序与微软、苹果没有任何关联。"))
-                    .settingsFooter()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L("新版本发布在 GitHub 上。检查更新时只访问 GitHub，不发送任何个人信息。"))
+                        .settingsFooter()
+                    Text(L("Windows 是微软公司的商标，Mac 是苹果公司的商标。本程序与微软、苹果没有任何关联。"))
+                        .settingsFooter()
+                }
             }
         }
+    }
+}
+
+/// 版本号、检查结果和“检查更新”按钮。有新版本时按钮变成“更新到 x.y.z”，打开“软件更新”窗口
+private struct UpdateRow: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("版本 %@", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? L("开发版")))
+                status
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            if updater.activity == .checking {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let release = updater.available {
+                Button(L("更新到 %@", release.version)) { UpdateWindowController.shared.show(activate: true) }
+                    .buttonStyle(.borderedProminent)
+                    .nativeButtonHover()
+                    .controlSize(.small)
+            } else {
+                Button(L("检查更新")) { updater.check(manual: true) }
+                    .nativeButtonHover()
+                    .controlSize(.small)
+                    .disabled(updater.activity != .none)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if updater.activity == .checking {
+            Text(L("正在检查更新…")).foregroundStyle(.secondary)
+        } else if case .downloading = updater.activity {
+            Text(L("正在下载新版本…")).foregroundStyle(.secondary)
+        } else if updater.activity == .installing {
+            Text(L("正在安装新版本…")).foregroundStyle(.secondary)
+        } else if let release = updater.available {
+            Text(L("有新版本 %@", release.version)).foregroundStyle(.tint)
+        } else if let problem = updater.problem {
+            Text(problem).foregroundStyle(.orange)
+        } else if let date = updater.lastChecked {
+            Text(L("已是最新版本 · %@检查", Self.relative(date))).foregroundStyle(.secondary)
+        }
+    }
+
+    /// “3 分钟前”“昨天”。一分钟内说“刚刚”
+    private static func relative(_ date: Date) -> String {
+        if Date().timeIntervalSince(date) < 60 { return L("刚刚") }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = AppLanguage.uiLocale
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 
