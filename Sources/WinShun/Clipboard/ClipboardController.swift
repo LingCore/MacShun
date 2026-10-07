@@ -154,7 +154,10 @@ final class ClipboardController {
 
     private func makePanel() -> ClipboardPanel {
         let panel = ClipboardPanel()
-        panel.contentView = NSHostingView(rootView: ClipboardPanelView(model: model))
+        let host = NSHostingView(rootView: ClipboardPanelView(model: model))
+        // 面板带隐藏的标题栏（为了圆角和阴影），不给它让位置，否则搜索框上面会空出一条
+        host.safeAreaRegions = []
+        panel.contentView = host
         panel.onResignKey = { [weak self] in self?.hide() }
         return panel
     }

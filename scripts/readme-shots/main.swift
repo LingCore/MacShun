@@ -231,15 +231,13 @@ if wants("panel") {
     model.prepareForShow()
     let panel = ClipboardPanel()
     panel.appearance = appearance
-    panel.contentView = NSHostingView(rootView: ClipboardPanelView(model: model).environment(\.controlActiveState, .key))
-    panel.setContentSize(ClipboardPanel.size)
+    let host = NSHostingView(rootView: ClipboardPanelView(model: model).environment(\.controlActiveState, .key))
+    host.safeAreaRegions = []
+    panel.contentView = host
     panel.setFrameOrigin(NSPoint(x: -4000, y: 0))
     panel.orderFrontRegardless()
     pump(1.0)
-    // 面板内容贴着底边，上面是标题栏让出的空白
-    let v = panel.contentView!, size = ClipboardPanel.size
-    let rep = capture(v, area: NSRect(x: 0, y: v.isFlipped ? v.bounds.height - size.height : 0, width: size.width, height: size.height))
-    save(rep, "panel-\(suffix).png", radius: 12)
+    save(capture(host), "panel-\(suffix).png", radius: 12)
     panel.orderOut(nil)
 }
 
