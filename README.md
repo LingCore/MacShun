@@ -14,7 +14,7 @@
   <a href="https://github.com/LingCore/MacShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/MacShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-blue" alt="Apple Silicon and Intel">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
   <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA%20Community-1f1f1f" alt="LINUX DO 社区"></a>
 </p>
 
@@ -398,10 +398,10 @@ MacShun is proud to be part of the [LINUX DO community](https://linux.do).
 
 ## 许可证 · License
 
-Mac顺 以 [GPL-3.0-or-later](LICENSE) 发布。Copyright © 2026 LingCore.
+Mac顺 以 [MIT 许可证](LICENSE) 发布。Copyright © 2026 LingCore.
 借用的第三方代码登记在 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-MacShun is released under [GPL-3.0-or-later](LICENSE). Copyright © 2026 LingCore.
+MacShun is released under the [MIT License](LICENSE). Copyright © 2026 LingCore.
 
 Windows 是微软公司的商标，Mac 和 macOS 是苹果公司的商标。本项目与微软、苹果没有任何关联。
 Windows is a trademark of Microsoft Corporation. Mac and macOS are trademarks of Apple Inc. This project is not affiliated with Microsoft or Apple.

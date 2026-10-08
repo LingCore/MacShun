@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 编译并打包成 build/Mac顺.app，用开发证书签名（先运行一次 scripts/dev-cert.sh）。
 #

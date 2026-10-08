@@ -36,6 +36,6 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>GPL-3.0-or-later</string>
+	<string>Copyright © 2026 LingCore. MIT License.</string>
 </dict>
 </plist>

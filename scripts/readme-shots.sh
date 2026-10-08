@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 重新生成 README 里的截图（docs/images 下中文、英文 × 浅色、深色各一套）。
 # 用假数据离屏渲染（scripts/readme-shots/main.swift），不碰真实配置、剪贴板历史和系统设置。

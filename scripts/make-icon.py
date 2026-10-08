@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 生成程序图标：一笔画成的 ⌘，圈画成 Windows 那样的圆角方环，四种 Windows 颜色沿着线渐变过渡；
 # 右上角的环外角收成叶尖、里面一条短叶脉，像一片叶子从 ⌘ 中心长出来；

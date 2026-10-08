@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 检查界面文字的翻译：
 #   1. 代码里每个 L("…") 在 Resources/en.lproj 里都有英文；

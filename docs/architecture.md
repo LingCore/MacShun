@@ -174,6 +174,6 @@
 
 ## 编码约定
 
-- 每个源文件第一行写 `// SPDX-License-Identifier: GPL-3.0-or-later`。
+- 每个源文件第一行写 `// SPDX-License-Identifier: MIT`。
 - 事件拦截线程和界面线程之间共享的状态一律用 `Locked` 包起来；输入法、AppKit 的接口只在主线程上调用。
 - 签名证书、公证密码、Sparkle 私钥这些不能放进仓库，`.gitignore` 里已经排除了常见的证书和密钥文件。

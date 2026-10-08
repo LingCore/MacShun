@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 打包发布版：同时支持 Apple Silicon 和 Intel 的通用程序，装进 dist/MacShun-<版本>.dmg，
 # 旁边生成 .sha256 校验文件。版本号取自 Resources/Info.plist 的 CFBundleShortVersionString。

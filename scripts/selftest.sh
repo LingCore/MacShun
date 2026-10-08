@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 真机自测：Mac顺 自己模拟按键、滚轮、鼠标侧键，经过事件拦截后检查效果。
 # 需要先授权（辅助功能、输入监控），并先运行 scripts/build-app.sh。

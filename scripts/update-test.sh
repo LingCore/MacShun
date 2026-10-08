@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 真机测试自动更新（见 Sources/MacShun/App/Updater.swift）：在本机搭一个假的 GitHub 发布，
 # 让一份临时的 Mac顺 自己检查、下载、核对、替换并重新打开。不碰“应用程序”里装的那份。

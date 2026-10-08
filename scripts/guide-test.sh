@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-License-Identifier: MIT
 #
 # 授权引导自测：真的打开“系统设置”的几页，检查引导浮窗的位置、列表里有没有 Mac顺、授权后是否自动进入下一项。
 # 不会关掉或改动任何权限（“未授权”是假装的）。需要辅助功能权限，并先运行 scripts/build-app.sh。

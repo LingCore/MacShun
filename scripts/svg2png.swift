@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 //
 // 把 SVG 渲染成指定像素的透明 PNG（用系统 NSImage 自带的 SVG 支持），供 scripts/make-icon.py 调用。
 // 用法：svg2png <输入.svg> <像素> <输出.png>
