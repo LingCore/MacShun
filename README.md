@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LingCore/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
+  <a href="https://github.com/LingCore/MacShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/MacShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
   <img src="https://img.shields.io/badge/macOS-14%2B-black" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Apple%20Silicon%20%2B%20Intel-universal-blue" alt="Apple Silicon and Intel">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0"></a>
@@ -125,7 +125,7 @@
 
 ### 下载安装
 
-1. 到 [Releases 页面](https://github.com/LingCore/WinShun/releases/latest) 下载 `WinShun-版本号.dmg`。**同一个文件同时支持 Apple 芯片（M1/M2/M3/M4…）和 Intel 芯片的 Mac**，不用挑版本。
+1. 到 [Releases 页面](https://github.com/LingCore/MacShun/releases/latest) 下载 `WinShun-版本号.dmg`。**同一个文件同时支持 Apple 芯片（M1/M2/M3/M4…）和 Intel 芯片的 Mac**，不用挑版本。
 2. 双击打开 dmg，把 **Win顺** 拖进“应用程序”文件夹。
 3. 第一次打开时，macOS 会提示“无法验证开发者”。这是因为作者还没有购买苹果的开发者证书，不是程序有问题。按下面的办法打开一次，以后就不会再问：
    - 打开“系统设置 → 隐私与安全性”，拉到最下面，点 **“仍要打开”**，输入密码确认。
@@ -182,7 +182,7 @@ macOS 本来就支持每块屏幕单独设置。Win顺 的“显示器”页把�
 
 ### 反馈
 
-遇到问题或有建议，欢迎在 [Issues](https://github.com/LingCore/WinShun/issues) 里提出。
+遇到问题或有建议，欢迎在 [Issues](https://github.com/LingCore/MacShun/issues) 里提出。
 
 ### 从源码编译
 
@@ -303,7 +303,7 @@ Every option can be found with the **search box** at the top of the settings win
 
 ### Download and install
 
-1. Download `WinShun-<version>.dmg` from the [Releases page](https://github.com/LingCore/WinShun/releases/latest). **One universal file runs natively on both Apple Silicon (M1/M2/M3/M4…) and Intel Macs.**
+1. Download `WinShun-<version>.dmg` from the [Releases page](https://github.com/LingCore/MacShun/releases/latest). **One universal file runs natively on both Apple Silicon (M1/M2/M3/M4…) and Intel Macs.**
 2. Open the dmg and drag **Win顺** into Applications.
 3. On first launch macOS says it cannot verify the developer, because the app is not yet signed with a paid Apple Developer ID. Open it once using either method; macOS won't ask again:
    - Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
@@ -357,7 +357,7 @@ Free and open source. WinShun never connects to the internet; your clipboard his
 
 ### Feedback
 
-Bug reports and suggestions are welcome in [Issues](https://github.com/LingCore/WinShun/issues).
+Bug reports and suggestions are welcome in [Issues](https://github.com/LingCore/MacShun/issues).
 
 ### Build from source
 
