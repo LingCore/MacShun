@@ -61,8 +61,9 @@ struct UpdaterTests {
         // 中文里夹着英文单词、引号也分得开
         let renamed = try notes("0.3.0")
         #expect(ReleaseNotes.summary(renamed, chinese: true).hasPrefix("Win顺 改名为 **Mac顺**"))
-        #expect(ReleaseNotes.summary(renamed, chinese: true).hasSuffix("删除按钮。"))
+        #expect(ReleaseNotes.summary(renamed, chinese: true).hasSuffix("不会再变回去。"))
         #expect(ReleaseNotes.summary(renamed, chinese: false).hasPrefix("WinShun is now **MacShun**"))
+        #expect(ReleaseNotes.summary(renamed, chinese: false).hasSuffix("no longer resets."))
         // 只有一种语言时整段都给
         #expect(ReleaseNotes.summary("只有中文。\n\n## 下载", chinese: false) == "只有中文。")
         #expect(ReleaseNotes.summary("## 标题\n正文", chinese: true) == "")
