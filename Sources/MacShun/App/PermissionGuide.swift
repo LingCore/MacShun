@@ -8,13 +8,17 @@ import SwiftUI
 /// 浮窗里的 Mac顺 图标可以直接拖进列表（列表里没有 Mac顺 时用）。每一项授权成功后打个勾，
 /// 自动换到下一项；全部做完把设置窗口带回前台。
 enum PermissionKind: CaseIterable {
-    case accessibility, inputMonitoring, pasteboard
+    case accessibility, inputMonitoring, pasteboard, fullDiskAccess
+
+    /// Mac顺 工作必需的几项，“一键授权”只走这些。完全磁盘访问是可选的：只用来改系统设置里的指针大小
+    static let required: [PermissionKind] = [.accessibility, .inputMonitoring, .pasteboard]
 
     var title: String {
         switch self {
         case .accessibility: L("辅助功能")
         case .inputMonitoring: L("输入监控")
         case .pasteboard: L("读取剪贴板")
+        case .fullDiskAccess: L("完全磁盘访问权限")
         }
     }
 
@@ -29,12 +33,15 @@ enum PermissionKind: CaseIterable {
         case .accessibility: return modern ? L("设备控制和数据访问") : L("辅助功能")
         case .inputMonitoring: return L("输入监控")
         case .pasteboard: return modern ? L("从其他App粘贴") : L("粘贴")
+        case .fullDiskAccess: return L("完全磁盘访问权限")
         }
     }
 
     var instruction: String {
         switch self {
         case .accessibility, .inputMonitoring: L("在列表里找到 Mac顺，打开右边的开关")
+        // 这个权限要重启 Mac顺 才生效，系统打开开关后会问要不要“退出并重新打开”
+        case .fullDiskAccess: L("打开 Mac顺 的开关，再点“退出并重新打开”")
         case .pasteboard: L("在列表里找到 Mac顺，选择“始终允许”")
         }
     }
@@ -47,6 +54,7 @@ enum PermissionKind: CaseIterable {
         case .accessibility: state.accessibilityGranted
         case .inputMonitoring: state.inputMonitoringGranted
         case .pasteboard: state.pasteboardAccess == .allowed
+        case .fullDiskAccess: state.fullDiskAccessGranted
         }
     }
 
@@ -61,6 +69,9 @@ enum PermissionKind: CaseIterable {
             Permissions.openInputMonitoringSettings()
         case .pasteboard:
             PasteboardAccess.request()
+        case .fullDiskAccess:
+            // 系统不会自己把 Mac顺 列进这一页，要用户把图标拖进去
+            Permissions.openFullDiskAccessSettings()
         }
     }
 }

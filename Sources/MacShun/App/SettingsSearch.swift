@@ -15,7 +15,7 @@ struct SettingsItem: Identifiable {
         case displayScale, refreshRate
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
-        case grantAll, accessibility, inputMonitoring, pasteboardPermission, relaunch, launchAtLogin, language, version
+        case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
         case autoUpdate
         case works, feedback
     }
@@ -139,6 +139,8 @@ extension SettingsItem {
               keywords: "input monitoring 权限 permission"),
         .init(id: .pasteboardPermission, tab: .general, title: "读取剪贴板",
               keywords: "粘贴 始终允许 paste always allow 权限 permission"),
+        .init(id: .fullDiskAccess, tab: .general, title: "完全磁盘访问权限",
+              keywords: "full disk access 指针大小 光标大小 权限 permission"),
         .init(id: .relaunch, tab: .general, title: "重新启动 Mac顺",
               keywords: "重启 restart relaunch"),
         .init(id: .launchAtLogin, tab: .general, title: "登录时自动启动",

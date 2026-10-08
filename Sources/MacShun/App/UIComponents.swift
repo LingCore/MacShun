@@ -142,7 +142,7 @@ extension ButtonStyle where Self == ChipButtonStyle<RoundedRectangle> {
     }
 }
 
-/// 文字链接（“恢复成系统的指针大小”“打开系统设置”）：鼠标停在上面加下划线、换成手形指针，按下变淡。
+/// 文字链接（“打开系统设置”）：鼠标停在上面加下划线、换成手形指针，按下变淡。
 /// color 为 nil 时用外面给的颜色
 struct HoverLinkStyle: ButtonStyle {
     var color: Color? = Color(nsColor: .linkColor)

@@ -7,10 +7,29 @@ import ApplicationServices
 /// - 辅助功能：改写按键、模拟粘贴、查询光标位置
 /// - 输入监控：识别是哪个鼠标在滚动
 /// - 读取剪贴板：见 PasteboardAccess
+/// - 完全磁盘访问（可选）：改系统设置里的指针大小
 enum Permissions {
     static var accessibility: Bool { AXIsProcessTrusted() }
     static var inputMonitoring: Bool { CGPreflightListenEventAccess() }
     static var allGranted: Bool { accessibility && inputMonitoring }
+
+    /// 完全磁盘访问权限。问 TCC 的未公开接口 TCCAccessPreflight：0 是已授权，1 是没授权，2 是还没问过。
+    /// 找不到这个接口时退回老办法：能打开用户的 TCC.db 就是有权限（macOS 27 上这个文件已经没有了）。
+    static var fullDiskAccess: Bool {
+        if let preflight = tccAccessPreflight {
+            return preflight("kTCCServiceSystemPolicyAllFiles" as CFString, nil) == 0
+        }
+        let fd = Darwin.open(NSHomeDirectory() + "/Library/Application Support/com.apple.TCC/TCC.db", O_RDONLY)
+        guard fd >= 0 else { return false }
+        close(fd)
+        return true
+    }
+
+    private typealias TCCAccessPreflight = @convention(c) (CFString, CFDictionary?) -> Int32
+    private static let tccAccessPreflight: TCCAccessPreflight? = {
+        let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW)
+        return dlsym(handle, "TCCAccessPreflight").map { unsafeBitCast($0, to: TCCAccessPreflight.self) }
+    }()
 
     /// 弹出系统的授权提示，同时把本程序加进“辅助功能”列表。
     static func requestAccessibility() {
@@ -29,6 +48,10 @@ enum Permissions {
 
     static func openInputMonitoringSettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+    }
+
+    static func openFullDiskAccessSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
     }
 
     static func openPasteboardSettings() {

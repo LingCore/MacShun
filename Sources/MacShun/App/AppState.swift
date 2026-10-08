@@ -17,6 +17,9 @@ final class AppState: ObservableObject {
     @Published var keyboards: [InputDevice] = []
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published var pasteboardAccess = PasteboardAccess.status
+    /// 可选：有了它才能改系统设置里的指针大小。在系统设置里开关它，要重启 Mac顺 才生效，
+    /// 所以只在启动时查一次，和 Mac顺 实际能不能用它一致
+    let fullDiskAccessGranted = Permissions.fullDiskAccess
 
     var allGood: Bool { accessibilityGranted && inputMonitoringGranted && eventTapRunning }
 

@@ -36,13 +36,13 @@ final class GuideTest {
         await pause(800)
 
         // 一键授权：三项依次走一遍
-        missing = Set(PermissionKind.allCases)
+        missing = Set(PermissionKind.required)
         guide.grantedOverride = { [unowned self] in !self.missing.contains($0) }
-        let plan = guide.plan(PermissionKind.allCases)
+        let plan = guide.plan(PermissionKind.required)
         say("   步骤：" + plan.map(\.paneTitle).joined(separator: " → "))
         check("macOS 27 上不单独走“输入监控”", !PermissionKind.accessibilityCoversInputMonitoring || !plan.contains(.inputMonitoring),
               "步骤里还有“输入监控”")
-        guide.start(PermissionKind.allCases, state: state)
+        guide.start(PermissionKind.required, state: state)
         for (index, kind) in plan.enumerated() {
             await checkStep(kind, step: index + 1, total: plan.count)
             // 走完这一步之后，被它一并授权的也算开了
@@ -54,6 +54,12 @@ final class GuideTest {
         }
         check("全部完成后收起浮窗、回到 Mac顺 设置窗口", back,
               "浮窗\(guide.visiblePanel == nil ? "已收起" : "还在")，Mac顺\(NSApp.isActive ? "在" : "不在")前台")
+
+        // 可选的完全磁盘访问：单独从通用页那一行进来
+        missing = [.fullDiskAccess]
+        guide.start([.fullDiskAccess], state: state)
+        await checkStep(.fullDiskAccess, step: 1, total: 1)
+        _ = await waitUntil(timeout: 3) { self.guide.visiblePanel == nil }
 
         // 点 × 关掉引导
         missing = [.pasteboard]
@@ -124,6 +130,9 @@ final class GuideTest {
         } else if kind == .pasteboard, !listed, PasteboardAccess.status == .allowed {
             // macOS 27 上见过：已经是“始终允许”，那一页却一个程序都不列
             say("   “\(kind.paneTitle)”列表里没有 Mac顺，但 Mac顺 已经是“始终允许”，读剪贴板不受影响")
+        } else if kind == .fullDiskAccess, !listed {
+            // 系统不会自己把程序列进这一页，要用户拖进去或点“+”
+            say("   “\(kind.paneTitle)”列表里还没有 Mac顺，要把浮窗里的图标拖进去")
         } else if kind == .inputMonitoring, !listed, Permissions.inputMonitoring, Permissions.accessibility {
             // macOS 27：“设备控制和数据访问”包含了监控键盘，授了它就不会再列在“输入监控”里，引导也会跳过这一步
             say("   “输入监控”列表里没有 Mac顺，但已经能监控键盘（由“\(PermissionKind.accessibility.paneTitle)”一并授权），真实使用时这一步会被跳过")
@@ -147,6 +156,7 @@ final class GuideTest {
         .accessibility: ["辅助功能", "设备控制和数据访问", "Accessibility"],
         .inputMonitoring: ["输入监控", "Input Monitoring"],
         .pasteboard: ["粘贴", "从其他App粘贴", "Paste", "Pasteboard"],
+        .fullDiskAccess: ["完全磁盘访问权限", "Full Disk Access"],
     ]
 
     private static var pasteboardNeverAsked: Bool {

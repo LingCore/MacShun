@@ -135,6 +135,7 @@
 "识别是哪个鼠标、哪把键盘在输入" = "Tell which mouse or keyboard is in use";
 "重启生效" = "Restart to Apply";
 "去授权" = "Grant";
+"打开 Mac顺 的开关，再点“退出并重新打开”" = "Turn on Mac顺, then click “Quit & Reopen”";
 "已经授权但还没生效，请重新启动 Mac顺。" = "Permission granted but not active yet. Please restart MacShun.";
 "权限" = "Permissions";
 "在“系统设置 → 隐私与安全性”里打开 Mac顺 的开关，一般马上生效。" = "Turn on MacShun in System Settings → Privacy & Security. It usually takes effect right away.";
@@ -175,8 +176,10 @@
 "光标大小" = "Cursor size";
 "小" = "Small";
 "大" = "Large";
-"恢复成系统的指针大小" = "Use system pointer size";
-"跟系统的指针大小一样（%@）" = "Same as system pointer size (%@)";
+"完全磁盘访问权限" = "Full Disk Access";
+"可选。把光标大小直接改进系统设置，授权后重新启动 Mac顺 生效" = "Optional. Lets Mac顺 change the pointer size in System Settings directly. Takes effect after Mac顺 restarts";
+"就是“系统设置 → 辅助功能 → 显示 → 指针大小”，在哪边改都一样。" = "This is the same setting as System Settings → Accessibility → Display → Pointer size; changing either one changes both.";
+"没有“完全磁盘访问权限”，改不了系统设置，光标只在 Mac顺 运行时变大。授权后重新启动 Mac顺 生效。" = "Without Full Disk Access, Mac顺 can’t change the system setting, so the pointer is only enlarged while Mac顺 is running. Takes effect after Mac顺 restarts.";
 "显示器" = "Displays";
 "显示器缩放" = "Display scaling";
 "显示器缩放和刷新率" = "Display scaling and refresh rate";

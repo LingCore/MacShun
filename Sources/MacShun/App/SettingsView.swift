@@ -248,8 +248,8 @@ struct SettingsView: View {
             KeyboardSettings(config: $configStore.config.keyboard, state: state)
         case .mouse:
             MouseSettings(
-                config: $configStore.config.mouse, mice: state.mice,
-                systemSpeed: state.systemPointerSpeed, systemCursorScale: state.systemCursorScale
+                config: $configStore.config.mouse, state: state, mice: state.mice,
+                systemSpeed: state.systemPointerSpeed, systemCursorScale: $state.systemCursorScale
             )
         case .clipboard:
             ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
@@ -434,9 +434,11 @@ private struct ExcludedAppsEditor: View {
 
 private struct MouseSettings: View {
     @Binding var config: MouseConfig
+    /// 只用来启动授权引导
+    let state: AppState
     let mice: [MouseDevice]
     let systemSpeed: Double
-    let systemCursorScale: Double
+    @Binding var systemCursorScale: Double
 
     var body: some View {
         SearchableForm {
@@ -457,7 +459,7 @@ private struct MouseSettings: View {
             }
             .disabled(!config.enabled)
 
-            Section(L("光标")) {
+            Section {
                 LabeledContent {
                     HStack(spacing: 8) {
                         Text(L("小")).font(.caption).foregroundStyle(.secondary)
@@ -467,17 +469,24 @@ private struct MouseSettings: View {
                     }
                 } label: {
                     Text(L("光标大小"))
-                    HStack(spacing: 6) {
-                        Text(cursorDetail)
-                        if config.cursorScale != nil {
-                            Button(L("恢复成系统的指针大小")) { config.cursorScale = nil }
-                                .buttonStyle(.hoverLink)
-                        }
-                    }
+                    Text(PointerSpeed.describe(cursorScale.wrappedValue))
                 }
                 .settingsAnchor(.cursorSize)
+                if config.cursorScale != nil {
+                    HStack(spacing: 6) {
+                        Text(L("没有“完全磁盘访问权限”，改不了系统设置，光标只在 Mac顺 运行时变大。授权后重新启动 Mac顺 生效。"))
+                            .foregroundStyle(.secondary)
+                        Button(L("去授权")) { PermissionGuide.shared.start([.fullDiskAccess], state: state) }
+                            .buttonStyle(.hoverLink)
+                    }
+                    .font(.callout)
+                }
+            } header: {
+                Text(L("光标"))
+            } footer: {
+                Text(L("就是“系统设置 → 辅助功能 → 显示 → 指针大小”，在哪边改都一样。"))
+                    .settingsFooter()
             }
-            .disabled(!config.enabled)
 
             Section {
                 if mice.isEmpty {
@@ -546,19 +555,19 @@ private struct MouseSettings: View {
         }
     }
 
-    /// 没单独设过时，滑块停在系统设置的指针大小上
+    /// 直接改系统设置里的指针大小。写不进系统设置时才存在 Mac顺 自己的设置里
     private var cursorScale: Binding<Double> {
         Binding(
             get: { config.cursorScale ?? systemCursorScale },
-            set: { config.cursorScale = abs($0 - systemCursorScale) < 0.01 ? nil : $0 }
+            set: { scale in
+                if CursorSizeController.shared.setSystemScale(scale) {
+                    config.cursorScale = nil
+                    systemCursorScale = CursorSizeController.shared.systemScale()
+                } else {
+                    config.cursorScale = scale
+                }
+            }
         )
-    }
-
-    private var cursorDetail: String {
-        guard let scale = config.cursorScale else {
-            return L("跟系统的指针大小一样（%@）", PointerSpeed.describe(systemCursorScale))
-        }
-        return PointerSpeed.describe(scale)
     }
 
     private func customBinding(for mouse: MouseDevice) -> Binding<Bool> {
@@ -1067,7 +1076,7 @@ private struct GeneralSettings: View {
 
     /// 还没授权的几项，按页面上的顺序
     private var missingPermissions: [PermissionKind] {
-        PermissionKind.allCases.filter { !$0.isGranted(state) }
+        PermissionKind.required.filter { !$0.isGranted(state) }
     }
 
     var body: some View {
@@ -1118,6 +1127,14 @@ private struct GeneralSettings: View {
                 .settingsAnchor(.inputMonitoring)
                 PasteboardPermissionRow(state: state)
                     .settingsAnchor(.pasteboardPermission)
+                PermissionRow(
+                    symbol: "internaldrive",
+                    title: PermissionKind.fullDiskAccess.paneTitle,
+                    detail: L("可选。把光标大小直接改进系统设置，授权后重新启动 Mac顺 生效"),
+                    granted: state.fullDiskAccessGranted,
+                    request: { PermissionGuide.shared.start([.fullDiskAccess], state: state) }
+                )
+                .settingsAnchor(.fullDiskAccess)
                 if state.accessibilityGranted && !state.eventTapRunning {
                     Label(L("已经授权但还没生效，请重新启动 Mac顺。"), systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)

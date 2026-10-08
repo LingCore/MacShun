@@ -14,7 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return ClipboardController(configStore: configStore, store: ClipboardStore(directory: dir))
     }()
     private let pointer = PointerAccelerationController()
-    private let cursor = CursorSizeController()
+    private let cursor = CursorSizeController.shared
     private lazy var fileSearch = FileSearchController(configStore: configStore)
     private lazy var windowSnapper = WindowSnapper(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
@@ -196,7 +196,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 设置指针加速、速度和光标大小。短时间内的多次调用（例如几个鼠标接口同时连上）合并成一次。
     private func applyPointer() {
-        // 光标大小不需要权限
+        // 光标大小不需要权限。以前的版本把光标大小存在 Mac顺 自己的设置里，能写进系统设置就搬过去
+        if let scale = configStore.config.mouse.cursorScale, !cursor.writeDenied, cursor.setSystemScale(scale) {
+            configStore.config.mouse.cursorScale = nil
+        }
         cursor.apply(configStore.config.mouse)
         let cursorScale = cursor.systemScale()
         if cursorScale != state.systemCursorScale { state.systemCursorScale = cursorScale }
@@ -233,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 权限状态有变化时记一笔日志，方便排查“授权了但没生效”。
     private func logPermissionsIfChanged() {
         let summary = "辅助功能=\(state.accessibilityGranted) 输入监控=\(state.inputMonitoringGranted) "
-            + "读取剪贴板=\(state.pasteboardAccess) 事件拦截=\(state.eventTapRunning)"
+            + "读取剪贴板=\(state.pasteboardAccess) 完全磁盘访问=\(state.fullDiskAccessGranted) 事件拦截=\(state.eventTapRunning)"
         guard summary != lastLoggedPermissions else { return }
         lastLoggedPermissions = summary
         Log.app.notice("权限状态：\(summary, privacy: .public)")
@@ -245,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let before = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
             self.state.refreshPermissions()
+
             let after = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
             if before != after || !self.state.eventTapRunning {
                 self.startEventTapsIfPossible()
