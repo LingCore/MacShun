@@ -16,7 +16,7 @@ struct SettingsItem: Identifiable {
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
-        case autoUpdate
+        case autoUpdate, tilingConflict
         case works, feedback
     }
 
@@ -141,6 +141,8 @@ extension SettingsItem {
               keywords: "粘贴 始终允许 paste always allow 权限 permission"),
         .init(id: .fullDiskAccess, tab: .general, title: "完全磁盘访问权限",
               keywords: "full disk access 指针大小 光标大小 权限 permission"),
+        .init(id: .tilingConflict, tab: .general, title: "冲突检测",
+              keywords: "冲突 打架 系统 拖动分屏 平铺 窗口 conflict tiling drag snap macos"),
         .init(id: .relaunch, tab: .general, title: "重新启动 Mac顺",
               keywords: "重启 restart relaunch"),
         .init(id: .launchAtLogin, tab: .general, title: "登录时自动启动",

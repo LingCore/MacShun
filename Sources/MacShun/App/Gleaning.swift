@@ -621,7 +621,7 @@ private struct FeedbackNote: View {
         guard let email else { return }
         let info = Bundle.main.infoDictionary
         let app = info?["CFBundleName"] as? String ?? L("Mac顺")
-        let version = info?["CFBundleShortVersionString"] as? String ?? L("开发版")
+        let version = AppVersion.display
         var components = URLComponents()
         components.scheme = "mailto"
         components.path = email

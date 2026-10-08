@@ -135,12 +135,17 @@ final class SettingsSelection: ObservableObject {
     @Published var highlight: SettingsItem.ID?
 
     func open(_ item: SettingsItem) {
-        tab = item.tab
         opened = item.id
-        highlight = item.id
+        reveal(item.id, in: item.tab)
+    }
+
+    /// 换到那一页，滚到那一项并闪一下
+    func reveal(_ id: SettingsItem.ID, in tab: SettingsTab) {
+        self.tab = tab
+        highlight = id
         // 高亮闪一下就收
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-            if self?.highlight == item.id { self?.highlight = nil }
+            if self?.highlight == id { self?.highlight = nil }
         }
     }
 }
@@ -150,6 +155,7 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     let clipboardStore: ClipboardStore
     @ObservedObject var selection: SettingsSelection
+    @ObservedObject var tiling = NativeTilingStatus.shared
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -209,9 +215,13 @@ struct SettingsView: View {
                 }
             }
             Spacer(minLength: 0)
+            SidebarVersion(updater: Updater.shared, ink: warm ? palette.inkSoft : .secondary) {
+                selection.reveal(.version, in: .general)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.top, 8)
+        .padding(.bottom, 10)
     }
 
     private var searchResults: [SettingsItem] {
@@ -225,7 +235,7 @@ struct SettingsView: View {
             selection.tab = tab
         } label: {
             HoverReader { hovering in
-                SidebarRow(tab: tab, needsAttention: needsAttention(tab))
+                SidebarRow(tab: tab, attention: attention(tab))
                     .foregroundStyle(selected ? Color.white : ink)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -260,24 +270,69 @@ struct SettingsView: View {
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .general:
-            GeneralSettings(state: state, update: $configStore.config.update, updater: Updater.shared)
+            GeneralSettings(
+                state: state, update: $configStore.config.update, updater: Updater.shared,
+                tiling: tiling, dragToSnap: dragToSnap
+            )
         case .gleaning:
             GleaningPage()
         }
     }
 
-    private func needsAttention(_ tab: SettingsTab) -> Bool {
+    /// 我们的拖动分屏开着
+    private var dragToSnap: Bool {
+        configStore.config.window.enabled && configStore.config.window.dragToSnap
+    }
+
+    /// 我们的拖动分屏开着，系统自带的也开着
+    private var tilingConflict: Bool { dragToSnap && tiling.conflicting }
+
+    /// 侧栏上要不要亮橙点，亮的话鼠标停上去显示为什么
+    private func attention(_ tab: SettingsTab) -> String? {
         switch tab {
-        case .general: !state.allGood
-        case .clipboard: configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed
-        default: false
+        case .general where !state.allGood: L("需要授权")
+        case .general where tilingConflict: L("和系统设置冲突")
+        case .clipboard where configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed: L("需要授权")
+        default: nil
         }
+    }
+}
+
+/// 侧栏最下面的版本号，有新版本时跟着提示。点一下到“通用”里的更新
+private struct SidebarVersion: View {
+    @ObservedObject var updater: Updater
+    let ink: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HoverReader { hovering in
+                HStack(spacing: 5) {
+                    Text(L("Mac顺 %@", AppVersion.display))
+                        .foregroundStyle(ink)
+                    if let release = updater.available {
+                        Text(L("· 有新版本 %@", release.version))
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(hovering ? 0.07 : 0))
+                )
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .help(L("检查更新"))
     }
 }
 
 private struct SidebarRow: View {
     let tab: SettingsTab
-    let needsAttention: Bool
+    let attention: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -290,11 +345,11 @@ private struct SidebarRow: View {
             }
             Text(tab.title)
             Spacer(minLength: 0)
-            if needsAttention {
+            if let attention {
                 Circle()
                     .fill(Color.orange.gradient)
                     .frame(width: 8, height: 8)
-                    .help(L("需要授权"))
+                    .help(attention)
             }
         }
         .padding(.vertical, 2)
@@ -874,13 +929,27 @@ extension Notification.Name {
 
 // MARK: - 分屏
 
-/// 系统自带的拖动分屏开没开。设置页打开时刷新（用户可能刚在系统设置里改过）。
+/// 系统自带的拖动分屏开没开。设置页打开时、Mac顺 回到前台时刷新（用户可能刚在系统设置里改过）。
 final class NativeTilingStatus: ObservableObject {
     static let shared = NativeTilingStatus()
     @Published private(set) var conflicting = NativeTiling.dragTilingEnabled
 
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refresh() }
+    }
+
+    #if DEBUG
+    /// 截图用：假装系统的拖动分屏开着或关着
+    static var preview: Bool?
+    #endif
+
     func refresh() {
-        let value = NativeTiling.dragTilingEnabled
+        var value = NativeTiling.dragTilingEnabled
+        #if DEBUG
+        if let preview = Self.preview { value = preview }
+        #endif
         if value != conflicting { conflicting = value }
     }
 
@@ -893,6 +962,7 @@ final class NativeTilingStatus: ObservableObject {
 private struct WindowSettings: View {
     @Binding var config: WindowConfig
     @ObservedObject var tiling: NativeTilingStatus
+    @EnvironmentObject private var selection: SettingsSelection
 
     var body: some View {
         SearchableForm {
@@ -919,19 +989,13 @@ private struct WindowSettings: View {
                 }
                 .settingsAnchor(.dragToSnap)
                 if config.dragToSnap && tiling.conflicting {
+                    // 详细说明和处理办法在“通用”里，和其他要处理的事放在一起
                     HStack(alignment: .firstTextBaseline) {
-                        InfoRow(
-                            symbol: "exclamationmark.triangle",
-                            title: L("系统自带的拖动分屏也开着"),
-                            detail: L("两个一起会打架，现在拖动时用的是系统的，不会弹出贴靠助手。关掉系统的就好，Win+方向键不受影响。")
-                        )
+                        Label(L("系统自带的拖动分屏也开着"), systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 6) {
-                            Button(L("关掉系统的拖动分屏")) { tiling.disable() }
-                                .nativeButtonHover()
-                            Button(L("打开系统设置")) { NativeTiling.openSystemSettings() }
-                                .buttonStyle(.hoverLink)
-                        }
+                        Button(L("去“通用”里处理")) { selection.reveal(.tilingConflict, in: .general) }
+                            .buttonStyle(.hoverLink)
                     }
                 }
                 Toggle(isOn: $config.snapAssist) {
@@ -1073,6 +1137,9 @@ private struct GeneralSettings: View {
     @ObservedObject var state: AppState
     @Binding var update: UpdateConfig
     @ObservedObject var updater: Updater
+    @ObservedObject var tiling: NativeTilingStatus
+    /// 我们的拖动分屏开着
+    let dragToSnap: Bool
 
     /// 还没授权的几项，按页面上的顺序
     private var missingPermissions: [PermissionKind] {
@@ -1154,6 +1221,13 @@ private struct GeneralSettings: View {
             }
 
             Section {
+                TilingConflictRow(tiling: tiling, dragToSnap: dragToSnap)
+                    .settingsAnchor(.tilingConflict)
+            } header: {
+                Text(L("冲突检测"))
+            }
+
+            Section {
                 Toggle(L("登录时自动启动"), isOn: Binding(
                     get: { state.launchAtLogin },
                     set: { state.setLaunchAtLogin($0) }
@@ -1191,6 +1265,7 @@ private struct GeneralSettings: View {
                 }
             }
         }
+        .onAppear { tiling.refresh() }
     }
 }
 
@@ -1201,7 +1276,7 @@ private struct UpdateRow: View {
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(L("版本 %@", Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? L("开发版")))
+                Text(L("版本 %@", AppVersion.display))
                 status
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1300,6 +1375,57 @@ private struct PermissionRow: View {
                     .buttonStyle(.borderedProminent)
                     .nativeButtonHover()
                     .controlSize(.small)
+            }
+        }
+    }
+}
+
+/// 系统自带的拖动分屏和我们的有没有冲突。样子和权限那几行一样：没问题打勾，有问题给按钮
+private struct TilingConflictRow: View {
+    @ObservedObject var tiling: NativeTilingStatus
+    let dragToSnap: Bool
+
+    private var conflicting: Bool { dragToSnap && tiling.conflicting }
+
+    private var detail: String {
+        if conflicting {
+            L("和 Mac顺 的“拖到屏幕边缘分屏”会打架：现在拖动时用的是系统的，不会弹出贴靠助手。关掉系统的就好，Win+方向键不受影响。")
+        } else if tiling.conflicting {
+            L("系统的开着，Mac顺 的“拖到屏幕边缘分屏”没开，拖动时用系统的")
+        } else {
+            L("系统的已经关掉，拖到屏幕边缘时用 Mac顺 的")
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "rectangle.split.2x1")
+                .font(.system(size: 15))
+                .foregroundStyle(conflicting ? Color.orange : Color.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("系统自带的拖动分屏"))
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            if conflicting {
+                VStack(alignment: .trailing, spacing: 6) {
+                    Button(L("关掉系统的")) { tiling.disable() }
+                        .buttonStyle(.borderedProminent)
+                        .nativeButtonHover()
+                        .controlSize(.small)
+                    Button(L("打开系统设置")) { NativeTiling.openSystemSettings() }
+                        .buttonStyle(.hoverLink)
+                        .font(.callout)
+                }
+            } else {
+                Label(L("没有冲突"), systemImage: "checkmark.circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.green)
+                    .font(.callout)
             }
         }
     }

@@ -53,7 +53,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        menu.addItem(.sectionHeader(title: L("Mac顺")))
+        menu.addItem(.sectionHeader(title: L("Mac顺 %@", AppVersion.display)))
         menu.addItem(toggle(L("快捷键像 Windows"), cfg.keyboard.enabled, #selector(toggleKeyboard), symbol: "keyboard"))
         menu.addItem(toggle(L("鼠标像 Windows"), cfg.mouse.enabled, #selector(toggleMouse), symbol: "computermouse"))
         menu.addItem(toggle(L("剪贴板历史"), cfg.clipboard.enabled, #selector(toggleClipboard), symbol: "doc.on.clipboard"))

@@ -422,6 +422,11 @@ enum AppVersion {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
 
+    /// 给人看的版本号；直接用 swift build 跑起来没有 Info.plist，说“开发版”
+    static var display: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? L("开发版")
+    }
+
     /// 去掉标签前面的 v
     static func normalized(_ tag: String) -> String {
         let trimmed = tag.trimmingCharacters(in: .whitespaces)
