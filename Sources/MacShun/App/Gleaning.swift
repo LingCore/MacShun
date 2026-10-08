@@ -36,7 +36,7 @@ enum Gleaning {
 
     /// 作者的名字和一句话介绍，标志见 AuthorMark。
     static let authorName = "LingCore"
-    static let authorMotto = L("且将新火试新茶，诗酒趁年华")
+    static let authorMotto = L("为人民服务")
 
     /// 作者主页。填上后作者那一行会出现“作者主页”按钮。
     static let authorURL: URL? = nil
@@ -168,7 +168,7 @@ struct GleaningPage: View {
                     Tag(text: L("作者"), palette: palette)
                 }
                 Text(Gleaning.authorMotto)
-                    .font(.callout)
+                    .font(.system(size: 24, weight: .black))
                     .foregroundStyle(palette.inkSoft)
             }
             Spacer(minLength: 12)
