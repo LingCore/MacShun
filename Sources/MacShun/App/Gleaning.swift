@@ -53,9 +53,20 @@ enum Gleaning {
             kind: .openSource,
             symbol: "keyboard",
             tint: .blue,
-            url: nil,
+            url: URL(string: "https://github.com/LingCore/MacShun"),
             // 包里不带底板的矢量标志（scripts/make-icon.py 生成），按矢量绘制，任何大小都清楚
             icon: Bundle.main.url(forResource: "AppGlyph", withExtension: "svg").flatMap(NSImage.init(contentsOf:))
+        ),
+        Work(
+            id: "io.github.lingcore.winshun.windows",
+            name: L("Win顺"),
+            summary: L("Windows 上双击 Ctrl 搜文件"),
+            kind: .openSource,
+            symbol: "magnifyingglass",
+            tint: .blue,
+            url: URL(string: "https://github.com/LingCore/WinShun"),
+            // 标志取自 Win顺 仓库的 resources/logo.svg，去掉底板
+            icon: Bundle.main.url(forResource: "WinShunGlyph", withExtension: "svg").flatMap(NSImage.init(contentsOf:))
         ),
     ]
 }

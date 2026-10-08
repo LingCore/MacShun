@@ -36,6 +36,7 @@ cp "$BIN_DIR/MacShun" "$APP/Contents/MacOS/MacShun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"   # 图标由 scripts/make-icon.py 生成
 cp "$ROOT/Resources/AppGlyph.svg" "$APP/Contents/Resources/AppGlyph.svg"   # 不带底板的矢量标志，“拾穗计划”页用
+cp "$ROOT/Resources/WinShunGlyph.svg" "$APP/Contents/Resources/WinShunGlyph.svg"   # Win顺（Windows 版）的标志，同上
 cp "$ROOT/Resources/AuthorAvatar.png" "$APP/Contents/Resources/AuthorAvatar.png"   # 作者头像，“拾穗计划”页用
 # 界面文字：英文译文和中文（中文就是代码里的原文），见 scripts/check-l10n.py
 for lang in en zh-Hans; do
