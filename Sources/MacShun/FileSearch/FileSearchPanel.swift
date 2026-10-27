@@ -6,6 +6,7 @@ import Combine
 import SwiftUI
 
 /// 文件搜索（F1、F2）：连按两下 Ctrl 弹出胶囊形的搜索框，边打字边出结果，按文件名和文件内容搜。只在主线程上使用。
+@MainActor
 final class FileSearchController {
     private let configStore: ConfigStore
     private let history = OpenHistory()
@@ -357,6 +358,7 @@ enum FileRowButton: Hashable {
 }
 
 /// 搜索框的数据和操作。
+@MainActor
 final class FileSearchModel: ObservableObject {
     @Published var query = "" {
         didSet {

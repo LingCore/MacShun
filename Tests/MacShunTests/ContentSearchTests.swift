@@ -344,6 +344,7 @@ struct ContentIndexTests {
 }
 
 @Suite("F2 搜索范围")
+@MainActor
 struct FileSearchScopeTests {
     private func makeModel() -> FileSearchModel {
         let index = ContentIndex(directory: temporaryFolder().appendingPathComponent("index"))

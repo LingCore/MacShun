@@ -7,7 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let configStore = ConfigStore.shared
     private let environment = FrontAppTracker.shared
     private let state = AppState()
-    private lazy var clipboard: ClipboardController = {
+    @MainActor private lazy var clipboard: ClipboardController = {
         // 自测时用临时目录，不碰真正的剪贴板历史。
         guard SelfTest.isRequested else { return ClipboardController(configStore: configStore) }
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacShun自测剪贴板-\(UUID().uuidString)")
@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private let pointer = PointerAccelerationController()
     private let cursor = CursorSizeController.shared
-    private lazy var fileSearch = FileSearchController(configStore: configStore)
+    @MainActor private lazy var fileSearch = FileSearchController(configStore: configStore)
     private lazy var windowSnapper = WindowSnapper(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
@@ -76,8 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil
         )
         NotificationCenter.default.addObserver(forName: .openFileSearch, object: nil, queue: .main) { [weak self] _ in
-            self?.clipboard.hide()
-            self?.fileSearch.show()
+            MainActor.assumeIsolated {
+                self?.clipboard.hide()
+                self?.fileSearch.show()
+            }
         }
 
         clipboard.applyConfig()
@@ -171,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 打开剪贴板历史（Win+V、菜单栏）。文件搜索框开着时叠在它上面，选中的直接填进搜索框
-    private func showClipboard() {
+    @MainActor private func showClipboard() {
         if fileSearch.isVisible {
             clipboard.show(in: fileSearch.clipboardHost())
         } else {
@@ -179,7 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func run(_ command: SystemCommand) {
+    /// 键盘、鼠标引擎都先切回主线程再调用这里
+    @MainActor private func run(_ command: SystemCommand) {
         if command == .clipboardHistory {
             if clipboard.isVisible { clipboard.close() } else { showClipboard() }
         } else if command == .fileSearch {

@@ -6,6 +6,7 @@ import Carbon
 import SwiftUI
 
 /// 剪贴板历史：记录、弹出面板、选中后粘贴（C1–C5）。只在主线程上使用。
+@MainActor
 final class ClipboardController {
     let store: ClipboardStore
     private let watcher: ClipboardWatcher
@@ -18,7 +19,9 @@ final class ClipboardController {
     /// 打开面板前的输入法。搜索框只允许英文输入，系统可能因此切换输入法，关闭面板时切回来。
     private var savedInputSource: TISInputSource?
 
-    init(configStore: ConfigStore, store: ClipboardStore = ClipboardStore()) {
+    /// store 不给时用默认目录。不写成默认参数：默认参数不在主线程上下文里求值，不能调用 ClipboardStore()
+    init(configStore: ConfigStore, store: ClipboardStore? = nil) {
+        let store = store ?? ClipboardStore()
         self.configStore = configStore
         self.store = store
         watcher = ClipboardWatcher(store: store, config: { configStore.config.clipboard })

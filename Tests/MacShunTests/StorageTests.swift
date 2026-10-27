@@ -5,6 +5,7 @@ import Testing
 @testable import MacShun
 
 @Suite("C3 剪贴板存储")
+@MainActor
 struct ClipboardStoreTests {
     private func tempDirectory() -> URL {
         FileManager.default.temporaryDirectory

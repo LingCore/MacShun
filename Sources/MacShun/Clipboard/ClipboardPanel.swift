@@ -41,6 +41,7 @@ final class ClipboardPanel: NSPanel {
 }
 
 /// 面板的数据和操作。
+@MainActor
 final class ClipboardPanelModel: ObservableObject {
     @Published var query = "" {
         didSet {

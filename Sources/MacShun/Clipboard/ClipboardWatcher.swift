@@ -5,6 +5,7 @@ import AppKit
 /// 定时检查剪贴板有没有变化，有新内容就记下来（C3、C4）。
 ///
 /// macOS 没有剪贴板变化的通知，只能定时比较 changeCount。只在主线程上使用。
+@MainActor
 final class ClipboardWatcher {
     private let pasteboard = NSPasteboard.general
     private let store: ClipboardStore
@@ -40,7 +41,10 @@ final class ClipboardWatcher {
     func start() {
         guard timer == nil else { return }
         lastChangeCount = pasteboard.changeCount
-        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.check() }
+        // 计时器加在主运行循环上，回调一定在主线程
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check() }
+        }
         t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)
         timer = t

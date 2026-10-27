@@ -45,6 +45,7 @@ struct ClipboardCapture {
 /// 剪贴板历史的存储。内容只保存在本机（C5）：
 /// ~/Library/Application Support/MacShun/Clipboard/ 下面一个 history.json 加若干数据文件。
 /// 只在主线程上使用。
+@MainActor
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
 
@@ -233,7 +234,8 @@ final class ClipboardStore: ObservableObject {
     private func scheduleSave() {
         guard !saveScheduled else { return }
         saveScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
             self?.saveScheduled = false
             self?.saveNow()
         }
@@ -258,7 +260,7 @@ final class ClipboardStore: ObservableObject {
         )
     }
 
-    static func fingerprint(_ parts: [Data]) -> String {
+    nonisolated static func fingerprint(_ parts: [Data]) -> String {
         var hasher = SHA256()
         for part in parts { hasher.update(data: part) }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
