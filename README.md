@@ -37,15 +37,17 @@
 
 **Mac顺 是什么？** 一个让 Mac 用得更顺手的小工具。Mac 自带的没有、或者藏得很深的常用功能，装上就有：剪贴板历史、连按两下 Ctrl 搜文件（文件里的字也能搜）、窗口分屏、关掉鼠标加速、每块屏幕按百分比调缩放。从 Windows 换过来的人，还能直接用熟悉的习惯：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样。不用学新的快捷键，也不用写任何配置。
 
-它常驻在屏幕顶部的菜单栏，不占程序坞，除了检查更新不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
+它常驻在屏幕顶部的菜单栏，不占程序坞，除了检查更新和每天一次的匿名装机报告（可在“设置 › 通用”关闭）不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
 
 ### 功能
 
-#### 📋 剪贴板历史（Win+V）
+#### 📋 剪贴板历史（Option+V / Win+V）
 
-- 按 **Win+V** 弹出最近复制过的内容，选中后直接粘贴。在文件搜索框里按 Win+V 也行，选中的内容直接填进搜索框。
+- Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。选中一条按回车即可粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
 - 记录文字和图片，常用的内容可以固定在最上面。右上角“全部清除”一键清空历史，固定的保留。
+- 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
+- **按图中文字找图片**：已记录的截图和图片会在本机后台识别，旧历史也会补上。按 Win+V 输入图里的文字或拼音，按 Enter 粘贴原图，按 F3 将它贴到屏幕。
 - 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
 
 <p align="center">
@@ -55,14 +57,28 @@
   </picture>
 </p>
 
+#### 截图与识别屏幕文字
+
+- 从菜单栏点 **开始截图**，拖选区域或点选窗口。拖动选区或边框可调整范围，也可画箭头、矩形或实心遮挡。按 **Enter** 复制、**⌘S** 保存 PNG、**Esc** 取消。
+- 只想复制文字时，选 **识别屏幕文字**，框选后松开鼠标即可。简体、繁体中文和英文在本机识别。
+- **写说明和标步骤**：选「文字标注」后点一下输入，Enter 完成文字，双击可再改。选「步骤序号」后连续点击即可放置 1、2、3。用选择工具点中标注可拖动，按 Delete 删除，⌘Z 撤销，⇧⌘Z 重做。
+- **对齐同一区域**：再次截图时按 R 恢复上一次成功输出的选框。方向键移动 1 个实际像素，Shift 加方向键调整宽高。选框旁显示导出尺寸。
+- **长截图**：框住网页、文档或聊天记录里需要滚动的内容，点「长截图」或按 **⌘L / Ctrl+L**。等蓝框旁提示可以滚动后，用鼠标或触控板慢慢向下滚，点「完成」预览。要在长图上写说明或遮住一行，点「标注」，滚动到对应位置编辑，点「完成标注」后再复制、保存 PNG 或贴到屏幕。允许辅助功能后也可用 Enter 完成、Esc 取消。选区尽量只框正文，避开固定侧栏；如果画面中有大面积视频，先暂停播放。如果提示找不到重叠内容，往回滚一些再继续。
+- **贴图**：选好截图后按 **F3** 或点「贴到屏幕」，含标注的图片会留在原处。也可从菜单栏「贴出剪贴板图片」，或在历史图片上右键贴出。拖动移动、拖角或滚轮缩放、双击恢复原始大小，Ctrl 加滚轮调透明度。右键可复制、保存和关闭；点中贴图后按 Esc 也能关闭。
+- 两个操作都可以在 **设置 › 键盘 › 截图快捷键** 录入快捷键，默认留空。首次使用按系统提示允许屏幕录制。
+
 #### 🔍 文件搜索（像 Everything）
 
 - **连按两下 Ctrl**，屏幕上方弹出胶囊搜索框，边打字边出结果，几万个文件也是瞬间出来。搜索框开着时再连按也不会关掉，Esc 关闭。
 - **支持拼音和首字母**：输入 `bg` 找到“年度报告.docx”，输入 `bwl` 找到“备忘录”，输入 `weixin` 找到“微信”。
-- **也能搜文件内容**：txt、Markdown、CSV、JSON，代码（ts、js、py、swift、vue、html 等）、配置（yaml、xml、toml）、字幕（srt、ass、lrc），以及 Word、Excel、PowerPoint、PDF 里的文字都能搜到（跳过 node_modules、dist、build 这类生成和依赖的文件夹）；截图、照片和扫描版 PDF 里的字也会自动识别，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。搜索框右边可以选 **全部 / 文件 / 内容**，默认只搜文件名，按 Tab 切换。常打开的文件会排在前面。
-- Enter 打开，Ctrl+Enter 在访达中显示；空格分开几个词可以同时匹配。
-- **可以直接粘贴路径**：`art/gpt/style_reference.png` 这样的相对路径、`桌面/塔防游戏/…` 这样用访达里显示的名字写的、`~/Desktop/…` 和完整路径都行，Windows 的 `D:\资料\合同.docx`（带不带引号都行）也认，盘符不管。文件夹写得不全或不对也没关系，名字对上的文件照样列出来，路径对上得越多排得越前。完整路径的文件即使不在搜索范围里（例如“资源库”里）也能直接打开。
-- 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
+- **按日常说法找系统功能**：输入“耳机连不上”打开蓝牙设置，“谁在占内存”打开活动监视器；输入 Windows 叫法“任务管理器”也能找到它。用方向键选择、Enter 打开。切到 **系统** 可以浏览所有收录的入口，全程在本机匹配。
+- **也能搜文件内容**：txt、Markdown、CSV、JSON，代码（ts、js、py、swift、vue、html 等）、配置（yaml、xml、toml）、字幕（srt、ass、lrc），以及 Word、Excel、PowerPoint、PDF 里的文字都能搜到（跳过 node_modules、dist、build 这类生成和依赖的文件夹）；截图、照片和扫描版 PDF 里的字也会自动识别，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。默认选 **文件与功能**，按 Tab 或点击右侧可切到 **全部 / 内容 / 系统**；只有“全部”和“内容”会搜文件正文。常打开的文件会排在前面。
+- **筛选文件**。输入 `报价 *.pdf !草稿` 搜 PDF，并排除文件名含“草稿”的结果。`ext:pdf,docx` 可同时选两种格式。切换到“内容”时，关键词搜正文，筛选条件仍作用于文件名。要搜索字面名称 `!重要`，输入 `"!重要"`。
+- Enter 打开，Ctrl+Enter 在访达中显示。按 **⌘Y** 或点“快速查看”预览选中项，按 ↑↓ 依次查看，Esc 返回原来的搜索结果。
+- **在项目里查找**。选中普通文件夹后按 **⌘F**，或右键选“在此文件夹中搜索”。输入关键词或筛选条件会搜索子文件夹，切到“内容”可查这个范围内已收录的正文。按 **Esc** 回到原来的搜索词和选中项。
+- **在“打开”和“存储”窗口里找位置**。原生文件对话框打开时连按两下 **Ctrl**，搜索文件或目录，按 **Enter** 让对话框前往该目录或文件所在的目录。存储时会保留已输入的文件名。
+- **可以直接粘贴路径**：`art/gpt/style_reference.png` 这样的相对路径、`桌面/塔防游戏/…` 这样用访达里显示的名字写的、`~/Desktop/…` 和完整路径都行，Windows 的 `D:\资料\合同.docx`（带不带引号都行）也认，盘符不管。文件夹写得不全或不对也没关系，名字对上的文件照样列出来，路径对上得越多排得越前。输入本机目录的完整路径并在末尾加 `/` 会列出直接子项，继续打字可在这一层筛选，包括可读取但未收录的目录。普通搜索也可以混合文件夹和文件名，例如 `春季 报价单` 能找到 `春季项目/报价单.xlsx`。完整名称优先，同名时优先当前访达文件夹。
+- 搜索个人文件夹、应用程序和外接硬盘（外接硬盘在后台扫描，跳过 Windows 系统文件夹）。点号开头的文件和文件夹也能按名称找到，例如 `.gitignore` 和 `.config`。这些文件及点号目录里的文件只收录名称。文件名索引只放在内存里，内容索引只存在这台电脑上，都不联网。
 
 <p align="center">
   <picture>
@@ -75,7 +91,7 @@
 
 - **Win+← / →** 分到左右半边，半边时 **Win+↑ / ↓** 变成四分之一；按反方向恢复原来的大小，同一方向再按移到隔壁屏幕。
 - **Win+↑** 最大化，**Win+↓** 恢复或最小化；**Win+Shift+← / →** 把窗口移到另一块屏幕。
-- **拖到屏幕边缘分屏**：拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分好的窗口会恢复原来的大小。有两块屏幕时，拖到中间相接的边，光标会先停一下，松开就分到这块屏幕靠那边的一半，继续推才过到另一块屏幕。
+- **拖到屏幕边缘分屏**：拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分好的窗口会恢复原来的大小。多显示器之间可以直接拖过；想在中间相接的边分屏时，在目标屏幕的边缘附近停一下，出现预览后松开即可。
 - **贴靠助手**：分好一半后，另一半列出其他窗口，点一个就放进去。这是 Windows 的招牌功能，Rectangle 和 macOS 自带的分屏都没有。
 
 <p align="center">
@@ -160,7 +176,7 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 在 Mac顺 的“鼠标”页打开“指针不加速”。指针速度还能调得比系统允许的最快速度更快。
 
 **Mac 有没有像 Windows Win+V 那样的剪贴板历史？**
-有。Mac顺 自带剪贴板历史，按 Win+V 弹出，支持拼音搜索。
+有。Mac 键盘按 **Option+V** 打开历史，**Command+V** 直接粘贴。Windows 键盘按 **Win+V** 打开。关闭“快捷键像 Windows”后，仍可从菜单栏选择“打开剪贴板历史”。
 
 **和 Karabiner-Elements、LinearMouse、Maccy、Rectangle 有什么区别？**
 这些都是很好的工具，但要分别安装、自己配置。Mac顺 把“快捷键 + 鼠标 + 剪贴板 + 分屏”一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
@@ -178,10 +194,10 @@ Mac顺 的文件搜索也能按内容搜：txt、CSV、JSON、代码、Word、Ex
 macOS 本来就支持每块屏幕单独设置。Mac顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
 **收费吗？会上传我的数据吗？**
-完全免费，源代码公开。Mac顺 只在检查更新时访问 GitHub，不发送任何个人信息（设置里可以关掉自动检查）；剪贴板内容只保存在你自己的电脑上。
+完全免费，源代码公开。Mac顺 只会联网做两件事：一是检查和下载更新（设置里可以关掉自动检查）——检查更新连接拾穗发布服务，下载安装包时先走第三方加速镜像（目前依次是 gh-proxy.com、ghfast.top），都不行再用 GitHub，请求里不带任何个人信息；二是每天最多一次的匿名装机报告，发给拾穗发布服务，用来统计用户数。报告只包含随机化的电脑标识（由机器标识加项目名做 SHA-256 得到，不可还原）、版本号、系统版本和芯片架构，不含文件、剪贴板或任何个人信息；可以在“设置 › 通用”里关掉“发送匿名统计”，关掉后完全不发送。剪贴板内容只保存在你自己的电脑上。
 
 **怎么更新到新版本？**
-Mac顺 每天会到 GitHub 看一眼有没有新版本，有的话弹出窗口，写着新版本改了什么，点“立即更新”就会自动下载、装好、重新打开，设置和授权都保留。也可以在菜单栏图标里选“检查更新…”。0.3.0 以前的版本没有这个功能，要手动下载一次。
+Mac顺 定期向拾穗发布服务检查有没有新版本，有的话弹出窗口，写着新版本改了什么，点“立即更新”就会先从加速镜像下载（镜像不可用时换下一个地址，最后用 GitHub 原始地址），核对大小、SHA-256 和签名，通过后装好并重新打开，设置和授权都保留。镜像是第三方，安装包是否可信完全靠这些核对：摘要不符的文件会被丢弃。所有地址都失败才会提示重试。也可以在菜单栏图标里选“检查更新…”。0.3.0 仍通过 GitHub 检查更新，升到 0.4.0 后会自动切换到拾穗发布服务。
 
 **以前装的是 Win顺？**
 Win顺 改名叫 Mac顺 了。在菜单栏里退出 Win顺，把“应用程序”里的 Win顺 拖到废纸篓，再装 Mac顺。权限、设置和剪贴板历史都会保留，不用重新授权。
@@ -215,7 +231,7 @@ scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 
 
 **What is MacShun?** MacShun (Mac顺, "a Mac that feels smooth"; formerly WinShun) is a small macOS menu bar app that makes your Mac smoother to use. It adds everyday tools that macOS lacks or hides away: clipboard history, press-Ctrl-twice file search (including text inside files), window snapping, turning off pointer acceleration, and per-display scaling in percentages. If you come from Windows, your habits work too: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction. No new shortcuts to learn and no configuration files to write.
 
-It lives in the menu bar, stays out of the Dock, works offline apart from checking for updates, needs no account, and is completely free.
+It lives in the menu bar, stays out of the Dock, works offline apart from checking for updates and a once-a-day anonymous install report (which you can turn off in Settings › General), needs no account, and is completely free.
 
 The interface is available in **English** and **Simplified Chinese**. It follows your system language, or you can pick one in Settings › General.
 
@@ -228,9 +244,12 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 ### Features
 
-#### 📋 Clipboard history (Win+V)
+#### 📋 Clipboard history (Option+V / Win+V)
 
-- Press **Win+V** to see what you copied recently and paste it with one key. It works inside the file search bar too: the item you pick goes straight into the search field.
+- Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
+- **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
+
+- Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Press Return to paste an item. In the file search bar, the selected text goes into the query.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
 - Stores text and images; pin the items you use often. “Clear All” in the top-right corner empties the history and keeps pinned items.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.
@@ -242,13 +261,27 @@ The interface is available in **English** and **Simplified Chinese**. It follows
   </picture>
 </p>
 
+#### Screenshots and text capture
+
+- Choose **Take a Screenshot** from the menu bar. Drag an area or click a window, then move or resize the selection. Add arrows, rectangles or solid redactions. Press **Enter** to copy, **⌘S** to save a PNG, or **Esc** to cancel.
+- Choose **Copy Text from Screen** and release the mouse to copy text. Simplified Chinese, Traditional Chinese and English are recognized on the Mac.
+- **Add notes and numbered steps.** Select Text and click to type. Enter commits the text, and double-clicking a label lets you edit it. Choose Step Number and click to place successive badges. Select a mark to move or delete it. ⌘Z undoes a change and ⇧⌘Z redoes it.
+- **Repeat a region.** Press R to recall the last successfully exported region on its display. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height. The size beside the selection is the exported pixel size.
+- **Scrolling screenshots**: select the scrollable content of a page, document or chat and press **⌘L / Ctrl+L**. When the controls are ready, scroll slowly down inside the blue frame. Click **Finish** to review. Choose **Annotate** to mark any part of the long image, then **Done** to return to the preview and copy, save a PNG or float it. With Accessibility access, Enter finishes and Esc cancels. Select the scrolling body to avoid repeating a fixed sidebar, and pause large videos before capturing. If an overlap is lost, scroll back slightly and continue.
+- **Float an image** with F3 or the Float on Screen button after making a selection. You can also float a clipboard image from the menu bar or an image entry in history. Drag to move, drag a corner or scroll to zoom, double-click for actual size, and Control-scroll for opacity. Right-click to copy, save or close.
+- Both actions have optional shortcuts under **Settings › Keyboard › Screenshot shortcuts**. Allow screen recording when prompted on first use.
+
 #### 🔍 File search (like Everything)
 
 - **Press Ctrl twice** to open a capsule search bar; results appear as you type, instantly even across tens of thousands of files. Pressing it again while open keeps it open; Esc closes it.
 - **Pinyin search** for Chinese file and app names.
-- **Searches file contents too**: text inside txt, Markdown, CSV and JSON files, code (ts, js, py, swift, vue, html…), config (yaml, xml, toml), subtitles (srt, ass, lrc), plus Word, Excel, PowerPoint and PDF (skipping generated and dependency folders like node_modules, dist and build); text in screenshots, photos and scanned PDFs is recognized too, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight. Pick **All / Files / Contents** on the right of the search bar (Files by default, Tab to switch). Files you open often rank higher.
-- Enter opens, Ctrl+Enter shows in Finder; separate words with spaces to match them all.
-- **Paste a path**: relative paths like `art/gpt/style_reference.png`, paths written with Finder's localized folder names, `~/Desktop/…` and full paths all work, and so do Windows paths like `D:\Docs\contract.docx` (quoted or not; the drive letter is ignored). If the folders are partly wrong, files with a matching name still show up, ranked by how much of the path matches. A full path opens even when it is outside the indexed folders (e.g. inside Library).
+- **Find system features in everyday language**: try “no sound” for Sound Output or “task manager” for Activity Monitor. Press Enter to open the selected result, or choose **System** to browse. Matching happens on your Mac.
+- **Searches file contents too**: text inside txt, Markdown, CSV and JSON files, code (ts, js, py, swift, vue, html…), config (yaml, xml, toml), subtitles (srt, ass, lrc), plus Word, Excel, PowerPoint and PDF (skipping generated and dependency folders like node_modules, dist and build); text in screenshots, photos and scanned PDFs is recognized too, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight. Start in **Files & Features**. Press Tab to switch to **Contents**, **System**, or **All**; only Contents and All search inside files. Files you open often rank higher.
+- **Filter files** with `quote *.pdf !draft` to find PDFs and exclude names containing “draft”. Use `ext:pdf,docx` for either type. In Contents, words match document text while filters apply to the file name. Quote the whole query to search for a literal name such as `"!important"`.
+- Enter opens the selection and Ctrl+Enter reveals it in Finder. Press **⌘Y** or click Quick Look to preview it, use ↑↓ to browse matches, and press Esc to return to the selected result.
+- **Search within a project.** Select a folder and press **⌘F**, or choose **Search in This Folder** from its context menu. Words and filters apply throughout its subfolders. Choose Contents for previously indexed text. **Esc** returns to the previous query and selection.
+- **Jump to a folder in Open and Save dialogs.** With a native file dialog active, press **Ctrl twice** and find a folder or file. Press **Enter** to go to that folder or the file’s enclosing folder. The Save dialog keeps the name you entered.
+- **Paste a path**: relative paths like `art/gpt/style_reference.png`, paths written with Finder's localized folder names, `~/Desktop/…` and full paths all work, and so do Windows paths like `D:\Docs\contract.docx` (quoted or not; the drive letter is ignored). If the folders are partly wrong, files with a matching name still show up, ranked by how much of the path matches. A native folder path ending in `/` lists its immediate children, even outside the index. Keep typing to filter that folder. Words can also match a mix of folder and file names: `spring quote` finds `Spring Project/Quote.xlsx`. Exact names come first, with ties favoring the current Finder folder.
 - Searches your home folder, Applications and external drives (scanned in the background, Windows system folders skipped). The file name index stays in memory and the content index stays on your Mac; nothing goes online.
 
 <p align="center">
@@ -262,7 +295,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 - **Win+← / →** snaps to the left or right half; from a half, **Win+↑ / ↓** snaps to a quarter. The opposite arrow restores the window, the same arrow again moves it to the next display.
 - **Win+↑** maximizes, **Win+↓** restores or minimizes; **Win+Shift+← / →** moves the window to the other display.
-- **Drag to screen edges**: left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size. With two displays, the cursor pauses at the edge where they meet, so you can snap to the inner half; keep pushing to cross over.
+- **Drag to screen edges**: left or right edge for halves, top edge to maximize, corners for quarters. Dragging a snapped window restores its size. Drag freely between displays. To snap at a shared edge, pause near the edge on the display you want, then release when the preview appears.
 - **Snap Assist**: after snapping to a half, your other windows appear in the other half; click one to fill it. Neither Rectangle nor macOS tiling has this.
 
 <p align="center">
@@ -346,7 +379,7 @@ macOS ties the two together. MacShun changes the direction for mice only.
 Enable "linear pointer" on MacShun's Mouse page.
 
 **Is there a Win+V clipboard history for Mac?**
-Yes — MacShun includes one, with search.
+Yes. On a Mac keyboard, **Option+V** opens history and **Command+V** pastes. On a Windows keyboard, press **Win+V** for history. With Windows shortcuts turned off, choose **Open Clipboard History** from the MacShun menu bar icon.
 
 **How do I snap windows with Win+arrow keys on a Mac, like on Windows?**
 Install MacShun: Win+← / → snaps to halves, Win+↑ maximizes, dragging to screen edges snaps too, and Snap Assist offers your other windows for the other half.
@@ -367,10 +400,10 @@ macOS supports per-display scaling; MacShun's Displays page shows it as Windows-
 WinShun has been renamed MacShun. Quit WinShun from the menu bar, drag Win顺 from Applications to the Trash, then install MacShun. Permissions, settings and clipboard history carry over, so there is nothing to grant again.
 
 **Is it free? Does it collect data?**
-Free and open source. MacShun only goes online to check GitHub for updates, without sending any personal information (you can turn automatic checks off in Settings); your clipboard history stays on your Mac.
+Free and open source. MacShun only goes online for two things: checking for and downloading updates (automatic checks can be turned off in Settings) — update checks contact the Gleaning release service, while installers are downloaded through third-party accelerated mirrors (currently gh-proxy.com, then ghfast.top) with GitHub as the last fallback, and no personal information is sent in those requests — and an anonymous install report at most once a day to the Gleaning release service, used to count users. The report contains only a randomized computer ID (a SHA-256 of the machine identifier plus the project name, which cannot be reversed), the app version, the macOS version and the chip architecture; no files, clipboard content or personal information. Turn off "Send anonymous usage statistics" in Settings › General and nothing is sent. your clipboard history stays on your Mac.
 
 **How do I update?**
-MacShun checks GitHub for a new version about once a day. When there is one, a window shows what's new; click Update Now and it downloads, installs and reopens itself, keeping your settings and permissions. You can also choose Check for Updates… from the menu bar icon. Versions before 0.3.0 don't have this, so update those by hand once.
+MacShun periodically checks the Gleaning release service. When there is a new version, a window shows what's new; click Update Now to download it from an accelerated mirror (falling back to the next address, and finally to the original GitHub URL), verify its size, SHA-256 and signature, then install and reopen, keeping settings and permissions. Mirrors are third parties, so trust comes entirely from those checks: a file with a wrong digest is discarded. You only see an error to retry if every address fails. You can also choose Check for Updates… from the menu bar icon. Version 0.3.0 checks GitHub for updates and switches to the Gleaning release service once it upgrades to 0.4.0.
 
 ### Feedback
 
