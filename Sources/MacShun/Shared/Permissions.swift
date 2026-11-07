@@ -50,6 +50,10 @@ enum Permissions {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
     }
 
+    static func openScreenCaptureSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    }
+
     static func openFullDiskAccessSettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
     }

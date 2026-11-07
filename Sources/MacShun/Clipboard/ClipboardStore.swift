@@ -15,6 +15,8 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var kind: Kind
     /// 纯文字内容。图片条目为 nil。
     var text: String?
+    /// nil 还没识别；空串表示成功识别但没有文字。旧版历史没有这一项。
+    var imageText: String?
     /// 其他格式的数据文件（例如带格式的 RTF、HTML），键是剪贴板类型，值是文件名。
     var extraFiles: [String: String]
     /// 图片文件名（PNG）。
@@ -52,11 +54,18 @@ final class ClipboardStore: ObservableObject {
     let directory: URL
     private var indexes: [UUID: PinyinIndex] = [:]
     private var saveScheduled = false
+    private var recognizesImages = false
+    private var recognizing = false
+    private var failedImages: Set<UUID> = []
+    private var pendingReads: [UUID: Task<String?, Never>] = [:]
+    private let ocrQueue = DispatchQueue(label: "MacShun.ClipboardImageText", qos: .utility)
+    private let readImageText: @Sendable (URL) -> String?
 
     private var historyFile: URL { directory.appendingPathComponent("history.json") }
     private var blobDirectory: URL { directory.appendingPathComponent("blobs", isDirectory: true) }
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, readImageText: @escaping @Sendable (URL) -> String? = { ContentExtractor.imageText(at: $0) }) {
+        self.readImageText = readImageText
         if let directory {
             self.directory = directory
         } else {
@@ -81,14 +90,18 @@ final class ClipboardStore: ObservableObject {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return sorted }
         return sorted.filter { item in
-            guard item.kind == .text else { return false }
+            if item.kind == .image {
+                guard let text = item.imageText, !text.isEmpty else { return false }
+                if text.localizedCaseInsensitiveContains(q) { return true }
+                if !q.allSatisfy(\.isASCII) { return false }
+            }
             return index(for: item).matches(q)
         }
     }
 
     private func index(for item: ClipboardItem) -> PinyinIndex {
         if let cached = indexes[item.id] { return cached }
-        let index = PinyinIndex(text: item.text ?? "")
+        let index = PinyinIndex(text: item.imageText ?? item.text ?? "")
         indexes[item.id] = index
         return index
     }
@@ -147,6 +160,54 @@ final class ClipboardStore: ObservableObject {
         items.append(item)
         trim(maxItems: maxItems)
         scheduleSave()
+        indexNextImage()
+    }
+
+    func setImageRecognition(enabled: Bool) {
+        guard recognizesImages != enabled else { return }
+        recognizesImages = enabled
+        failedImages.removeAll()
+        indexNextImage()
+    }
+
+    /// 一次只解码一张。每次从当前历史选取，排队期间被清除、去重或淘汰的图片不会再被添加。
+    private func indexNextImage() {
+        guard recognizesImages, !recognizing,
+              let item = items.last(where: {
+                  $0.kind == .image && $0.imageText == nil && $0.imageFile != nil && !failedImages.contains($0.id)
+              }) else { return }
+        recognizing = true
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await recognizedText(for: item.id)
+            recognizing = false
+            indexNextImage()
+        }
+    }
+
+    /// 显式取字与后台索引共用一个串行解码队列；同一条图片只读一次。
+    func recognizedText(for id: UUID) async -> String? {
+        guard let item = items.first(where: { $0.id == id && $0.kind == .image }) else { return nil }
+        if let text = item.imageText { return text }
+        if let task = pendingReads[id] { return await task.value }
+        guard let url = imageURL(for: item) else { return nil }
+        let task = Task { [readImageText, ocrQueue] () -> String? in
+            let text: String? = await withCheckedContinuation { continuation in
+                ocrQueue.async { continuation.resume(returning: readImageText(url)) }
+            }
+            pendingReads[id] = nil
+            guard let i = items.firstIndex(where: { $0.id == id }) else { return nil }
+            if recognizesImages {
+                if let text {
+                    indexes[id] = nil
+                    items[i].imageText = text
+                    scheduleSave()
+                } else { failedImages.insert(id) }
+            }
+            return text
+        }
+        pendingReads[id] = task
+        return await task.value
     }
 
     func markUsed(_ id: UUID, now: Date = Date()) {
@@ -190,6 +251,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func removeFiles(of item: ClipboardItem) {
+        failedImages.remove(item.id)
         var files = Array(item.extraFiles.values)
         if let image = item.imageFile { files.append(image) }
         for file in files {

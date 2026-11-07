@@ -397,24 +397,43 @@ enum AuthorMarkArt {
 }
 
 /// 作者 LingCore 的头像：手拿光标的 Q 版小人（Resources/AuthorAvatar.png，打包时放进程序的 Resources）。
-/// 打开页面时弹出来，再像打招呼一样左右歪一歪；点一下再来一次。找不到图片时退回“光标与稻穗”标志。
+/// 每次打开页面弹出来打个招呼，之后一直慢慢左右摇；鼠标移上去放大、停住，变成手形。
+/// 彩蛋：按一下放一小段声音（Resources/ikun.mp3），头像跟着声音一跳一跳，响的地方胀大，中间落回去。
+/// 每按一下都马上跳一下；正在放时再按，声音接着放，不重来。系统开了“减弱动态效果”时头像不动，声音照放。
+/// 声音放不了时，按一下再打一次招呼。找不到图片时退回“光标与稻穗”标志。
 struct AuthorAvatar: View {
-    var size: CGFloat = 60
+    var size: CGFloat = 64
+    /// 窗口看不看得见。看不见时不动，声音也停。
+    var windowVisible = true
 
     @ObservedObject private var clock = AuthorMarkClock.shared
+    @ObservedObject private var motion = AvatarMotion.shared
 
     private static let image = Bundle.main.image(forResource: "AuthorAvatar")
 
     var body: some View {
         if let image = Self.image {
-            TimelineView(.animation(minimumInterval: 1.0 / 58, paused: !clock.running)) { context in
-                let t = clock.running ? context.date.timeIntervalSince(clock.start) : 10
+            TimelineView(.animation(minimumInterval: 1.0 / 58, paused: !motion.lively && !clock.running)) { context in
+                let pose = motion.pose(at: context.date, pop: clock.running ? context.date.timeIntervalSince(clock.start) : 10)
                 avatar(image)
-                    .scaleEffect(Self.scale(t))
-                    .rotationEffect(.degrees(Self.tilt(t)), anchor: .bottom)
+                    .scaleEffect(pose.scale)
+                    .rotationEffect(.degrees(pose.angle), anchor: .bottom)
             }
             .contentShape(Circle())
-            .onTapGesture { clock.play() }
+            // 按下就响，不等松开：快速连点时，双击的第二下不算单击
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in motion.press() }
+                    .onEnded { _ in motion.pressEnded() }
+            )
+            .onHover { motion.hover($0) }
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: AvatarFrameKey.self, value: geo.frame(in: .global))
+            })
+            .onPreferenceChange(AvatarFrameKey.self) { motion.frameInWindow = $0 }
+            .onAppear { motion.appear(windowVisible: windowVisible) }
+            .onDisappear { motion.disappear() }
+            .onChange(of: windowVisible) { _, visible in motion.setWindowVisible(visible) }
             .accessibilityLabel(L("作者 LingCore 的头像"))
         } else {
             AuthorMark(size: size)
@@ -431,17 +450,145 @@ struct AuthorAvatar: View {
             .clipShape(Circle())
             .overlay(Circle().strokeBorder(.white.opacity(0.85), lineWidth: 2))
     }
+}
 
-    /// 0.45 秒内从 0.6 倍弹到原大，带一点回弹
-    private static func scale(_ t: Double) -> Double {
-        let p = min(max(t / 0.45, 0), 1), s = 1.9
-        return 0.6 + 0.4 * (1 + (s + 1) * pow(p - 1, 3) + s * pow(p - 1, 2))
+private struct AvatarFrameKey: PreferenceKey {
+    static var defaultValue: CGRect?
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = nextValue() ?? value }
+}
+
+/// 头像每一帧怎么动：弹出来、摇、鼠标下放大、跟着声音跳。只有一个头像，大家共用；只在主线程上用。
+/// 不能用 @State（命令行工具缺宏插件），每帧推进的状态就放在这里，由 TimelineView 每帧调 pose(at:pop:)。
+final class AvatarMotion: ObservableObject {
+    static let shared = AvatarMotion()
+
+    let clip = SoundClip(url: Bundle.main.url(forResource: "ikun", withExtension: "mp3"))
+
+    /// 页面开着、窗口看得见、没开“减弱动态效果”：一直在摇，每帧都要重画
+    @Published private(set) var lively = false
+    @Published private(set) var hovering = false
+    /// 头像在窗口里的位置（左上角为原点），自测用来把鼠标移上去
+    var frameInWindow: CGRect?
+
+    /// 鼠标下大 15%
+    static let hoverScale = 1.15
+
+    private var shown = false
+    private var windowVisible = true
+    private var pressed = false
+    private var last: Date?
+
+    /// 声音给的放大倍数，静止时正好是 1
+    private(set) var beat = 1.0
+    /// 鼠标下的放大倍数，在 liftFrom 和 liftTo 之间先快后慢地变，0.16 秒变完
+    private(set) var lift = 1.0
+    private var liftFrom = 1.0, liftTo = 1.0, liftTime = 1.0
+    /// 摇的幅度（0 到 1）和相位（弧度）
+    private(set) var swayAmount = 0.0
+    private var swayPhase = 0.0
+
+    private init() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.update() }
     }
 
-    /// 弹出来以后左右歪两下，越来越轻，像在打招呼
-    private static func tilt(_ t: Double) -> Double {
-        let u = t - 0.35
-        guard u > 0 else { return 0 }
-        return 9 * sin(2 * Double.pi * 1.5 * u) * exp(-2.6 * u)
+    func appear(windowVisible: Bool) {
+        shown = true
+        self.windowVisible = windowVisible
+        restart()
+    }
+
+    func disappear() {
+        shown = false
+        hover(false)
+        update()
+    }
+
+    func setWindowVisible(_ visible: Bool) {
+        windowVisible = visible
+        visible ? restart() : update()
+    }
+
+    /// 页面打开、窗口重新露出来：摇的幅度从 0 渐渐加上，声音先解码好，第一下就能马上响
+    private func restart() {
+        swayAmount = 0
+        swayPhase = 0
+        update()
+        if shown && windowVisible { clip.prepare() }
+    }
+
+    private func update() {
+        if !(shown && windowVisible) { clip.release() }
+        let now = shown && windowVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if now != lively {
+            lively = now
+            last = nil
+        }
+        if !lively {
+            // 不动的时候一切回到原样：正好原大、站直
+            beat = 1
+            swayAmount = 0
+        }
+        retargetLift(animated: false)
+    }
+
+    func hover(_ inside: Bool) {
+        guard inside != hovering else { return }
+        hovering = inside
+        inside ? NSCursor.pointingHand.push() : NSCursor.pop()
+        retargetLift(animated: true)
+    }
+
+    private func retargetLift(animated: Bool) {
+        let target = hovering && lively ? Self.hoverScale : 1
+        guard target != liftTo || !animated else { return }
+        liftFrom = animated ? lift : target
+        liftTo = target
+        liftTime = animated ? 0 : 1
+        if !animated { lift = target }
+    }
+
+    func press() {
+        guard !pressed else { return }
+        pressed = true
+        guard clip.available else { return AuthorMarkClock.shared.play() }
+        if lively { beat = max(beat, 1.1) }   // 声音还没听到，先跳一下
+        clip.play()
+    }
+
+    func pressEnded() {
+        pressed = false
+    }
+
+    /// 这一帧的放大倍数和转角（度）。pop 是招呼动画开始后的秒数。
+    func pose(at now: Date, pop: Double) -> (scale: Double, angle: Double) {
+        // 同一帧重复求值时 dt 为 0；停过一阵再动时一帧最多走 1/20 秒，不会跳
+        let dt = last.map { min(max(now.timeIntervalSince($0), 0), 1.0 / 20) } ?? 0
+        last = now
+        if lively { step(dt) }
+        return (Self.popScale(pop) * beat * lift, 6 * swayAmount * sin(swayPhase))
+    }
+
+    private func step(_ dt: Double) {
+        // 摇：两边各 6°，来回一趟 2.4 秒，绕着底边转，像歪头。幅度在打开页面、鼠标移开后 1.2 秒里渐渐加上，
+        // 鼠标移上来 0.25 秒里收住；相位一直往前走，所以不会跳。
+        let sway = hovering ? 0.0 : 1.0
+        swayAmount = sway > swayAmount ? min(sway, swayAmount + dt / 1.2) : max(sway, swayAmount - dt / 0.25)
+        swayPhase = (swayPhase + dt * 2 * .pi / 2.4).truncatingRemainder(dividingBy: 2 * .pi)
+
+        liftTime = min(1, liftTime + dt / 0.16)
+        lift = liftFrom + (liftTo - liftFrom) * (1 - pow(1 - liftTime, 3))
+
+        // 声音：最响时大五分之一，轻的地方几乎不动。几帧里胀起来，再匀速缩回去（从最大缩回原大约 0.13 秒），
+        // 所以不会跳，声音放完正好落回 1。
+        let target = clip.playing ? 1 + 0.2 * pow(clip.level(), 1.5) : 1
+        beat = target > beat ? beat + (target - beat) * min(1, dt * 30) : max(target, beat - dt * 1.5)
+    }
+
+    /// 0.45 秒内从 0.6 倍弹到原大，带一点回弹
+    private static func popScale(_ t: Double) -> Double {
+        let p = min(max(t / 0.45, 0), 1), s = 1.9
+        return 0.6 + 0.4 * (1 + (s + 1) * pow(p - 1, 3) + s * pow(p - 1, 2))
     }
 }

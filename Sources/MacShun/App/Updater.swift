@@ -4,11 +4,11 @@ import AppKit
 import CryptoKit
 import Security
 
-/// 检查更新。没有自己的服务器：新版本发在 GitHub Releases 上（scripts/release.sh --publish），
-/// 这里问 GitHub 的公开接口“最新发布的是哪个版本”，比正在用的新就提示。用户点“立即更新”后下载 dmg，
+/// 通过拾穗发布服务检查和下载更新；网络失败时留在软件内提示重试。
+/// 用户点“立即更新”后下载 dmg（先试加速镜像，最后试 GitHub 原始地址，换地址见 fetchPackage），
 /// 核对文件摘要和代码签名（必须和正在运行的这个是同一张证书签的），替换掉自己再重新打开。
 /// 检查时只发一个不带任何个人信息的请求；设置里可以关掉自动检查。只在主线程上用。
-final class Updater: ObservableObject {
+final class Updater: ObservableObject, @unchecked Sendable {
     static let shared = Updater()
 
     /// 发布新版本的仓库
@@ -23,8 +23,6 @@ final class Updater: ObservableObject {
     @Published private(set) var activity = Activity.none
     /// 最近一次手动检查或安装失败的原因，给用户看
     @Published private(set) var problem: String?
-    /// 下载好、核对过却没装上的安装包：“手动安装”时打开它，不用再下载一遍
-    @Published private(set) var downloadedPackage: URL?
     @Published private(set) var lastChecked: Date? {
         didSet { defaults.set(lastChecked, forKey: Keys.lastChecked) }
     }
@@ -35,8 +33,10 @@ final class Updater: ObservableObject {
     private let defaults = UserDefaults.standard
     private var timer: Timer?
     private var checkedThisRun = false
-    private var download: URLSessionDownloadTask?
-    private var progressObservation: NSKeyValueObservation?
+    /// 下载和安装的整个过程；取消它就停掉当前下载，也不再试下一个地址
+    private var installTask: Task<Void, Never>?
+    /// 每次安装一个新值，旧的一次留下的进度回调不再生效
+    private var installToken = UUID()
 
     private enum Keys {
         static let lastChecked = "update.lastChecked"
@@ -59,16 +59,11 @@ final class Updater: ObservableObject {
         Bundle.main.bundleURL.pathExtension == "app" && !SelfTest.isRequested && !GuideTest.isRequested
     }
 
-    /// 问哪里。测试时换成本机的假发布：环境变量 MACSHUN_UPDATE_FEED（scripts/update-test.sh），
-    /// 或者测试版 Info.plist 里的 MacShunUpdateFeed（让人从浏览器下载、双击打开的测试版，带不了环境变量）。
-    /// 正式版的 Info.plist 里没有这一项；Info.plist 受代码签名保护，别人改不了
-    private static var feedURL: URL {
-        let custom = ProcessInfo.processInfo.environment["MACSHUN_UPDATE_FEED"]
-            ?? Bundle.main.object(forInfoDictionaryKey: "MacShunUpdateFeed") as? String
-        if let custom, let url = URL(string: custom) {
-            return url
-        }
-        return URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!
+    /// 构建参数和本地测试可指定服务地址；正式版本默认连接自己的服务器。
+    static var feedURL: URL? {
+        let override = ProcessInfo.processInfo.environment["MACSHUN_UPDATE_FEED"]
+        let configured = override ?? Bundle.main.object(forInfoDictionaryKey: "MacShunUpdateFeed") as? String
+        return UpdateFeed.url(configured ?? UpdateFeed.defaultURL.absoluteString)
     }
 
     /// 测试用：发现新版本后不问用户，直接装（scripts/update-test.sh）
@@ -102,23 +97,32 @@ final class Updater: ObservableObject {
 
     // MARK: - 检查
 
-    /// 问 GitHub 最新的版本。manual：用户自己点的，失败了要告诉他
+    /// 查询最新兼容版本。manual：用户自己点的，失败了要告诉他
     func check(manual: Bool) {
         guard Self.isSupported, activity == .none else { return }
         activity = .checking
         if manual { problem = nil }
 
-        var request = URLRequest(url: Self.feedURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        guard let feed = Self.feedURL else { finishCheck(.failure(UpdateError.invalidResponse), manual: manual); return }
+        fetchRelease(feed, manual: manual)
+    }
+
+    private func fetchRelease(_ feed: URL, manual: Bool) {
+        var request = URLRequest(url: feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("MacShun/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             let result = Result { () throws -> ReleaseInfo in
                 if let error { throw error }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // 服务明确回答“暂无兼容版本”时保留当前版本。
+                if status == 204 { return ReleaseInfo(version: AppVersion.current, pageURL: feed, notes: "", package: nil) }
                 guard status == 200, let data else { throw UpdateError.server(status) }
-                return try ReleaseInfo.parse(data)
+                return try ReleaseInfo.parse(data, requiresDigest: true)
             }
-            DispatchQueue.main.async { self?.finishCheck(result, manual: manual) }
+            DispatchQueue.main.async {
+                self?.finishCheck(result, manual: manual)
+            }
         }.resume()
     }
 
@@ -134,7 +138,6 @@ final class Updater: ObservableObject {
                 available = nil
                 return
             }
-            if available != release { downloadedPackage = nil }
             available = release
             if Self.installWithoutAsking {
                 install()
@@ -171,13 +174,11 @@ final class Updater: ObservableObject {
 
     #if DEBUG
     /// 截图用：直接摆出某个状态，不联网
-    func showPreview(available: ReleaseInfo?, activity: Activity = .none, problem: String? = nil, lastChecked: Date? = nil,
-                     downloaded: URL? = nil) {
+    func showPreview(available: ReleaseInfo?, activity: Activity = .none, problem: String? = nil, lastChecked: Date? = nil) {
         self.available = available
         self.activity = activity
         self.problem = problem
         self.lastChecked = lastChecked
-        downloadedPackage = downloaded
     }
     #endif
 
@@ -187,102 +188,181 @@ final class Updater: ObservableObject {
     func install() {
         guard let release = available, activity == .none else { return }
         guard let package = release.package else {
-            NSWorkspace.shared.open(release.pageURL)
+            NSWorkspace.shared.open(UpdateFeed.projectURL)
             return
         }
         problem = nil
         activity = .downloading(0)
         let target = Bundle.main.bundleURL
-        let task = URLSession.shared.downloadTask(with: package.url) { [weak self] file, response, error in
-            // 下载的临时文件在这个回调返回后就会被删掉，先挪到自己的文件夹里
-            let downloaded = Result { () throws -> URL in
-                if let error { throw error }
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard status == 200, let file else { throw UpdateError.server(status) }
-                let dir = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("MacShun-update-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let dmg = dir.appendingPathComponent(package.url.lastPathComponent)
-                try FileManager.default.moveItem(at: file, to: dmg)
-                return dmg
-            }
-            DispatchQueue.main.async { self?.progressObservation = nil }
-            guard case .success(let dmg) = downloaded else {
-                if case .failure(let error) = downloaded { self?.fail(error, package: nil) }
-                return
-            }
-            DispatchQueue.main.async { self?.activity = .installing }
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    try Self.verifyDigest(of: dmg, expected: package.sha256)
-                } catch {
-                    self?.fail(error, package: nil)
-                    return
+        let token = UUID()
+        installToken = token
+        // 每次尝试下载的文件都放在这个文件夹里；成功、失败、取消，最后整个删掉
+        let work = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MacShun-update-\(UUID().uuidString)", isDirectory: true)
+        installTask = Task { [weak self] in
+            // Failed verification must never leave a package for a manual-install shortcut.
+            defer { try? FileManager.default.removeItem(at: work) }
+            do {
+                let report: @Sendable (Double) -> Void = { fraction in
+                    DispatchQueue.main.async {
+                        guard let self, self.installToken == token, case .downloading = self.activity else { return }
+                        self.activity = .downloading(fraction)
+                    }
                 }
-                do {
-                    try Self.installPackage(dmg, into: target)
-                } catch {
-                    self?.fail(error, package: dmg)
-                    return
+                let dmg = try await Self.fetchPackage(package) { url in
+                    // 换一个地址，进度从头算
+                    report(0)
+                    return try await Self.downloadFile(from: url, into: work, progress: report)
                 }
+                let me = self
+                let proceed = await MainActor.run { () -> Bool in
+                    guard !Task.isCancelled, let me, me.installToken == token else { return false }
+                    me.activity = .installing
+                    return true
+                }
+                guard proceed else { throw CancellationError() }
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.installPackage(dmg, into: target, expectedVersion: release.version)
+                }.value
                 Log.app.notice("已更新到 \(release.version, privacy: .public)，重新打开")
                 DispatchQueue.main.async { AppState.relaunch() }
+            } catch {
+                self?.fail(error)
             }
         }
-        progressObservation = task.progress.observe(\.fractionCompleted) { [weak self] progress, _ in
-            let fraction = progress.fractionCompleted
-            DispatchQueue.main.async {
-                guard let self, case .downloading = self.activity else { return }
-                self.activity = .downloading(fraction)
-            }
-        }
-        download = task
-        task.resume()
     }
 
     /// 取消下载
     func cancel() {
         guard case .downloading = activity else { return }
-        download?.cancel()
-        download = nil
-        progressObservation = nil
+        installTask?.cancel()
+        installTask = nil
         activity = .none
     }
 
-    /// package：已经下载、核对过的安装包，可以让用户自己装
-    private func fail(_ error: Error, package: URL?) {
+    /// 按顺序试每个地址（镜像在前，原始地址在后）：下载、状态码、大小和 SHA-256 都对才算数，返回下载好的文件。
+    /// 某个地址出错就删掉它的文件，换下一个；全部失败抛最后一个错误。取消时立刻停下并清理。
+    /// fetch 是真正下载的函数（测试时换成假的）：返回下载到的文件和 HTTP 状态码。
+    static func fetchPackage(
+        _ package: ReleaseInfo.Package,
+        using fetch: (URL) async throws -> (file: URL, status: Int)
+    ) async throws -> URL {
+        let candidates = package.candidates
+        guard !candidates.isEmpty else { throw UpdateError.invalidResponse }
+        var lastError: Error = UpdateError.invalidResponse
+        for (index, url) in candidates.enumerated() {
+            try Task.checkCancellation()
+            var file: URL?
+            do {
+                let result = try await fetch(url)
+                file = result.file
+                guard (200..<300).contains(result.status) else { throw UpdateError.server(result.status) }
+                try verifyDigest(of: result.file, expected: package.sha256, expectedSize: package.size)
+                try Task.checkCancellation()
+                return result.file
+            } catch {
+                if let file { try? FileManager.default.removeItem(at: file) }
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                lastError = error
+                Log.app.error("第 \(index + 1)/\(candidates.count) 个下载地址（\(url.host ?? "", privacy: .public)）失败：\(error.localizedDescription, privacy: .public)")
+            }
+        }
+        throw lastError
+    }
+
+    /// 下载一个地址到 directory 里的新文件，返回文件和 HTTP 状态码（不判断对错）。Task 被取消时中止下载
+    static func downloadFile(
+        from url: URL, into directory: URL, progress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> (file: URL, status: Int) {
+        let handle = DownloadHandle()
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = URLSession.shared.downloadTask(with: request) { file, response, error in
+                    handle.finish()
+                    do {
+                        if let error { throw error }
+                        guard let file else { throw UpdateError.invalidResponse }
+                        // 下载的临时文件在这个回调返回后就会被删掉，先挪到自己的文件夹里
+                        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                        let dmg = directory.appendingPathComponent("\(UUID().uuidString).dmg")
+                        try FileManager.default.moveItem(at: file, to: dmg)
+                        continuation.resume(returning: (dmg, (response as? HTTPURLResponse)?.statusCode ?? 0))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                if let progress {
+                    handle.observation = task.progress.observe(\.fractionCompleted) { value, _ in progress(value.fractionCompleted) }
+                }
+                handle.start(task)
+            }
+        } onCancel: {
+            handle.cancel()
+        }
+    }
+
+    /// 让取消回调能拿到正在下载的任务；取消可能比任务创建还早
+    private final class DownloadHandle: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: URLSessionDownloadTask?
+        private var cancelled = false
+        var observation: NSKeyValueObservation?
+
+        func start(_ task: URLSessionDownloadTask) {
+            lock.lock()
+            self.task = task
+            let stop = cancelled
+            lock.unlock()
+            if stop { task.cancel() } else { task.resume() }
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let task = self.task
+            lock.unlock()
+            task?.cancel()
+        }
+
+        func finish() {
+            observation = nil
+        }
+    }
+
+    private func fail(_ error: Error) {
         // 用户点了取消
-        if (error as? URLError)?.code == .cancelled { return }
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
         Log.app.error("更新失败：\(error.localizedDescription, privacy: .public)")
         DispatchQueue.main.async {
             self.activity = .none
-            self.download = nil
+            self.installTask = nil
             self.problem = error.localizedDescription
-            if let package { self.downloadedPackage = package }
         }
     }
 
-    /// 自己装不上时：打开下载好的安装包，或者去发布页
+    /// 自己装不上时：打开官网；失败包不会交给用户执行。
     func installManually() {
-        if let package = downloadedPackage, FileManager.default.fileExists(atPath: package.path) {
-            NSWorkspace.shared.open(package)
-        } else if let release = available {
-            NSWorkspace.shared.open(release.pageURL)
-        } else {
-            NSWorkspace.shared.open(URL(string: "https://github.com/\(Self.repository)/releases/latest")!)
-        }
+        NSWorkspace.shared.open(UpdateFeed.projectURL)
     }
 
-    /// 和 GitHub 算好的 SHA-256 比对，确认下载完整。旧的发布没有摘要时跳过（后面还要核对签名）
-    static func verifyDigest(of file: URL, expected: String?) throws {
+    /// 核对发布服务提供的 SHA-256 和大小；安装前还要独立核对代码签名。
+    static func verifyDigest(of file: URL, expected: String?, expectedSize: Int? = nil) throws {
+        if let expectedSize {
+            let size = try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber
+            guard size?.intValue == expectedSize else { throw UpdateError.corrupted }
+        }
         guard let expected else { return }
-        let data = try Data(contentsOf: file, options: .mappedIfSafe)
-        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+        let actual = hash.finalize().map { String(format: "%02x", $0) }.joined()
         guard actual == expected.lowercased() else { throw UpdateError.corrupted }
     }
 
     /// 打开 dmg，把里面的程序复制到 target 旁边，核对签名后原地换掉 target。在后台线程上运行
-    static func installPackage(_ dmg: URL, into target: URL) throws {
+    static func installPackage(_ dmg: URL, into target: URL, expectedVersion: String? = nil) throws {
         let fm = FileManager.default
         let parent = target.deletingLastPathComponent()
         guard fm.isWritableFile(atPath: parent.path) else { throw UpdateError.notWritable(parent.path) }
@@ -305,7 +385,8 @@ final class Updater: ObservableObject {
         let info = NSDictionary(contentsOf: staged.appendingPathComponent("Contents/Info.plist"))
         guard let id = info?["CFBundleIdentifier"] as? String, id == Bundle.main.bundleIdentifier,
               let version = info?["CFBundleShortVersionString"] as? String,
-              AppVersion.isNewer(version, than: AppVersion.current)
+              AppVersion.isNewer(version, than: AppVersion.current),
+              expectedVersion.map({ AppVersion.normalized($0) == AppVersion.normalized(version) }) ?? true
         else { throw UpdateError.wrongApp }
 
         _ = try fm.replaceItemAt(target, withItemAt: staged)
@@ -350,15 +431,16 @@ final class Updater: ObservableObject {
 }
 
 enum UpdateError: LocalizedError {
-    case server(Int), corrupted, noApp, signature, wrongApp, notWritable(String), tool(String)
+    case server(Int), invalidResponse, corrupted, noApp, signature, wrongApp, notWritable(String), tool(String)
 
     var errorDescription: String? {
         switch self {
-        case .server(403), .server(429): L("GitHub 暂时不让查（访问太频繁），过一会儿再试。")
-        case .server(let status): L("GitHub 返回了错误（%ld）。", status)
+        case .server(403), .server(429): L("更新服务繁忙，请稍后重试。")
+        case .server(let status): L("更新服务返回了错误（%ld）。", status)
+        case .invalidResponse: L("更新信息无效，请稍后重试。")
         case .corrupted: L("下载的文件不完整，请重试。")
         case .noApp: L("安装包里没有找到 Mac顺。")
-        case .signature: L("新版本的签名和现在的不一致，为了安全没有安装。请手动下载安装。")
+        case .signature: L("新版本的签名校验失败，已拒绝安装。请稍后重试或联系开发者。")
         case .wrongApp: L("安装包里的程序不对，没有安装。")
         case .notWritable(let path): L("没有权限替换“%@”里的程序，请手动安装。", path)
         case .tool(let name): L("安装时出错（%@）。", name)
@@ -366,7 +448,7 @@ enum UpdateError: LocalizedError {
     }
 }
 
-/// GitHub 上发布的一个版本。
+/// 发布服务返回的一个版本；字段沿用兼容的 Releases 格式。
 struct ReleaseInfo: Equatable {
     /// 版本号，不带前面的 v
     let version: String
@@ -380,17 +462,27 @@ struct ReleaseInfo: Equatable {
     struct Package: Equatable {
         let url: URL
         let size: Int
-        /// GitHub 算好的 SHA-256（十六进制）。很早的发布没有
+        /// 发布服务计算的 SHA-256（十六进制）；兼容解析旧数据时允许为空。
         let sha256: String?
+        /// 下载镜像，按优先顺序；可能为空。镜像不可信，安全性靠下面的摘要和代码签名
+        var mirrors: [URL] = []
+
+        /// 依次尝试的下载地址：先是 https 镜像，最后是原始地址（也要合规）；去掉重复
+        var candidates: [URL] {
+            var seen = Set<URL>()
+            let mirrors = mirrors.filter { $0.scheme == "https" && UpdateFeed.isWebURL($0) }
+            return (mirrors + (UpdateFeed.isWebURL(url) ? [url] : [])).filter { seen.insert($0).inserted }
+        }
     }
 
-    /// 读 GitHub 接口 /repos/{owner}/{repo}/releases/latest 的回答
-    static func parse(_ data: Data) throws -> ReleaseInfo {
+    /// 解析发布服务的 Releases 兼容字段。
+    static func parse(_ data: Data, requiresDigest: Bool = false) throws -> ReleaseInfo {
         struct Asset: Decodable {
             let name: String
             let browserDownloadUrl: URL
             let size: Int
             let digest: String?
+            let mirrors: [String]?
         }
         struct Release: Decodable {
             let tagName: String
@@ -401,16 +493,25 @@ struct ReleaseInfo: Equatable {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let release = try decoder.decode(Release.self, from: data)
+        guard UpdateFeed.isWebURL(release.htmlUrl) else { throw UpdateError.invalidResponse }
         // 改名前的安装包叫 WinShun-<版本>.dmg
         let dmg = release.assets.first { $0.name.hasPrefix("MacShun-") && $0.name.hasSuffix(".dmg") }
             ?? release.assets.first { $0.name.hasSuffix(".dmg") }
+        if let dmg {
+            guard UpdateFeed.isWebURL(dmg.browserDownloadUrl), dmg.size > 0 else { throw UpdateError.invalidResponse }
+            if requiresDigest {
+                guard let digest = dmg.digest, digest.range(of: "^sha256:[a-fA-F0-9]{64}$", options: .regularExpression) != nil
+                else { throw UpdateError.invalidResponse }
+            }
+        }
         return ReleaseInfo(
             version: AppVersion.normalized(release.tagName),
             pageURL: release.htmlUrl,
             notes: release.body ?? "",
             package: dmg.map {
                 let sha = $0.digest.flatMap { $0.hasPrefix("sha256:") ? String($0.dropFirst(7)) : nil }
-                return Package(url: $0.browserDownloadUrl, size: $0.size, sha256: sha)
+                return Package(url: $0.browserDownloadUrl, size: $0.size, sha256: sha,
+                               mirrors: ($0.mirrors ?? []).compactMap { URL(string: $0) })
             }
         )
     }
@@ -435,7 +536,7 @@ enum AppVersion {
 
     /// 每一段的数字。“-beta”这样的后缀不看
     static func numbers(_ version: String) -> [Int] {
-        let core = normalized(version).split(separator: "-", maxSplits: 1).first ?? ""
+        let core = normalized(version).split(separator: "+", maxSplits: 1).first?.split(separator: "-", maxSplits: 1).first ?? ""
         return core.split(separator: ".").map { Int($0) ?? 0 }
     }
 
@@ -446,7 +547,55 @@ enum AppVersion {
             let y = i < b.count ? b[i] : 0
             if x != y { return x > y }
         }
-        return false
+        func prerelease(_ value: String) -> [String]? {
+            let core = normalized(value).split(separator: "+", maxSplits: 1).first ?? ""
+            let parts = core.split(separator: "-", maxSplits: 1)
+            return parts.count > 1 ? parts[1].split(separator: ".").map(String.init) : nil
+        }
+        let preA = prerelease(candidate), preB = prerelease(base)
+        if preA == nil && preB != nil { return true }
+        guard let preA, let preB else { return false }
+        for i in 0..<min(preA.count, preB.count) where preA[i] != preB[i] {
+            let x = Int(preA[i]), y = Int(preB[i])
+            if let x, let y { return x > y }
+            if x != nil || y != nil { return x == nil }
+            return preA[i] > preB[i]
+        }
+        return preA.count > preB.count
+    }
+}
+
+/// 发布协议只允许 HTTPS；本机 HTTP 用于隔离的开发与更新测试。
+enum UpdateFeed {
+    static let defaultURL = URL(string: "https://lcstp.com/updates/macshun/stable.json")!
+    static let projectURL = URL(string: "https://lcstp.com/projects/macshun#downloads")!
+    static func isWebURL(_ url: URL) -> Bool {
+        guard url.user == nil, url.password == nil, let host = url.host else { return false }
+        return url.scheme == "https" || (url.scheme == "http" && ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host))
+    }
+
+    /// 运行的芯片架构，和发布服务的取值一致
+    static var runtimeArch: String {
+        #if arch(arm64)
+        "arm64"
+        #else
+        "x64"
+        #endif
+    }
+
+    static func systemVersionString(_ system: OperatingSystemVersion) -> String {
+        "\(system.majorVersion).\(system.minorVersion).\(system.patchVersion)"
+    }
+
+    static func url(_ value: String) -> URL? {
+        guard let url = URL(string: value), isWebURL(url) else { return nil }
+        guard url.path.hasPrefix("/updates/") else { return url }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        var items = (components.queryItems ?? []).filter { !["platform", "arch", "osVersion"].contains($0.name) }
+        items += [URLQueryItem(name: "platform", value: "macos"), URLQueryItem(name: "arch", value: runtimeArch),
+                  URLQueryItem(name: "osVersion", value: systemVersionString(ProcessInfo.processInfo.operatingSystemVersion))]
+        components.queryItems = items
+        return components.url
     }
 }
 

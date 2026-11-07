@@ -27,6 +27,8 @@ struct KeyboardConfig: Codable, Equatable {
     var finderShortcuts = true
     /// K9：微信、QQ 运行时，Alt+A、Ctrl+Alt+A 换成它们的截图快捷键 ⌃⌘A
     var chatScreenshot = true
+    var captureShortcut: WinShortcut?
+    var captureTextShortcut: WinShortcut?
     /// 每把键盘的布局，键是 InputDevice.key。没识别过的键盘用上面的 `layout`。
     var layouts: [String: KeyboardLayoutKind] = [:]
     /// 从按法自动学习键盘的 Win/Mac 模式（见 LayoutInference）
@@ -53,6 +55,8 @@ struct KeyboardConfig: Codable, Equatable {
         systemShortcuts = c.value(.systemShortcuts, default: d.systemShortcuts)
         finderShortcuts = c.value(.finderShortcuts, default: d.finderShortcuts)
         chatScreenshot = c.value(.chatScreenshot, default: d.chatScreenshot)
+        captureShortcut = try? c.decodeIfPresent(WinShortcut.self, forKey: .captureShortcut)
+        captureTextShortcut = try? c.decodeIfPresent(WinShortcut.self, forKey: .captureTextShortcut)
         layouts = c.value(.layouts, default: d.layouts)
         autoDetectLayout = c.value(.autoDetectLayout, default: d.autoDetectLayout)
         excludedApps = c.value(.excludedApps, default: d.excludedApps)

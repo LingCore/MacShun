@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pointer = PointerAccelerationController()
     private let cursor = CursorSizeController.shared
     @MainActor private lazy var fileSearch = FileSearchController(configStore: configStore)
+    @MainActor private lazy var screenCapture = ScreenCaptureController()
     private lazy var windowSnapper = WindowSnapper(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
@@ -55,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu = StatusMenu(
             configStore: configStore, state: state,
             openSettings: { [weak self] in self?.settingsWindow.show() },
-            openClipboard: { [weak self] in self?.showClipboard() }
+            openClipboard: { [weak self] in self?.showClipboard() },
+            capture: { [weak self] mode in self?.screenCapture.start(mode) }
         )
 
         // 发现新版本时弹出“软件更新”窗口。自动检查发现的不抢键盘
@@ -102,8 +104,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowSnapper.applyConfig()
             let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard,
                                 windowSnapper: windowSnapper, fileSearch: fileSearch,
-                                updateConfig: { [weak self] change in self.map { change(&$0.configStore.config) } }) { [weak self] in
-                self?.settingsWindow.show()
+                                updateConfig: { [weak self] change in self.map { change(&$0.configStore.config) } }) { [weak self] tab in
+                self?.settingsWindow.show(tab: tab)
             }
             Task { @MainActor in
                 // 等事件拦截和鼠标设备都准备好
@@ -113,6 +115,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+
+        // 匿名装机报告（自测和授权引导测试已经在上面返回了）
+        InstallReport.start()
 
         let clipboardNeedsSetup = configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed
         if !state.allGood || clipboardNeedsSetup {
@@ -188,6 +193,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if command == .fileSearch {
             clipboard.hide()
             fileSearch.summon()
+        } else if command == .finishScrollingCapture {
+            screenCapture.finishScrolling()
+        } else if command == .cancelScrollingCapture {
+            screenCapture.cancelScrolling()
+        } else if case .capture(let mode) = command {
+            screenCapture.start(mode)
         } else if case .window(let shortcut) = command {
             windowSnapper.handle(shortcut)
         } else {

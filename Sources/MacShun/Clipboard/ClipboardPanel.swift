@@ -61,6 +61,9 @@ final class ClipboardPanelModel: ObservableObject {
     let store: ClipboardStore
     var onPaste: (ClipboardItem) -> Void = { _ in }
     var onClose: () -> Void = {}
+    @Published private(set) var copyFeedback: String?
+    private var textCopy: Task<Void, Never>?
+    var onFloat: (ClipboardItem) -> Void = { _ in }
 
     private var thumbnails: [UUID: NSImage] = [:]
     private var subscription: AnyCancellable?
@@ -70,10 +73,11 @@ final class ClipboardPanelModel: ObservableObject {
         self.store = store
         subscription = store.$items
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refresh() }
+            .sink { [weak self] _ in self?.refresh(keepingSelection: true) }
     }
 
     func prepareForShow() {
+        cancelTextCopy()
         query = ""
         selection = 0
         cancelClear()
@@ -104,8 +108,10 @@ final class ClipboardPanelModel: ObservableObject {
         if confirmingClear { confirmingClear = false }
     }
 
-    func refresh() {
+    func refresh(keepingSelection: Bool = false) {
+        let previous = keepingSelection && !query.isEmpty ? selectedItem?.id : nil
         results = store.search(query)
+        if let previous, let index = results.firstIndex(where: { $0.id == previous }) { selection = index }
         if selection >= results.count { selection = max(results.count - 1, 0) }
         let ids = Set(store.items.map(\.id))
         thumbnails = thumbnails.filter { ids.contains($0.key) }
@@ -130,6 +136,31 @@ final class ClipboardPanelModel: ObservableObject {
 
     func deleteSelected() {
         if let item = selectedItem { store.delete(item.id) }
+    }
+
+    func cancelTextCopy() {
+        textCopy?.cancel()
+        textCopy = nil
+        copyFeedback = nil
+    }
+
+    func copyImageText(_ item: ClipboardItem, to board: NSPasteboard = .general) {
+        cancelTextCopy()
+        let count = board.changeCount
+        copyFeedback = L("正在识别文字…")
+        textCopy = Task {
+            let value = await store.recognizedText(for: item.id)
+            guard !Task.isCancelled else { return }
+            guard store.items.contains(where: { $0.id == item.id }), let value, !value.isEmpty else {
+                copyFeedback = L("图片里没有可复制的文字")
+                return
+            }
+            guard board.changeCount == count else { copyFeedback = L("剪贴板已更改，请重新取字"); return }
+            let textItem = NSPasteboardItem()
+            guard textItem.setString(value, forType: .string) else { copyFeedback = L("未能写入剪贴板"); return }
+            board.clearContents()
+            copyFeedback = board.writeObjects([textItem]) ? L("已复制识别的文字") : L("未能写入剪贴板")
+        }
     }
 
     /// 缩略图，按需生成并缓存。
@@ -167,7 +198,8 @@ struct ClipboardPanelView: View {
             Divider().opacity(0.6)
             footer
         }
-        .frame(width: ClipboardPanel.size.width, height: ClipboardPanel.size.height)
+        .frame(idealWidth: ClipboardPanel.size.width, maxWidth: .infinity,
+               idealHeight: ClipboardPanel.size.height, maxHeight: .infinity)
         .background(VisualEffectBackground())
     }
 
@@ -272,10 +304,17 @@ struct ClipboardPanelView: View {
 
     /// 放不下（英文的字比中文长）时先收紧间距，再省掉谁都知道的“↑↓ 选择”和“Esc 关闭”。
     private var footer: some View {
-        ViewThatFits(in: .horizontal) {
-            hints(spacing: 12, all: true)
-            hints(spacing: 8, all: true)
-            hints(spacing: 12, all: false)
+        Group {
+            if let feedback = model.copyFeedback {
+                Text(feedback).font(.callout).foregroundStyle(.secondary)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    hints(spacing: 12, all: true)
+                    hints(spacing: 8, all: true)
+                    hints(spacing: 12, all: false)
+                    KeyHint(key: "Enter", action: L("粘贴"))
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
@@ -339,12 +378,15 @@ private struct ClipboardRow: View {
             sourceIcon
             VStack(alignment: .leading, spacing: 4) {
                 content
-                meta
+                HStack(spacing: 6) {
+                    meta
+                    Spacer(minLength: 0)
+                    if hovering || isSelected { actions }
+                }
+                // 操作放在来源行，鼠标经过时正文保持原有换行，下一条也不会跳动。
+                .frame(minHeight: 24)
             }
-            Spacer(minLength: 0)
-            if hovering {
-                actions
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -354,6 +396,12 @@ private struct ClipboardRow: View {
                 .fill(rowFill)
         )
         .contentShape(Rectangle())
+        .contextMenu {
+            if item.kind == .image {
+                Button(L("复制图中文字")) { model.copyImageText(item) }
+                Button(L("贴到屏幕")) { model.onFloat(item) }
+            }
+        }
         .onHover { inside in
             if inside {
                 model.hoveredID = item.id
@@ -411,6 +459,12 @@ private struct ClipboardRow: View {
             } else {
                 Text(L("图片")).font(.system(size: 13))
             }
+            if !model.query.isEmpty, let text = item.imageText,
+               let line = text.split(whereSeparator: \.isNewline).first(where: {
+                   $0.localizedCaseInsensitiveContains(model.query)
+               }) ?? text.split(whereSeparator: \.isNewline).first {
+                Text(String(line)).font(.caption).lineLimit(1).truncationMode(.tail)
+            }
         }
     }
 
@@ -441,12 +495,18 @@ private struct ClipboardRow: View {
             parts.append(L("图片 %@×%@", "\(w)", "\(h)"))
         }
         if let app = item.sourceApp { parts.append(AppInfo.name(app)) }
-        parts.append(Self.timeFormatter.localizedString(for: item.lastUsed, relativeTo: Date()))
+        let now = Date()
+        parts.append(now.timeIntervalSince(item.lastUsed) < 60 ? L("刚刚") :
+            Self.timeFormatter.localizedString(for: item.lastUsed, relativeTo: now))
         return parts.joined(separator: " · ")
     }
 
     private var actions: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
+            if item.kind == .image {
+                RowButton(symbol: "text.viewfinder", help: L("复制图中文字")) { model.copyImageText(item) }
+                RowButton(symbol: "macwindow.on.rectangle", help: L("贴到屏幕")) { model.onFloat(item) }
+            }
             RowButton(symbol: item.pinned ? "pin.slash" : "pin", help: item.pinned ? L("取消固定") : L("固定")) {
                 model.store.togglePin(item.id)
             }
@@ -476,6 +536,7 @@ private struct RowButton: View {
         }
         .buttonStyle(.chip())
         .help(help)
+        .accessibilityLabel(help)
     }
 }
 
@@ -489,94 +550,4 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
-/// 搜索框。默认获得焦点时只允许英文输入，这样直接打 “jtb” 就能搜索，不会先进入中文输入法的候选状态。
-/// 方向键、Enter、Esc 交给面板处理；输入法正在组字时这些键仍归输入法。
-struct SearchField: NSViewRepresentable {
-    @Binding var text: String
-    let placeholder: String
-    let focusToken: Int
-    var fontSize: CGFloat = 16
-    /// false 时也能切到中文输入法（文件搜索要能打中文搜内容）
-    var romanOnly = true
-    let onMove: (Int) -> Void
-    let onSubmit: () -> Void
-    let onCancel: () -> Void
-    /// Tab（false）、Shift+Tab（true）。nil 时照常处理
-    var onTab: ((Bool) -> Void)? = nil
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeNSView(context: Context) -> RomanOnlyTextField {
-        let field = RomanOnlyTextField()
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.font = .systemFont(ofSize: fontSize)
-        field.romanOnly = romanOnly
-        field.placeholderString = placeholder
-        field.delegate = context.coordinator
-        field.cell?.isScrollable = true
-        field.cell?.wraps = false
-        // 粘贴进来的换行变成空格（从终端、聊天里复制的路径后面常带一个换行）
-        field.cell?.usesSingleLineMode = true
-        return field
-    }
-
-    func updateNSView(_ field: RomanOnlyTextField, context: Context) {
-        context.coordinator.parent = self
-        if field.stringValue != text { field.stringValue = text }
-        if field.placeholderString != placeholder { field.placeholderString = placeholder }
-        if context.coordinator.lastFocusToken != focusToken {
-            context.coordinator.lastFocusToken = focusToken
-            DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
-        }
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: SearchField
-        var lastFocusToken = -1
-
-        init(_ parent: SearchField) { self.parent = parent }
-
-        func controlTextDidChange(_ note: Notification) {
-            guard let field = note.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-            switch selector {
-            case #selector(NSResponder.moveUp(_:)): parent.onMove(-1); return true
-            case #selector(NSResponder.moveDown(_:)): parent.onMove(1); return true
-            case #selector(NSResponder.insertNewline(_:)): parent.onSubmit(); return true
-            // Alt+Enter（⌥↩）、Ctrl+Enter、⌥Tab 会往一行的搜索框里插入真的换行、Tab，不要
-            case #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), #selector(NSResponder.insertLineBreak(_:)),
-                 #selector(NSResponder.insertTabIgnoringFieldEditor(_:)):
-                return true
-            case #selector(NSResponder.cancelOperation(_:)): parent.onCancel(); return true
-            case #selector(NSResponder.insertTab(_:)):
-                guard let onTab = parent.onTab else { return false }
-                onTab(false)
-                return true
-            case #selector(NSResponder.insertBacktab(_:)):
-                guard let onTab = parent.onTab else { return false }
-                onTab(true)
-                return true
-            default: return false
-            }
-        }
-    }
-}
-
-final class RomanOnlyTextField: NSTextField {
-    var romanOnly = true
-
-    override func becomeFirstResponder() -> Bool {
-        let ok = super.becomeFirstResponder()
-        if ok, romanOnly, let editor = currentEditor() as? NSTextView {
-            editor.inputContext?.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
-        }
-        return ok
-    }
 }

@@ -19,7 +19,7 @@ STRINGS = ROOT / "Resources" / "en.lproj" / "Localizable.strings"
 STRINGSDICT = ROOT / "Resources" / "en.lproj" / "Localizable.stringsdict"
 
 # 不是界面文字的文件：自测输出、拼音表、按名字识别程序、搜索用的文件夹别名
-SKIP_FILES = {"SelfTest.swift", "GuideTest.swift", "Pinyin.swift", "AppCatalog.swift", "FolderAliases.swift"}
+SKIP_FILES = {"SelfTest.swift", "GuideTest.swift", "Pinyin.swift", "AppCatalog.swift", "FolderAliases.swift", "SystemFeatureQuery.swift"}
 # 不是界面文字的行
 SKIP_LINE = re.compile(r"Log\.|appendingPathComponent|lower\.contains|summary = |\+ \"读取剪贴板|label: \"|keywords: \"|\"简体中文\"")
 # 设置搜索目录里的标题：存的是键，显示时才翻译
@@ -62,7 +62,7 @@ def main() -> int:
             if line.strip().startswith("//") or SKIP_LINE.search(line):
                 continue
             code = code_part(line)
-            if path.name == "SettingsSearch.swift":
+            if path.name in {"SettingsSearch.swift", "SystemFeatureCatalog.swift"}:
                 for key in CATALOG_TITLE.findall(code):
                     keys.setdefault(key, f"{path.name}:{number}")
                 code = CATALOG_TITLE.sub("", code)

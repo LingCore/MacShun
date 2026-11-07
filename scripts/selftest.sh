@@ -18,10 +18,13 @@ if pgrep -x MacShun >/dev/null; then
     sleep 1
 fi
 
-# scripts/selftest.sh window 只测分屏（十几秒），scripts/selftest.sh search 只测文件搜索
+# scripts/selftest.sh window 只测分屏（十几秒），scripts/selftest.sh search 只测文件搜索，
+# scripts/selftest.sh gleaning 只测“拾穗计划”页的头像
 ARG="--self-test"
 [[ "${1:-}" == "window" ]] && ARG="--self-test-window"
 [[ "${1:-}" == "search" ]] && ARG="--self-test-search"
+[[ "${1:-}" == "system-search" ]] && ARG="--self-test-system-search"
+[[ "${1:-}" == "gleaning" ]] && ARG="--self-test-gleaning"
 open -n -W --stdout "$LOG" --stderr "$LOG" "$APP" --args "$ARG" || true
 cat "$LOG"
 

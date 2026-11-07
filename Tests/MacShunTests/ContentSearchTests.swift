@@ -351,29 +351,30 @@ struct FileSearchScopeTests {
         return FileSearchModel(index: FileIndex.shared, contentIndex: index)
     }
 
-    @Test func defaultsToFilesAndTabCycles() {
+    @Test func defaultsToNamesAndFeaturesAndCyclesAvailableScopes() {
         let model = makeModel()
         model.searchesContent = true
         model.prepareForShow()
         #expect(model.scope == .files)
-        model.cycleScope(reverse: false)
-        #expect(model.scope == .contents)
-        model.cycleScope(reverse: false)
-        #expect(model.scope == .all)
+        for expected: FileSearchScope in [.contents, .system, .all, .files] {
+            model.cycleScope(reverse: false)
+            #expect(model.scope == expected)
+        }
         model.cycleScope(reverse: true)
-        #expect(model.scope == .contents)
-        // 每次打开都回到“文件”
+        #expect(model.scope == .all)
         model.prepareForShow()
         #expect(model.scope == .files)
     }
 
-    @Test func contentSearchOffMeansFilesOnly() {
+    @Test func contentOffStillOffersFilesAndSystem() {
         let model = makeModel()
-        model.searchesContent = false
+        model.searchesContent = true
         model.scope = .contents
-        #expect(model.effectiveScope == .files)
-        model.cycleScope(reverse: false)
-        #expect(model.scope == .contents)   // 关着时 Tab 不起作用
+        model.searchesContent = false
+        #expect(model.scope == .files)
+        #expect(model.availableScopes == [.files, .system])
+        model.cycleScope(reverse: true)
+        #expect(model.scope == .system)
     }
 
     @Test func shortQueryInContentsScopeAsksForMore() {

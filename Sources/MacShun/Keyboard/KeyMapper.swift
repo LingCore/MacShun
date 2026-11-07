@@ -18,6 +18,8 @@ enum SystemCommand: Equatable {
     case lockScreen
     case spotlight
     case clipboardHistory
+    case capture(CaptureMode)
+    case finishScrollingCapture, cancelScrollingCapture
     /// Win+Space：切换输入法
     case switchInputSource
     /// 连按两下 Ctrl：文件搜索（F1）
@@ -87,6 +89,11 @@ struct KeyMapper {
     func action(keyCode: CGKeyCode, flags: CGEventFlags, context: KeyContext) -> KeyAction {
         guard context.appKind != .excluded else { return .pass }
         let mods = modifiers(of: flags)
+        let shortcut = WinShortcut(keyCode: keyCode, modifiers: mods)
+        if config.captureShortcut == shortcut || config.captureTextShortcut == shortcut,
+           shortcut.canStartCapture(layout: config.layout) {
+            return .command(.capture(config.captureShortcut == shortcut ? .image : .text))
+        }
         // W1：Win+方向键分屏。分屏有自己的开关，不跟着键盘改写的总开关走。
         // 只认当前布局的 Win 键：Windows 键盘上是 ⌘，Mac 键盘上是 ⌥（和 Win 键在同一个位置）。
         // 不像 Win+V 那样在 Windows 键盘上也认 ⌥：那里 ⌥ 是 Alt
@@ -267,5 +274,19 @@ struct KeyMapper {
         default:
             return nil
         }
+    }
+}
+
+extension WinShortcut {
+    /// 截图是全局热键，不能占用普通打字、聊天应用的截图键或系统截图键。
+    func canStartCapture(layout: KeyboardLayoutKind) -> Bool {
+        let flags = SideButtons.flags(for: winModifiers, layout: layout)
+        let functions = [KeyCode.f1, KeyCode.f2, KeyCode.f3, KeyCode.f4, KeyCode.f5, KeyCode.f6,
+                         KeyCode.f7, KeyCode.f8, KeyCode.f9, KeyCode.f10, KeyCode.f11, KeyCode.f12]
+        if flags.subtracting(.maskShift).isEmpty { return functions.contains(keyCode) }
+        if keyCode == KeyCode.a, flags == .maskAlternate || flags == [.maskControl, .maskAlternate]
+            || flags == [.maskControl, .maskCommand] { return false }
+        let screenKeys = [KeyCode.three, KeyCode.four, KeyCode.five, KeyCode.six]
+        return !(screenKeys.contains(keyCode) && flags.subtracting(.maskControl) == [.maskCommand, .maskShift])
     }
 }

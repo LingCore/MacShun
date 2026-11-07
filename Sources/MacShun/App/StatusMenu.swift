@@ -10,16 +10,20 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let state: AppState
     private let openSettings: () -> Void
     private let openClipboard: () -> Void
+    private let capture: (CaptureMode) -> Void
     private var subscriptions: Set<AnyCancellable> = []
 
-    init(configStore: ConfigStore, state: AppState, openSettings: @escaping () -> Void, openClipboard: @escaping () -> Void) {
+    init(configStore: ConfigStore, state: AppState, openSettings: @escaping () -> Void, openClipboard: @escaping () -> Void,
+         capture: @escaping (CaptureMode) -> Void) {
         self.configStore = configStore
         self.state = state
         self.openSettings = openSettings
         self.openClipboard = openClipboard
+        self.capture = capture
         super.init()
 
         let menu = NSMenu()
+        menu.autoenablesItems = false
         menu.delegate = self
         item.menu = menu
         updateIcon()
@@ -56,12 +60,18 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(.sectionHeader(title: L("Mac顺 %@", AppVersion.display)))
         menu.addItem(toggle(L("快捷键像 Windows"), cfg.keyboard.enabled, #selector(toggleKeyboard), symbol: "keyboard"))
         menu.addItem(toggle(L("鼠标像 Windows"), cfg.mouse.enabled, #selector(toggleMouse), symbol: "computermouse"))
-        menu.addItem(toggle(L("剪贴板历史"), cfg.clipboard.enabled, #selector(toggleClipboard), symbol: "doc.on.clipboard"))
+        menu.addItem(toggle(L("记录剪贴板历史"), cfg.clipboard.enabled, #selector(toggleClipboard), symbol: "doc.on.clipboard"))
         menu.addItem(.separator())
 
         let history = action(L("打开剪贴板历史"), #selector(showClipboard), symbol: "clock.arrow.circlepath")
         history.isEnabled = cfg.clipboard.enabled
         menu.addItem(history)
+        menu.addItem(action(CaptureMode.image.title, #selector(startCapture), symbol: "viewfinder"))
+        menu.addItem(action(CaptureMode.text.title, #selector(readText), symbol: "text.viewfinder"))
+        menu.addItem(action(L("贴出剪贴板图片"), #selector(pinClipboard), symbol: "macwindow.on.rectangle"))
+        if !ScreenPins.shared.windows.isEmpty {
+            menu.addItem(action(L("关闭全部贴图"), #selector(closePins), symbol: "xmark.rectangle"))
+        }
         menu.addItem(action(L("设置…"), #selector(showSettings), key: ",", symbol: "gearshape"))
         menu.addItem(action(L("检查更新…"), #selector(checkForUpdates), symbol: "arrow.triangle.2.circlepath"))
         menu.addItem(.separator())
@@ -86,6 +96,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func toggleKeyboard() { configStore.config.keyboard.enabled.toggle() }
     @objc private func toggleMouse() { configStore.config.mouse.enabled.toggle() }
     @objc private func toggleClipboard() { configStore.config.clipboard.enabled.toggle() }
+    @objc private func startCapture() { capture(.image) }
+    @MainActor @objc private func pinClipboard() { ScreenPins.shared.showClipboard() }
+    @MainActor @objc private func closePins() { ScreenPins.shared.closeAll() }
+    @objc private func readText() { capture(.text) }
     @objc private func showClipboard() { openClipboard() }
     @objc private func showSettings() { openSettings() }
     @objc private func quit() { NSApp.terminate(nil) }

@@ -41,6 +41,12 @@ final class MouseEngine {
         // 触控板、妙控鼠标是连续滚动，交给系统自己的设置。
         guard event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return pass }
 
+        let pins = ScreenPins.frames.get()
+        if !pins.isEmpty, pins.values.contains(where: { $0.contains(event.unflippedLocation) }),
+           pins[NSWindow.windowNumber(at: event.unflippedLocation, belowWindowWithWindowNumber: 0)] != nil {
+            return pass
+        }
+
         let inverted = NSEvent(cgEvent: event)?.isDirectionInvertedFromDevice ?? false
         let vertical = axis(event, .scrollWheelEventDeltaAxis1, .scrollWheelEventFixedPtDeltaAxis1, .scrollWheelEventPointDeltaAxis1)
         let horizontal = axis(event, .scrollWheelEventDeltaAxis2, .scrollWheelEventFixedPtDeltaAxis2, .scrollWheelEventPointDeltaAxis2)

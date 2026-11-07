@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 import AppKit
-import Carbon
 import Combine
 import SwiftUI
 
@@ -19,9 +18,8 @@ final class FileSearchController {
     private var keyMonitor: Any?
     /// 剪贴板面板正叠在搜索框上（见 clipboardHost）
     private var hostingClipboard = false
-    /// 打开前的输入法。打开时切到英文（直接打拼音首字母），关闭时切回来。
-    private var savedInputSource: TISInputSource?
-
+    private var dialog: FileDialogTarget?
+    private var dialogNavigation: Task<Void, Never>?
     init(configStore: ConfigStore) {
         self.configStore = configStore
     }
@@ -90,7 +88,7 @@ final class FileSearchController {
     /// 自测用：第几条结果的中心在屏幕上的位置（左上角为原点）。只在没往下滚、只有文件名结果时准
     func rowCenter(_ index: Int) -> CGPoint {
         let frame = panel.frame
-        let top = FileSearchView.margin + FileSearchView.capsuleHeight + FileSearchView.gap + FileSearchView.listPadding
+        let top = FileSearchView.margin + FileSearchView.capsuleHeight + (model.folder == nil ? 0 : FileSearchView.folderBarHeight) + FileSearchView.gap + FileSearchView.listPadding
             + (CGFloat(index) + 0.5) * FileSearchView.rowHeight
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         return CGPoint(x: frame.minX + 200, y: primaryHeight - (frame.maxY - top))
@@ -152,40 +150,63 @@ final class FileSearchController {
         }
         index.includeExternalDrives = configStore.config.fileSearch.includeExternalDrives
         index.start()
-        model.prepareForShow()
+        dialogNavigation?.cancel()
+        dialog = FileDialogTarget.focused()
+        model.preferredFolder = dialog == nil ? Self.finderFolder() : nil
+        model.prepareForShow(inFileDialog: dialog != nil)
         model.isShown = true
         resize()
         position()
-        savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
-        // 先切到英文，直接打拼音首字母就能搜；要搜中文内容时可以再切回中文输入法
-        if let english = TISCopyCurrentASCIICapableKeyboardInputSource()?.takeRetainedValue(),
-           savedInputSource.map({ !CFEqual($0, english) }) ?? true {
-            TISSelectInputSource(english)
-        }
         FrontAppTracker.shared.fileSearchPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
     }
 
-    func hide() {
-        FrontAppTracker.shared.fileSearchPanelActive.set(false)
-        if panel.isVisible { panel.orderOut(nil) }
-        restoreInputSource()
-        // 关着时不用跟着文件变化重新搜
-        model.isShown = false
+    /// 只在从访达呼出时取一次位置。无需额外授权，虚拟位置和没有窗口时照常全局搜索。
+    private static func finderFolder() -> String? {
+        guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == AppCatalog.finder,
+              AXIsProcessTrusted() else { return nil }
+        let app = AXUIElementCreateApplication(front.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 0.05)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        let window = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, 0.05)
+        guard let document = FocusInspector.string(window, kAXDocumentAttribute),
+              let url = URL(string: document), url.isFileURL else { return nil }
+        return url.standardizedFileURL.path
     }
 
-    private func restoreInputSource() {
-        guard let saved = savedInputSource else { return }
-        savedInputSource = nil
-        let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
-        if current.map({ CFEqual($0, saved) }) != true {
-            TISSelectInputSource(saved)
+    func hide() {
+        FrontAppTracker.shared.fileSearchPanelActive.set(false)
+        if panel.isVisible {
+            // orderOut 会保留正在组字的编辑器；下次打开面板应从空查询开始。
+            panel.endEditing(for: nil)
+            panel.orderOut(nil)
         }
+        // 关着时不用跟着文件变化重新搜
+        model.isShown = false
+        dialog = nil
     }
 
     /// 打开、在访达中显示，和右键菜单、结果右边按钮里的操作。除了移到废纸篓，做完都关掉搜索框。
     private func perform(_ action: FileAction, on result: FileSearchResult) {
         let url = URL(fileURLWithPath: result.path)
+        if case .goToFolder = action {
+            guard let dialog else { return }
+            hide()
+            dialogNavigation = Task {
+                let destination = await Task.detached(priority: .userInitiated) { FileDialogTarget.folder(for: url) }.value
+                guard !Task.isCancelled else { return }
+                guard let destination else { NSSound.beep(); return }
+                switch await dialog.navigate(to: destination) {
+                case .submitted: history.record(result.path)
+                case .readyForConfirmation: break
+                case .interrupted: if !Task.isCancelled { NSSound.beep() }
+                }
+            }
+            return
+        }
         if case .trash = action { return trash(url) }
         hide()
         history.record(result.path)
@@ -203,7 +224,7 @@ final class FileSearchController {
         case .copyPath:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(result.path, forType: .string)
-        case .trash:
+        case .goToFolder, .trash:
             break
         }
     }
@@ -231,9 +252,17 @@ final class FileSearchController {
         let model = FileSearchModel(index: index, contentIndex: contentIndex)
         model.history = history
         model.onAction = { [weak self] result, action in self?.perform(action, on: result) }
+        model.onFeature = { [weak self] feature in
+            if NSWorkspace.shared.open(feature.destination.url) { self?.hide() }
+            else { NSSound.beep() }
+        }
         model.onClose = { [weak self] in self?.hide() }
         // 结果多少变了，面板跟着变高变矮
-        model.$results.combineLatest(model.$query, index.$isIndexing, model.$searchingContent)
+        model.$rows.combineLatest(model.$query, index.$isIndexing, model.$searchingContent)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.resize() }
+            .store(in: &subscriptions)
+        model.$isPreviewing.combineLatest(model.$folder)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.resize() }
             .store(in: &subscriptions)
@@ -254,7 +283,13 @@ final class FileSearchController {
         // Ctrl+Enter 是系统“显示快捷菜单”的快捷键：系统在把按键交给窗口之前就处理了，输入框上会弹出右键菜单。
         // 本程序的事件监听在那之前，在这里接住。⌘+Enter 输入框不处理，也在这里接。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
-            guard let self, let panel, event.window === panel, Self.isRevealKey(event) else { return event }
+            guard let self, let panel, event.window === panel else { return event }
+            let composing = (panel.firstResponder as? NSTextView)?.hasMarkedText() == true
+            if !composing {
+                if self.model.handleQuickLookKey(event) { return nil }
+                if self.model.handleFolderKey(event) { return nil }
+            }
+            guard Self.isRevealKey(event) else { return event }
             // 输入法还在拼字时交给输入法（放过去的话系统会弹出右键菜单）
             if let editor = panel.firstResponder as? NSTextView, editor.hasMarkedText() {
                 _ = editor.inputContext?.handleEvent(event)
@@ -273,9 +308,13 @@ final class FileSearchController {
 
     /// 面板高度：胶囊加上下面的结果列表。保持顶边不动。
     private func resize() {
-        let height = FileSearchView.height(resultCount: model.results.count, hasContentSection: model.contentStart != nil,
-                                           showsStatus: model.showsStatus)
+        var height = FileSearchView.height(resultCount: model.rows.count, hasContentSection: model.contentStart != nil,
+                                           showsStatus: model.showsStatus, previewing: model.isPreviewing, inFolder: model.folder != nil)
         var frame = panel.frame
+        if model.isPreviewing, let visible = panel.screen?.visibleFrame {
+            height = min(height, visible.height, max(200, frame.maxY - visible.minY))
+            if frame.maxY - height < visible.minY { frame.origin.y += visible.minY - (frame.maxY - height) }
+        }
         guard abs(frame.height - height) > 0.5 else { return }
         frame.origin.y += frame.height - height
         frame.size.height = height
@@ -287,9 +326,10 @@ final class FileSearchController {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = panel.frame.size
+        let width = min(FileSearchPanel.width, visible.width)
         let top = visible.maxY - visible.height * 0.22
-        panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: top - size.height))
+        panel.setFrame(NSRect(x: visible.midX - width / 2, y: top - panel.frame.height,
+                              width: width, height: panel.frame.height), display: false)
     }
 }
 
@@ -326,24 +366,27 @@ final class FileSearchPanel: NSPanel {
     }
 }
 
-/// 搜索范围：全部、只看文件名、只看内容。
+/// 默认按文件名与系统功能搜索；“全部”另含文件正文。
 enum FileSearchScope: Int, CaseIterable, Identifiable {
-    case all, files, contents
+    case all, files, contents, system
 
     var id: Int { rawValue }
+
+    func title(inFolder: Bool) -> String { inFolder && self == .files ? L("文件") : title }
 
     var title: String {
         switch self {
         case .all: L("全部")
-        case .files: L("文件")
+        case .files: L("文件与功能")
         case .contents: L("内容")
+        case .system: L("系统")
         }
     }
 }
 
 /// 对一条结果做的事：Enter、Ctrl+Enter、右键菜单和结果右边的按钮里的。
 enum FileAction {
-    case open, reveal, openWith(URL), copy, copyPath, trash
+    case open, goToFolder, reveal, openWith(URL), copy, copyPath, trash
 }
 
 /// 结果右边的按钮：定位（在访达中显示）、复制、删除（移到废纸篓）
@@ -362,26 +405,74 @@ enum FileRowButton: Hashable {
 final class FileSearchModel: ObservableObject {
     @Published var query = "" {
         didSet {
+            closeQuickLook(refocus: false)
             cancelDelete()
-            scheduleSearch()
-        }
-    }
-    /// 文件名结果在前，内容结果在后
-    @Published private(set) var results: [FileSearchResult] = []
-    @Published var selection = 0
-    @Published private(set) var focusToken = 0
-    /// 也按内容搜（F2）。设置里关掉了就没有范围可选，只搜文件名
-    @Published var searchesContent = false
-    /// 搜索范围，每次打开都是“文件”
-    @Published var scope: FileSearchScope = .files {
-        didSet {
-            guard scope != oldValue else { return }
+            pendingSelectionAction = nil
+            invalidateContentSearch()
+            parsedQuery = FileMatcher.Query(query)
+            directoryStatus = nil
+            restoreFolderSelection = nil
+            updateFeatures()
             merge(resetSelection: true)
+            searchNames(resetSelection: false)
             scheduleContentSearch()
         }
     }
-    /// 设置里没关内容搜索时才看范围
-    var effectiveScope: FileSearchScope { searchesContent ? scope : .files }
+    /// 明确匹配的系统功能、文件名、文件正文，各自保留类型与操作。
+    @Published private(set) var rows: [LauncherRow] = []
+    /// File-only view used by file search diagnostics.
+    var results: [FileSearchResult] { rows.compactMap(\.file) }
+    private var featureResults: [SystemFeature] = []
+    @Published var selection = 0
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var focusToken = 0
+    @Published var searchesContent = false {
+        didSet {
+            guard searchesContent != oldValue else { return }
+            if !availableScopes.contains(scope) { scope = .files }
+            else { refreshScope() }
+        }
+    }
+    @Published var scope: FileSearchScope = .files {
+        didSet { if scope != oldValue && !changingFolder { refreshScope() } }
+    }
+    @Published private(set) var folder: FileSearchFolder?
+    private struct ReturnPoint {
+        let path: String?
+        let query: String
+        let scope: FileSearchScope
+        let selection: String
+    }
+    private var returnPoints: [ReturnPoint] = []
+    private var changingFolder = false
+    private var restoreFolderSelection: String?
+
+    @Published private(set) var inFileDialog = false
+    private var primaryAction: FileAction { inFileDialog ? .goToFolder : .open }
+    var includesSystemFeatures: Bool { folder == nil && !inFileDialog }
+
+    var availableScopes: [FileSearchScope] {
+        if inFileDialog && folder == nil { return searchesContent ? [.all, .files, .contents] : [.files] }
+        guard let folder else { return searchesContent ? FileSearchScope.allCases : [.files, .system] }
+        return searchesContent && FileIndex.indexesContents(in: folder.path) ? [.all, .files, .contents] : [.files]
+    }
+    var effectiveScope: FileSearchScope { availableScopes.contains(scope) ? scope : .files }
+    var searchesNames: Bool { effectiveScope == .all || effectiveScope == .files }
+
+    private func updateFeatures() {
+        featureResults = includesSystemFeatures && effectiveScope != .contents && parsedQuery.isPlainName && parsedQuery.filters.isEmpty
+            ? SystemFeature.search(query, browse: effectiveScope == .system) : []
+    }
+
+    private func refreshScope() {
+        closeQuickLook(refocus: false)
+        invalidateContentSearch()
+        pendingSelectionAction = nil
+        updateFeatures()
+        merge(resetSelection: true)
+        if !searchesNames || nameResultsQuery != query { searchNames(resetSelection: false) }
+        scheduleContentSearch()
+    }
     /// 内容搜索已经发出去、结果还没回来
     @Published private(set) var searchingContent = false
     /// 鼠标停在哪一条上。这一条和选中的那条右边显示按钮
@@ -391,18 +482,43 @@ final class FileSearchModel: ObservableObject {
     /// 自测用：显示着的按钮在窗口里的位置（左上角为原点）
     var buttonFrames: [FileRowButton.Slot: CGRect] = [:]
     /// 搜索框开着
-    var isShown = false
+    var isShown = false {
+        didSet {
+            if !isShown {
+                closeQuickLook(refocus: false)
+                pendingSelectionAction = nil
+                invalidateContentSearch()
+                if folder != nil {
+                    activeNameSearch?.set(true)
+                    activeNameSearch = nil
+                    folder = nil
+                }
+                returnPoints.removeAll()
+                restoreFolderSelection = nil
+            }
+        }
+    }
 
     let index: FileIndex
     let contentIndex: ContentIndex
     /// 打开过的文件排在前面
     var history: OpenHistory?
     var onAction: (FileSearchResult, FileAction) -> Void = { _, _ in }
+    var onFeature: (SystemFeature) -> Void = { _ in }
     var onClose: () -> Void = {}
 
-    private var generation = 0
+    var preferredFolder: String?
+    @Published private(set) var directoryStatus: FileNameSearch.DirectoryStatus?
+    private var parsedQuery = FileMatcher.Query("")
+    private var activeNameSearch: Locked<Bool>?
+    private var namesNeedRefresh = false
     private var nameResults: [FileSearchResult] = []
+    private var nameResultsQuery: String?
+    private enum SelectionAction { case open, reveal, preview }
+    private var pendingSelectionAction: SelectionAction?
     private var contentResults: [FileSearchResult] = []
+    private var contentResultsQuery: String?
+    private var contentCancelled = Locked(false)
     private var pendingContentSearch: DispatchWorkItem?
     private var deleteTimeout: DispatchWorkItem?
     private var icons: [String: NSImage] = [:]
@@ -416,12 +532,16 @@ final class FileSearchModel: ObservableObject {
         self.contentIndex = contentIndex
         // 索引建好、文件有变化时，按现在的关键词重新搜一次。扫描外接硬盘时一秒会有好几次，选中的那条不动
         index.$fileCount
-            .removeDuplicates()
+            // 改名和移动常常不改变数量，也要刷新当前搜索。
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self, self.isShown, !self.query.isEmpty else { return }
+                guard let self, self.isShown, self.searchesNames, !self.query.isEmpty || self.folder != nil else { return }
                 // 只重搜文件名：内容搜索不跟着重来，不然文件一直在变时（扫描外接硬盘、装依赖）内容结果总被丢掉
-                self.scheduleSearch(resetSelection: false, includingContent: false)
+                if self.activeNameSearch == nil {
+                    self.searchNames(resetSelection: false)
+                } else {
+                    self.namesNeedRefresh = true
+                }
             }
             .store(in: &subscriptions)
         // 内容索引读完一批文件后也重新搜一次（每次最多半秒发布一次）
@@ -435,32 +555,51 @@ final class FileSearchModel: ObservableObject {
             .store(in: &subscriptions)
     }
 
+    private var searchesTextForQuery: Bool {
+        searchesContent && (effectiveScope == .contents || (effectiveScope == .all && parsedQuery.directoryInput == nil))
+    }
+
     /// 内容结果从第几条开始（在这里显示“文件内容”的小标题）；没有内容结果、或者只看内容时为 nil
-    var contentStart: Int? { effectiveScope == .all ? results.firstIndex { $0.snippet != nil } : nil }
+    var contentStart: Int? { effectiveScope == .all ? rows.firstIndex { $0.file?.snippet != nil } : nil }
 
     /// 只看内容时，打的字太少还不会搜
     var needsLongerQuery: Bool {
-        effectiveScope == .contents && !query.trimmingCharacters(in: .whitespaces).isEmpty && !ContentIndex.qualifies(query)
+        effectiveScope == .contents && !query.trimmingCharacters(in: .whitespaces).isEmpty && !ContentIndex.qualifies(parsedQuery.contentText)
     }
+
+    var hasOnlyFileFilters: Bool { !parsedQuery.filters.isEmpty && parsedQuery.terms.isEmpty }
+
+    var nameHighlightTerms: [String] {
+        parsedQuery.directoryInput?.listsChildren == true ? [] : parsedQuery.terms.map(\.text)
+    }
+
+    var folderHighlightTerms: [String] {
+        parsedQuery.isPlainName && (parsedQuery.terms.count > 1 || !parsedQuery.filters.suffixes.isEmpty) ? nameHighlightTerms : []
+    }
+
+    var contentHighlightTerms: [String] { parsedQuery.contentText.split(whereSeparator: { $0.isWhitespace }).map(String.init) }
 
     /// Tab、Shift+Tab 切换范围
     func cycleScope(reverse: Bool) {
-        guard searchesContent else { return }
-        let all = FileSearchScope.allCases
-        scope = all[(scope.rawValue + (reverse ? all.count - 1 : 1)) % all.count]
+        let choices = availableScopes
+        let i = choices.firstIndex(of: effectiveScope) ?? 0
+        scope = choices[(i + (reverse ? choices.count - 1 : 1)) % choices.count]
     }
 
     /// 结果下面要不要显示一行状态（正在建立索引、没有找到）
     /// 内容还在搜的时候先不说“没有找到”，免得一闪
     var showsStatus: Bool {
-        !query.trimmingCharacters(in: .whitespaces).isEmpty && results.isEmpty && !(searchingContent && effectiveScope != .files)
+        (!query.trimmingCharacters(in: .whitespaces).isEmpty || (folder != nil && searchesNames)) && rows.isEmpty && !searchingContent
     }
 
-    func prepareForShow() {
+    func prepareForShow(inFileDialog: Bool = false) {
+        self.inFileDialog = inFileDialog
+        returnPoints.removeAll()
+        folder = nil
         query = ""
         nameResults = []
         contentResults = []
-        results = []
+        rows = []
         selection = 0
         scope = .files
         searchingContent = false
@@ -469,24 +608,75 @@ final class FileSearchModel: ObservableObject {
         focusToken += 1
     }
 
+    func searchInside(_ result: FileSearchResult) {
+        guard result.canSearchInside, result.path != folder?.path, rows.contains(where: { $0.id == .file(result.path) }) else { return }
+        returnPoints.append(ReturnPoint(path: folder?.path, query: query, scope: effectiveScope, selection: result.path))
+        navigate(to: result.path, query: "", scope: effectiveScope, selecting: nil)
+    }
+
+    func leaveFolder() {
+        guard let previous = returnPoints.popLast() else { return }
+        navigate(to: previous.path, query: previous.query, scope: previous.scope, selecting: previous.selection)
+    }
+
+    func cancelSearch() {
+        if isPreviewing { closeQuickLook() }
+        else if folder != nil { leaveFolder() }
+        else { onClose() }
+    }
+
+    private func navigate(to path: String?, query text: String, scope requested: FileSearchScope, selecting: String?) {
+        changingFolder = true
+        folder = path.map(FileSearchFolder.init(path:))
+        scope = availableScopes.contains(requested) ? requested : .files
+        changingFolder = false
+        // 相同的关键词在不同目录里是不同的查询。旧结果和待执行的回车不能跨范围使用。
+        nameResults = []
+        nameResultsQuery = nil
+        contentResults = []
+        contentResultsQuery = nil
+        query = text
+        restoreFolderSelection = selecting
+        focusToken += 1
+    }
+
     /// 打了字时从第一条选起；文件有变化重新搜时，选中的那条不动
-    private func scheduleSearch(resetSelection: Bool = true, includingContent: Bool = true) {
-        generation += 1
-        let current = generation
-        let q = query
-        index.search(q, boosts: history?.boosts() ?? [:]) { [weak self] found in
-            guard let self, current == self.generation else { return }
-            self.nameResults = found
+    private func searchNames(resetSelection: Bool) {
+        activeNameSearch?.set(true)
+        guard searchesNames else { activeNameSearch = nil; return }
+        let cancelled = Locked(false)
+        activeNameSearch = cancelled
+        namesNeedRefresh = false
+        index.searchPage(parsedQuery, boosts: history?.boosts() ?? [:], preferredFolder: preferredFolder, within: folder,
+                         isCancelled: cancelled.get) { [weak self] page in
+            guard let self, self.activeNameSearch === cancelled else { return }
+            self.activeNameSearch = nil
+            self.directoryStatus = page.directory
+            self.nameResults = page.results
+            self.nameResultsQuery = self.query
             self.merge(resetSelection: resetSelection)
+            if let path = self.restoreFolderSelection {
+                self.restoreFolderSelection = nil
+                if let i = self.rows.firstIndex(where: { $0.id == .file(path) }) { self.selection = i }
+            }
+            self.finishSelectionAction()
+            // 扫盘时同一个查询可连续收到多批更新。先显示已找到的结果，再补一次最新的。
+            if self.namesNeedRefresh && self.isShown { self.searchNames(resetSelection: false) }
         }
-        if includingContent { scheduleContentSearch() }
+    }
+
+    private func invalidateContentSearch() {
+        pendingContentSearch?.cancel()
+        contentCancelled.set(true)
+        contentCancelled = Locked(false)
     }
 
     /// 内容搜索稍等一下再发（打字很快时只搜最后一次），旧的结果先留着，新的来了再换，免得列表一闪一闪。
     private func scheduleContentSearch() {
         pendingContentSearch?.cancel()
         let q = query
-        guard effectiveScope != .files, ContentIndex.qualifies(q) else {
+        let folderPath = folder?.path
+        guard searchesTextForQuery, ContentIndex.qualifies(parsedQuery.contentText) else {
             searchingContent = false
             if !contentResults.isEmpty {
                 contentResults = []
@@ -497,9 +687,9 @@ final class FileSearchModel: ObservableObject {
         searchingContent = true
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.contentIndex.search(q) { [weak self] hits in
+            self.contentIndex.search(q, within: folderPath, cancelled: self.contentCancelled) { [weak self] hits in
                 // 关键词、范围变了就不要了（只看关键词：文件名重搜不影响内容结果）
-                guard let self, self.isShown, q == self.query, self.effectiveScope != .files else { return }
+                guard let self, self.isShown, q == self.query, folderPath == self.folder?.path, self.searchesTextForQuery else { return }
                 // 打开过的文件往前放，其余按相关程度
                 let boosts = self.history?.boosts() ?? [:]
                 self.contentResults = hits.enumerated().map { position, hit in
@@ -507,8 +697,10 @@ final class FileSearchModel: ObservableObject {
                                      isDirectory: false, score: (boosts[hit.path] ?? 0) - Double(position) * 0.01, snippet: hit.snippet)
                 }
                 .sorted { $0.score > $1.score }
+                self.contentResultsQuery = q
                 self.searchingContent = false
                 self.merge(resetSelection: false)
+                self.finishSelectionAction()
             }
         }
         pendingContentSearch = work
@@ -517,63 +709,170 @@ final class FileSearchModel: ObservableObject {
 
     /// 合并两路结果。同一个文件名字和内容都匹配时只列在文件名里。选中的那条尽量不动。
     private func merge(resetSelection: Bool) {
-        let selectedPath = resetSelection ? nil : selectedResult?.path
-        defer { selection = selectedPath.flatMap { path in results.firstIndex { $0.path == path } } ?? 0 }
+        let selectedID = resetSelection ? nil : selectedRow?.id
+        defer {
+            let kept = selectedID.flatMap { id in rows.firstIndex { $0.id == id } }
+            selection = kept ?? 0
+            if kept == nil { closeQuickLook() }
+        }
+        let namesFound = nameResultsQuery == query ? nameResults : []
+        let contentsFound = searchesTextForQuery && contentResultsQuery == query ? contentResults : []
         switch effectiveScope {
         case .files:
-            results = nameResults
+            rows = featureResults.map(LauncherRow.feature) + namesFound.map(LauncherRow.file)
+            return
+        case .system:
+            rows = featureResults.map(LauncherRow.feature)
             return
         case .contents:
-            results = contentResults
+            rows = contentsFound.map(LauncherRow.file)
             return
         case .all:
             break
         }
         // 内容结果都是名字也匹配的文件时，不用为它们腾地方
-        let allNamePaths = Set(nameResults.map(\.path))
-        let hasContentOnly = contentResults.contains { !allNamePaths.contains($0.path) }
-        let names = hasContentOnly ? Array(nameResults.prefix(Self.maxNameResultsWithContent)) : nameResults
+        let allNamePaths = Set(namesFound.map(\.path))
+        let hasContentOnly = contentsFound.contains { !allNamePaths.contains($0.path) }
+        let names = hasContentOnly ? Array(namesFound.prefix(Self.maxNameResultsWithContent)) : namesFound
         let shown = Set(names.map(\.path))
-        results = names + contentResults.filter { !shown.contains($0.path) }
+        rows = featureResults.map(LauncherRow.feature) + (names + contentsFound.filter { !shown.contains($0.path) }).map(LauncherRow.file)
     }
 
     #if DEBUG
     /// 截图用：直接显示给定的结果。假文件不存在，系统只给空白图标，可以按路径给图标。
     func showPreview(query: String, results: [FileSearchResult], icons: [String: NSImage] = [:]) {
         self.query = query
-        generation += 1
+        activeNameSearch?.set(true)
+        activeNameSearch = nil
         pendingContentSearch?.cancel()
         self.icons.merge(icons) { $1 }
-        self.results = results
+        self.rows = results.map(LauncherRow.file)
         selection = 0
     }
     #endif
 
-    var selectedResult: FileSearchResult? {
-        results.indices.contains(selection) ? results[selection] : nil
+    var selectedRow: LauncherRow? { rows.indices.contains(selection) ? rows[selection] : nil }
+    var selectedResult: FileSearchResult? { selectedRow?.file }
+
+    func toggleQuickLook() {
+        if isPreviewing { closeQuickLook(); return }
+        if pendingSelectionAction == .preview { pendingSelectionAction = nil; return }
+        pendingSelectionAction = .preview
+        finishSelectionAction()
+    }
+
+    private func showQuickLook(_ result: FileSearchResult) {
+        guard let index = rows.firstIndex(where: { $0.id == .file(result.path) }) else { return }
+        selection = index
+        pendingSelectionAction = nil
+        cancelDelete()
+        isPreviewing = true
+    }
+
+    func closeQuickLook(refocus: Bool = true) {
+        guard isPreviewing else { return }
+        isPreviewing = false
+        if refocus { focusToken += 1 }
+    }
+
+    func handleFolderKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "f",
+           let result = selectedResult, result.canSearchInside {
+            if !event.isARepeat { searchInside(result) }
+            return true
+        }
+        if modifiers.isEmpty, event.keyCode == KeyCode.escape, folder != nil {
+            if !event.isARepeat { cancelSearch() }
+            return true
+        }
+        return false
+    }
+
+    func handleQuickLookKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "y" {
+            if !event.isARepeat { toggleQuickLook() }
+            return true
+        }
+        guard isPreviewing, modifiers.isEmpty else { return false }
+        switch event.keyCode {
+        case KeyCode.escape: closeQuickLook()
+        case KeyCode.upArrow: move(-1)
+        case KeyCode.downArrow: move(1)
+        default: return false
+        }
+        return true
+    }
+
+    func adjacentPreviewIndex(_ direction: Int) -> Int? {
+        guard direction == 1 || direction == -1 else { return nil }
+        var index = selection + direction
+        while rows.indices.contains(index) {
+            if rows[index].file != nil { return index }
+            index += direction
+        }
+        return nil
     }
 
     func move(_ delta: Int) {
-        guard !results.isEmpty else { return }
-        selection = min(max(selection + delta, 0), results.count - 1)
+        restoreFolderSelection = nil
+        guard !rows.isEmpty else { return }
+        if isPreviewing {
+            if let next = adjacentPreviewIndex(delta) { selection = next }
+        } else {
+            selection = min(max(selection + delta, 0), rows.count - 1)
+        }
     }
 
     /// Enter 打开；按着 Ctrl 或 ⌘ 时在访达中显示。
-    func openSelected() {
+    func openSelected(clicked: FileSearchResult? = nil) {
         let flags = NSApp.currentEvent?.modifierFlags ?? []
-        openSelected(reveal: flags.contains(.control) || flags.contains(.command))
+        let reveal = flags.contains(.control) || flags.contains(.command)
+        if let clicked {
+            pendingSelectionAction = nil
+            onAction(clicked, reveal ? .reveal : primaryAction)
+        } else {
+            openSelected(reveal: reveal)
+        }
     }
 
     func openSelected(reveal: Bool) {
+        pendingSelectionAction = reveal ? .reveal : .open
+        finishSelectionAction()
+    }
+
+    var waitingForNames: Bool {
+        searchesNames && activeNameSearch != nil && nameResultsQuery != query
+    }
+
+    /// 快速打字后立即回车时，只打开这一轮的结果。全文检索可能比文件名晚返回。
+    private func finishSelectionAction() {
+        guard let action = pendingSelectionAction, isShown else { return }
+        if case .feature(let feature) = selectedRow {
+            pendingSelectionAction = nil
+            if case .open = action { onFeature(feature) }
+            return
+        }
+        guard !waitingForNames else { return }
+        if searchingContent && contentResultsQuery != query && (selectedResult?.snippet != nil || selectedResult == nil) { return }
+        pendingSelectionAction = nil
         guard let result = selectedResult else { return }
-        onAction(result, reveal ? .reveal : .open)
+        switch action {
+        case .preview: showQuickLook(result)
+        case .open: onAction(result, primaryAction)
+        case .reveal: onAction(result, .reveal)
+        }
     }
 
     /// 右键菜单。先选中这一条（像访达那样），看得出菜单是对哪一条的
     func contextMenu(for result: FileSearchResult) -> NSMenu? {
-        guard let position = results.firstIndex(where: { $0.path == result.path }) else { return nil }
+        guard let position = rows.firstIndex(where: { $0.id == .file(result.path) }) else { return nil }
         selection = position
-        return FileContextMenu.make(for: result) { [weak self] action in self?.onAction(result, action) }
+        return FileContextMenu.make(for: result, inFileDialog: inFileDialog, searchInside: { [weak self] in self?.searchInside(result) },
+                                    preview: { [weak self] in self?.showQuickLook(result) }) { [weak self] action in
+            self?.onAction(result, action)
+        }
     }
 
     /// 结果右边的按钮。定位、复制做完关掉搜索框（和右键菜单一样）；删除要点两下
@@ -619,7 +918,7 @@ final class FileSearchModel: ObservableObject {
         nameResults.removeAll { $0.path == path }
         contentResults.removeAll { $0.path == path }
         merge(resetSelection: false)
-        if removingSelected { selection = min(position, max(results.count - 1, 0)) }
+        if removingSelected { selection = min(position, max(rows.count - 1, 0)) }
     }
 
     func icon(for result: FileSearchResult) -> NSImage {
@@ -639,18 +938,20 @@ struct FileSearchView: View {
     @ObservedObject var contentIndex: ContentIndex
 
     static let capsuleHeight: CGFloat = 56
+    static let folderBarHeight: CGFloat = 34
     static let rowHeight: CGFloat = 46
     static let maxVisibleRows = 8
     /// 四周给阴影留的空白
     static let margin: CGFloat = 12
     static let gap: CGFloat = 8
     static let listPadding: CGFloat = 6
-    private static let footerHeight: CGFloat = 30
+    private static let footerHeight: CGFloat = 36
     private static let statusHeight: CGFloat = 56
     static let sectionHeaderHeight: CGFloat = 26
 
-    static func height(resultCount: Int, hasContentSection: Bool, showsStatus: Bool) -> CGFloat {
-        var h = capsuleHeight + margin * 2
+    static func height(resultCount: Int, hasContentSection: Bool, showsStatus: Bool, previewing: Bool = false, inFolder: Bool = false) -> CGFloat {
+        var h = capsuleHeight + margin * 2 + (inFolder ? folderBarHeight : 0)
+        if previewing { return h + gap + 386 }
         if resultCount > 0 {
             h += gap + CGFloat(min(resultCount, maxVisibleRows)) * rowHeight + 12 + footerHeight
             if hasContentSection { h += sectionHeaderHeight }
@@ -663,110 +964,181 @@ struct FileSearchView: View {
     var body: some View {
         VStack(spacing: Self.gap) {
             capsule
-            if !model.results.isEmpty {
-                resultList
+            if model.isPreviewing, let result = model.selectedResult {
+                FileQuickLook(model: model, result: result)
+            } else if !model.rows.isEmpty {
+                GeometryReader { geometry in resultList(compact: geometry.size.width < 500) }
             } else if model.showsStatus {
                 status
             }
         }
         .padding(Self.margin)
-        .frame(width: FileSearchPanel.width, alignment: .top)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var capsule: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.secondary)
-            SearchField(
-                text: $model.query,
-                placeholder: placeholder,
-                focusToken: model.focusToken,
-                fontSize: 20,
-                romanOnly: false,
-                onMove: { model.move($0) },
-                onSubmit: { model.openSelected() },
-                onCancel: { model.onClose() },
-                onTab: model.searchesContent ? { model.cycleScope(reverse: $0) } : nil
-            )
-            if index.isIndexing {
-                ProgressView().controlSize(.small)
-            }
-            if model.searchesContent {
-                ScopePicker(selection: $model.scope)
+        let shape = RoundedRectangle(cornerRadius: model.folder == nil ? Self.capsuleHeight / 2 : 16, style: .continuous)
+        return VStack(spacing: 0) {
+            inputRow
+            if let folder = model.folder {
+                VStack(spacing: 0) {
+                    Divider().padding(.horizontal, 14)
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder")
+                        Text((folder.path as NSString).abbreviatingWithTildeInPath)
+                            .lineLimit(1).truncationMode(.head).help(folder.path)
+                        Spacer(minLength: 8)
+                        searchButton(L("返回上次搜索"), key: model.isPreviewing ? nil : "Esc", symbol: "arrow.uturn.backward") {
+                            model.leaveFolder()
+                        }
+                    }
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .frame(maxHeight: .infinity)
+                }
+                .frame(height: Self.folderBarHeight)
             }
         }
-        .padding(.horizontal, 20)
-        .frame(height: Self.capsuleHeight)
-        .background(VisualEffectBackground().clipShape(Capsule(style: .continuous)))
-        .overlay(Capsule(style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+        .background(VisualEffectBackground().clipShape(shape))
+        .overlay(shape.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
     }
 
+    private var inputRow: some View {
+        GeometryReader { geometry in
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(.secondary)
+                SearchField(
+                    text: $model.query,
+                    placeholder: placeholder,
+                    focusToken: model.focusToken,
+                    fontSize: 20,
+                    onMove: { model.move($0) },
+                    onSubmit: { model.openSelected() },
+                    onCancel: { model.cancelSearch() },
+                    onTab: model.availableScopes.count > 1 ? { model.cycleScope(reverse: $0) } : nil
+                )
+                if model.folder == nil && model.searchesNames && index.isIndexing { ProgressView().controlSize(.small) }
+                if model.availableScopes.count > 1 && geometry.size.width < 540 {
+                    Menu(model.effectiveScope.title(inFolder: !model.includesSystemFeatures)) {
+                        Picker(L("搜索范围"), selection: $model.scope) {
+                            ForEach(model.availableScopes) { Text($0.title(inFolder: !model.includesSystemFeatures)).tag($0) }
+                        }
+                        .pickerStyle(.inline)
+                    }
+                    .fixedSize()
+                    .accessibilityLabel(L("搜索范围"))
+                } else if model.availableScopes.count > 1 {
+                    ScopePicker(selection: $model.scope, scopes: model.availableScopes, inFolder: !model.includesSystemFeatures)
+                }
+            }
+            .padding(.horizontal, 20)
+            .frame(height: Self.capsuleHeight)
+        }
+        .frame(height: Self.capsuleHeight)
+    }
+
     private var placeholder: String {
-        switch model.effectiveScope {
-        case .files: L("搜索文件，支持拼音和首字母")
+        if model.folder != nil {
+            return model.effectiveScope == .contents ? L("搜索此文件夹里的正文") : L("搜索此文件夹及子文件夹")
+        }
+        if model.inFileDialog && model.effectiveScope != .contents { return L("查找要前往的位置") }
+        return switch model.effectiveScope {
+        case .files: L("搜索文件或系统功能")
         case .contents: L("搜索文件里的文字")
-        case .all: L("搜索文件名或内容，文件名支持拼音首字母")
+        case .all: L("搜索文件、内容或系统功能")
+        case .system: L("试试“耳机连不上”")
         }
     }
 
     private var card: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
 
-    private var resultList: some View {
+    private func resultList(compact: Bool) -> some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(model.results.enumerated()), id: \.element.id) { position, result in
-                            if position == model.contentStart {
-                                sectionHeader
-                            }
-                            FileResultRow(model: model, result: result, isSelected: position == model.selection)
-                                .id(result.id)
-                                .onTapGesture {
+                        ForEach(Array(model.rows.enumerated()), id: \.element.id) { position, row in
+                            if position == model.contentStart { sectionHeader }
+                            switch row {
+                            case .feature(let feature):
+                                SystemFeatureRow(feature: feature, selected: position == model.selection) {
                                     model.selection = position
-                                    model.openSelected()
+                                    model.openSelected(reveal: false)
                                 }
-                                .overlay(ContextMenuArea { model.contextMenu(for: result) })
+                                .id(row.id)
+                            case .file(let result):
+                                FileResultRow(model: model, result: result, isSelected: position == model.selection, compact: compact)
+                                    .id(row.id)
+                                    .onTapGesture {
+                                        model.selection = position
+                                        model.openSelected(clicked: result)
+                                    }
+                                    .overlay(ContextMenuArea { model.contextMenu(for: result) })
+                            }
                         }
                     }
                     .padding(Self.listPadding)
                     .onPreferenceChange(RowButtonFrames.self) { model.buttonFrames = $0 }
                 }
                 .scrollIndicators(.never)
+                .onAppear { if let selected = model.selectedRow { proxy.scrollTo(selected.id) } }
                 .onChange(of: model.selection) { _, newValue in
-                    guard model.results.indices.contains(newValue) else { return }
-                    proxy.scrollTo(model.results[newValue].id)
+                    guard model.rows.indices.contains(newValue) else { return }
+                    proxy.scrollTo(model.rows[newValue].id)
                 }
             }
             Divider().opacity(0.6)
-            HStack(spacing: 12) {
-                KeyHint(key: "Enter", action: L("打开"))
-                KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
-                if model.searchesContent {
-                    KeyHint(key: "Tab", action: L("切换范围"))
-                }
-                Spacer(minLength: 0)
-                if model.effectiveScope != .files && contentIndex.pendingCount > 0 {
-                    // 内容还没读完，结果可能不全
-                    HStack(spacing: 5) {
-                        ProgressView().controlSize(.mini)
-                        Text(L("正在读取文件内容"))
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                } else {
-                    KeyHint(key: "Esc", action: L("关闭"))
-                }
+            ViewThatFits(in: .horizontal) {
+                resultFooter(detailed: true)
+                resultFooter(detailed: false)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 12)
             .frame(height: Self.footerHeight)
         }
         .background(VisualEffectBackground().clipShape(card))
         .overlay(card.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 10, y: 4)
+    }
+
+    private func resultFooter(detailed: Bool) -> some View {
+        HStack(spacing: 8) {
+            if let result = model.selectedResult {
+                if result.canSearchInside {
+                    searchButton(L("在此搜索"), key: "⌘F", symbol: "magnifyingglass", showKey: detailed) { model.searchInside(result) }
+                }
+                searchButton(L("快速查看"), key: "⌘Y", symbol: "eye", showKey: detailed) { model.toggleQuickLook() }
+            }
+            Spacer(minLength: 0)
+            KeyHint(key: "Enter", action: model.inFileDialog ? L("前往文件夹") : L("打开"))
+            if detailed, let result = model.selectedResult, !result.canSearchInside {
+                KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
+            }
+            if model.searchesContent && [.all, .contents].contains(model.effectiveScope) && contentIndex.pendingCount > 0 {
+                ProgressView().controlSize(.mini).accessibilityLabel(L("正在读取文件内容")).help(L("正在读取文件内容"))
+                if detailed { Text(L("正在读取文件内容")).font(.caption).foregroundStyle(.secondary).fixedSize() }
+            } else if detailed {
+                if model.availableScopes.count > 1 { KeyHint(key: "Tab", action: L("切换范围")) }
+                if model.folder == nil { KeyHint(key: "Esc", action: L("关闭")) }
+            }
+        }
+    }
+
+    private func searchButton(_ title: String, key: String?, symbol: String, showKey: Bool = true,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: symbol)
+                Text(title)
+                if showKey, let key { Text(key).foregroundStyle(.secondary).font(.caption2) }
+            }
+            .font(.caption).padding(.horizontal, 7).frame(minHeight: 23).fixedSize()
+        }
+        .buttonStyle(.chip())
+        .accessibilityLabel(title)
+        .help(key.map { "\(title)  \($0)" } ?? title)
     }
 
     private var sectionHeader: some View {
@@ -784,13 +1156,30 @@ struct FileSearchView: View {
         HStack(spacing: 10) {
             if model.needsLongerQuery {
                 Image(systemName: "text.magnifyingglass").foregroundStyle(.tertiary)
-                Text(L("至少输入两个汉字或三个字母才搜内容"))
+                Text(model.hasOnlyFileFilters ? L("输入要在文件内容里查找的关键词") : L("至少输入两个汉字或三个字母才搜内容"))
             } else if model.effectiveScope == .contents && contentIndex.pendingCount > 0 {
                 ProgressView().controlSize(.small)
                 Text(L("正在读取文件内容，结果可能还不全…"))
-            } else if index.isIndexing && model.effectiveScope != .contents {
+            } else if model.searchesNames, let directory = model.directoryStatus {
+                Image(systemName: directory == .unavailable ? "folder.badge.questionmark" : "folder").foregroundStyle(.tertiary)
+                switch directory {
+                case .partial: Text(L("部分子文件夹无法读取，其余位置没有匹配项"))
+                case .outsideFolder: Text(L("这个路径在当前搜索范围之外"))
+                case .unavailable: Text(L("无法打开这个文件夹，请检查路径或访问权限"))
+                case .listing: Text(L("这个文件夹里没有匹配的项目"))
+                }
+            } else if model.folder == nil && index.isIndexing && model.searchesNames {
                 ProgressView().controlSize(.small)
                 Text(L("正在建立索引，马上就好…"))
+            } else if model.folder == nil && index.isScanningDrives && model.searchesNames {
+                ProgressView().controlSize(.small)
+                Text(L("正在扫描外接硬盘，结果可能还不全…"))
+            } else if model.waitingForNames {
+                ProgressView().controlSize(.small)
+                Text(L("正在搜索…"))
+            } else if model.folder != nil {
+                Image(systemName: "folder").foregroundStyle(.tertiary)
+                Text(model.effectiveScope == .contents ? L("此范围内没有匹配的已收录正文") : L("此文件夹及子文件夹中没有匹配项"))
             } else {
                 Image(systemName: "magnifyingglass").foregroundStyle(.tertiary)
                 Text(L("没有找到，换个关键词或试试拼音首字母"))
@@ -810,6 +1199,7 @@ private struct FileResultRow: View {
     @ObservedObject var model: FileSearchModel
     let result: FileSearchResult
     let isSelected: Bool
+    let compact: Bool
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
@@ -844,7 +1234,7 @@ private struct FileResultRow: View {
                             .lineLimit(1)
                             .truncationMode(.head)
                     }
-                    Text(highlighted(snippet))
+                    Text(highlighted(snippet, terms: model.contentHighlightTerms, size: 12))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -852,11 +1242,11 @@ private struct FileResultRow: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(result.name)
+                    Text(highlighted(result.name, terms: model.nameHighlightTerms, size: 14))
                         .font(.system(size: 14))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(folder)
+                    Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -865,7 +1255,7 @@ private struct FileResultRow: View {
             }
             Spacer(minLength: 0)
             // 选中的、鼠标停着的、等着确认删除的那条才显示，免得每条都是按钮
-            if isSelected || hovering || confirmingDelete {
+            if !model.inFileDialog && (isSelected || hovering || confirmingDelete) {
                 actions
             }
         }
@@ -908,14 +1298,16 @@ private struct FileResultRow: View {
             HStack(spacing: 3) {
                 Image(systemName: symbol)
                     .font(.system(size: 10, weight: .medium))
-                Text(title)
-                    .font(.system(size: 11, weight: destructive ? .semibold : .regular))
+                if !compact || destructive {
+                    Text(title).font(.system(size: 11, weight: destructive ? .semibold : .regular))
+                }
             }
             .padding(.horizontal, 7)
             .frame(height: 22)
             .fixedSize()
         }
         .buttonStyle(.chip(destructive: destructive))
+        .accessibilityLabel(title)
         .help(help)
         .background(GeometryReader { geo in
             Color.clear.preference(key: RowButtonFrames.self,
@@ -923,14 +1315,14 @@ private struct FileResultRow: View {
         })
     }
 
-    /// 搜索词在摘要里加粗、用正文颜色
-    private func highlighted(_ snippet: String) -> AttributedString {
-        var text = AttributedString(snippet)
-        for term in model.query.split(whereSeparator: { $0.isWhitespace }) {
+    /// 搜索词在文件名、父目录或正文摘要中的实际命中位置。
+    private func highlighted(_ value: String, terms: [String], size: CGFloat) -> AttributedString {
+        var text = AttributedString(value)
+        for term in terms where !term.isEmpty {
             var from = text.startIndex
-            while from < text.endIndex, let found = text[from...].range(of: String(term), options: .caseInsensitive) {
+            while from < text.endIndex, let found = text[from...].range(of: term, options: .caseInsensitive) {
                 text[found].foregroundColor = .primary
-                text[found].font = .system(size: 12, weight: .semibold)
+                text[found].font = .system(size: size, weight: .semibold)
                 from = found.upperBound
             }
         }
@@ -949,11 +1341,19 @@ private struct RowButtonFrames: PreferenceKey {
 
 /// 结果的右键菜单：打开、打开方式、在访达中显示、复制、复制路径、移到废纸篓。
 enum FileContextMenu {
-    static func make(for result: FileSearchResult, perform: @escaping (FileAction) -> Void) -> NSMenu {
+    static func make(for result: FileSearchResult, inFileDialog: Bool = false, searchInside: @escaping () -> Void, preview: @escaping () -> Void, perform: @escaping (FileAction) -> Void) -> NSMenu {
         let url = URL(fileURLWithPath: result.path)
         let menu = NSMenu()
-        menu.addItem(ActionMenuItem(L("打开"), symbol: "arrow.up.forward.app") { perform(.open) })
+        if inFileDialog {
+            menu.addItem(ActionMenuItem(L("前往文件夹"), symbol: "folder") { perform(.goToFolder) })
+        } else {
+            menu.addItem(ActionMenuItem(L("打开"), symbol: "arrow.up.forward.app") { perform(.open) })
+        }
+        if result.canSearchInside {
+            menu.addItem(ActionMenuItem(L("在此文件夹中搜索"), symbol: "folder", handler: searchInside))
+        }
         if let openWith = openWithItem(url, perform: perform) { menu.addItem(openWith) }
+        menu.addItem(ActionMenuItem(L("快速查看"), symbol: "eye", handler: preview))
         menu.addItem(ActionMenuItem(L("在访达中显示"), symbol: "folder") { perform(.reveal) })
         menu.addItem(.separator())
         menu.addItem(ActionMenuItem(L("复制"), symbol: "doc.on.doc") { perform(.copy) })
@@ -1033,31 +1433,36 @@ private struct ContextMenuArea: NSViewRepresentable {
     }
 }
 
-/// 搜索框右边的“全部 / 文件 / 内容”。
+/// 搜索框右边的范围选择器。
 private struct ScopePicker: View {
     @Binding var selection: FileSearchScope
+    let scopes: [FileSearchScope]
+    var inFolder = false
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(FileSearchScope.allCases) { scope in
+            ForEach(scopes) { scope in
                 let selected = scope == selection
                 // 没选中的那几个：鼠标停在上面时浅浅的底色，字变清楚
-                HoverReader { hovering in
-                    Text(scope.title)
-                        .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                        .foregroundStyle(selected || hovering ? .primary : .secondary)
-                        .padding(.horizontal, 11)
-                        .frame(height: 26)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.primary.opacity(selected ? 0.14 : hovering ? 0.07 : 0))
-                                .shadow(color: .black.opacity(selected ? 0.15 : 0), radius: 1, y: 0.5)
-                        )
-                        .contentShape(Capsule(style: .continuous))
-                }
-                .onTapGesture {
+                Button {
                     withAnimation(.easeOut(duration: 0.15)) { selection = scope }
+                } label: {
+                    HoverReader { hovering in
+                        Text(scope.title(inFolder: inFolder))
+                            .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                            .foregroundStyle(selected || hovering ? .primary : .secondary)
+                            .padding(.horizontal, 11)
+                            .frame(height: 26)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary.opacity(selected ? 0.14 : hovering ? 0.07 : 0))
+                                    .shadow(color: .black.opacity(selected ? 0.15 : 0), radius: 1, y: 0.5)
+                            )
+                            .contentShape(Capsule(style: .continuous))
+                    }
                 }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
         .padding(3)

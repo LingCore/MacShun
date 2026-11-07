@@ -157,11 +157,16 @@ enum WindowLayout {
 
     /// 拖动窗口时，鼠标碰到屏幕哪条边、哪个角就分到哪里：左右边是半边，上边是最大化，四个角是四分之一。
     /// screen 是整块屏幕（含菜单栏），不是可用区域。
-    /// sharedEdges 是鼠标这个位置和别的屏幕挨着的边：鼠标要贴在最边上才算（拖过去时会在那里停一下，见 EdgeResistance），
-    /// 只是路过、离边还有几个点时不算。
+    /// 共享边缘留出一个小的候选区；是否真的吸附由 DragSnapIntent 判断，不拦截光标。
     static func dragTarget(cursor: CGPoint, screen: CGRect, sharedEdges: Edges = [],
-                           margin: CGFloat = 5, corner: CGFloat = 60) -> Position? {
-        func reach(_ edge: Edges) -> CGFloat { sharedEdges.contains(edge) ? 0 : margin }
+                           margin: CGFloat = 5, sharedMargin: CGFloat = 8, corner: CGFloat = 60) -> Position? {
+        edgeTarget(cursor: cursor, screen: screen, sharedEdges: sharedEdges,
+                   margin: margin, sharedMargin: sharedMargin, corner: corner)?.position
+    }
+
+    private static func edgeTarget(cursor: CGPoint, screen: CGRect, sharedEdges: Edges,
+                                   margin: CGFloat, sharedMargin: CGFloat, corner: CGFloat) -> (position: Position, edge: Edges)? {
+        func reach(_ edge: Edges) -> CGFloat { sharedEdges.contains(edge) ? sharedMargin : margin }
         let nearLeft = cursor.x <= screen.minX + reach(.left)
         let nearRight = cursor.x >= screen.maxX - 1 - reach(.right)
         let nearTop = cursor.y <= screen.minY + reach(.top)
@@ -171,21 +176,41 @@ enum WindowLayout {
         let inLeftCorner = cursor.x <= screen.minX + corner
         let inRightCorner = cursor.x >= screen.maxX - corner
 
-        if nearLeft { return inTopCorner ? .topLeft : inBottomCorner ? .bottomLeft : .leftHalf }
-        if nearRight { return inTopCorner ? .topRight : inBottomCorner ? .bottomRight : .rightHalf }
-        if nearTop { return inLeftCorner ? .topLeft : inRightCorner ? .topRight : .maximized }
-        if nearBottom { return inLeftCorner ? .bottomLeft : inRightCorner ? .bottomRight : nil }
+        if nearLeft { return (inTopCorner ? .topLeft : inBottomCorner ? .bottomLeft : .leftHalf, .left) }
+        if nearRight { return (inTopCorner ? .topRight : inBottomCorner ? .bottomRight : .rightHalf, .right) }
+        if nearTop { return (inLeftCorner ? .topLeft : inRightCorner ? .topRight : .maximized, .top) }
+        if nearBottom {
+            if inLeftCorner { return (.bottomLeft, .bottom) }
+            if inRightCorner { return (.bottomRight, .bottom) }
+        }
         return nil
+    }
+
+    struct DragTarget: Equatable {
+        let position: Position
+        let screen: Int
+        let isShared: Bool
     }
 
     /// 有好几块屏幕时：拖到这个位置会分到第几块屏幕的哪里。screens 是整块屏幕。
     static func dragTarget(cursor: CGPoint, screens: [CGRect]) -> (position: Position, screen: Int)? {
+        dragCandidate(cursor: cursor, screens: screens).map { ($0.position, $0.screen) }
+    }
+
+    static func screenIndex(at cursor: CGPoint, screens: [CGRect]) -> Int? {
         // 先找正好在里面的屏幕：鼠标在两块屏幕交界处时别算到隔壁那块
-        guard let index = screens.firstIndex(where: { $0.contains(cursor) })
-                ?? screens.firstIndex(where: { $0.insetBy(dx: -1, dy: -1).contains(cursor) }) else { return nil }
+        screens.firstIndex(where: { $0.contains(cursor) })
+            ?? screens.firstIndex(where: { $0.insetBy(dx: -1, dy: -1).contains(cursor) })
+    }
+
+    static func dragCandidate(cursor: CGPoint, screens: [CGRect], sharedMargin: CGFloat = 8) -> DragTarget? {
+        guard let index = screenIndex(at: cursor, screens: screens) else { return nil }
         let screen = screens[index]
         let shared = sharedEdges(at: cursor, of: screen, among: screens)
-        return dragTarget(cursor: cursor, screen: screen, sharedEdges: shared).map { ($0, index) }
+        return edgeTarget(cursor: cursor, screen: screen, sharedEdges: shared,
+                          margin: 5, sharedMargin: sharedMargin, corner: 60).map {
+            DragTarget(position: $0.position, screen: index, isShared: shared.contains($0.edge))
+        }
     }
 
     /// 鼠标在这块屏幕的这个位置时，哪些边外面还有屏幕（鼠标能从那里过去）。

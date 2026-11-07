@@ -262,7 +262,8 @@ struct SettingsView: View {
                 systemSpeed: state.systemPointerSpeed, systemCursorScale: $state.systemCursorScale
             )
         case .clipboard:
-            ClipboardSettings(config: $configStore.config.clipboard, store: clipboardStore, state: state)
+            ClipboardSettings(config: $configStore.config.clipboard, keyboardShortcuts: configStore.config.keyboard.enabled,
+                              store: clipboardStore, state: state)
         case .fileSearch:
             FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared, contentIndex: ContentIndex.shared)
         case .window:
@@ -275,7 +276,7 @@ struct SettingsView: View {
                 tiling: tiling, dragToSnap: dragToSnap
             )
         case .gleaning:
-            GleaningPage()
+            GleaningPage(windowVisible: selection.windowVisible)
         }
     }
 
@@ -408,6 +409,15 @@ private struct KeyboardSettings: View {
             .disabled(!config.enabled)
 
             Section {
+                captureRow(.image, $config.captureShortcut, other: config.captureTextShortcut)
+                captureRow(.text, $config.captureTextShortcut, other: config.captureShortcut)
+            } header: {
+                Text(L("截图快捷键")).settingsAnchor(.captureShortcuts)
+            } footer: {
+                Text(L("也可以从菜单栏直接截图或取字。")).settingsFooter()
+            }
+
+            Section {
                 InfoRow(symbol: "terminal", title: L("终端"), detail: L("Ctrl 组合键保持原样，用 Ctrl+Shift+C/V 复制粘贴"))
                     .settingsAnchor(.terminal)
                 InfoRow(symbol: "display.2", title: L("远程桌面、虚拟机"), detail: L("不改写任何按键，例如 ToDesk、向日葵、微软远程桌面、Parallels"))
@@ -417,6 +427,30 @@ private struct KeyboardSettings: View {
                 Text(L("例外的应用"))
             }
             .disabled(!config.enabled)
+        }
+    }
+
+    private func captureRow(_ mode: CaptureMode, _ shortcut: Binding<WinShortcut?>, other: WinShortcut?) -> some View {
+        LabeledContent(mode.title) {
+            HStack(spacing: 8) {
+                ShortcutRecorder(shortcut: shortcut) { value in
+                    if value == other { return L("两种截图操作需要不同的快捷键。") }
+                    if !value.canStartCapture(layout: FrontAppTracker.shared.keyboardLayout.get()) {
+                        return L("请使用带修饰键的组合或功能键，并避开系统和聊天截图快捷键。")
+                    }
+                    return nil
+                }
+                .fixedSize()
+                .nativeButtonHover()
+                if shortcut.wrappedValue != nil {
+                    Button { shortcut.wrappedValue = nil } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.medium)).frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.chip())
+                    .help(L("清除快捷键"))
+                    .accessibilityLabel(L("清除快捷键"))
+                }
+            }
         }
     }
 
@@ -605,6 +639,7 @@ private struct MouseSettings: View {
                 Spacer()
                 ShortcutRecorder(shortcut: setting.shortcut)
                     .fixedSize()
+                    .nativeButtonHover()
             }
             .padding(.leading, 20)
         }
@@ -716,14 +751,23 @@ private struct DeviceSettingsEditor: View {
 
 private struct ClipboardSettings: View {
     @Binding var config: ClipboardConfig
+    let keyboardShortcuts: Bool
     @ObservedObject var store: ClipboardStore
     @ObservedObject var state: AppState
+
+    private var openingHint: String {
+        guard config.enabled else { return L("开启后，复制的内容会保存在这台 Mac 上。") }
+        if keyboardShortcuts && state.allGood {
+            return L("Mac 键盘按 ⌥ Option+V，Windows 键盘按 Win+V。")
+        }
+        return L("从 Mac顺 菜单栏选择“打开剪贴板历史”。")
+    }
 
     var body: some View {
         SearchableForm {
             Section {
-                SettingsPageHeader(tab: .clipboard, subtitle: L("按 Win+V 呼出，支持拼音全拼和首字母搜索")) {
-                    Toggle("", isOn: $config.enabled).labelsHidden()
+                SettingsPageHeader(tab: .clipboard, subtitle: openingHint) {
+                    Toggle(L("记录剪贴板历史"), isOn: $config.enabled).labelsHidden()
                 }
                 .settingsAnchor(.clipboardEnabled)
                 if config.enabled && state.pasteboardAccess != .allowed {
@@ -738,7 +782,7 @@ private struct ClipboardSettings: View {
                 .settingsAnchor(.maxItems)
                 Toggle(isOn: $config.recordImages) {
                     Text(L("记录图片"))
-                    Text(L("截图、复制的图片"))
+                    Text(L("保存复制的图片，在本机识别图中文字以便搜索"))
                 }
                 .settingsAnchor(.recordImages)
                 LabeledContent(L("已保存")) {
@@ -796,7 +840,7 @@ private struct FileSearchSettings: View {
     var body: some View {
         SearchableForm {
             Section {
-                SettingsPageHeader(tab: .fileSearch, subtitle: L("连按两下 Ctrl 按文件名或内容搜索电脑里的文件，像 Everything 一样快，文件名支持拼音首字母")) {
+                SettingsPageHeader(tab: .fileSearch, subtitle: L("连按两下 Ctrl 搜文件或系统功能。试试“耳机连不上”或“谁在占内存”。")) {
                     Toggle("", isOn: $config.enabled).labelsHidden()
                 }
                 .settingsAnchor(.fileSearchEnabled)
@@ -815,7 +859,12 @@ private struct FileSearchSettings: View {
                 InfoRow(
                     symbol: "keyboard",
                     title: L("Enter 打开，Ctrl+Enter 在访达中显示"),
-                    detail: L("用空格分开几个词，可以同时匹配，例如 “报告 2026”。")
+                    detail: L("“项目 报价”可同时匹配目录和文件名。路径末尾加 / 浏览一层，选中文件夹按 ⌘F 可搜索其中所有层级。")
+                )
+                InfoRow(
+                    symbol: "line.3.horizontal.decrease",
+                    title: L("按文件类型和名称筛选"),
+                    detail: L("输入“报价 *.pdf !草稿”可筛出 PDF 并排除名称含“草稿”的项目。按 ⌘Y 快速查看选中项。")
                 )
             }
             .disabled(!config.enabled)
@@ -882,7 +931,7 @@ private struct FileSearchSettings: View {
             } header: {
                 Text(L("文件内容"))
             } footer: {
-                Text(L("搜索框默认只搜文件名，在右边选“全部”或“内容”（或按 Tab）才按内容搜。要搜中文，切换到中文输入法就能打字；至少输入两个汉字或三个字母才会搜内容。"))
+                Text(L("选“全部”或“内容”时，输入至少两个汉字或三个字母即可搜文件内容。按 Tab 切换搜索范围。"))
                     .settingsFooter()
             }
             .disabled(!config.enabled)
@@ -891,7 +940,7 @@ private struct FileSearchSettings: View {
                 InfoRow(
                     symbol: "folder",
                     title: L("个人文件夹和应用程序"),
-                    detail: L("不包括“资源库”、隐藏文件和应用程序包里的内容。文件名索引只放在内存里，不联网。")
+                    detail: L("点号开头的文件和文件夹只搜名称。文件名索引仅存于内存，跳过个人资源库和应用包内部。")
                 )
                 Toggle(isOn: $config.includeExternalDrives) {
                     Text(L("包括外接硬盘"))
@@ -986,6 +1035,7 @@ private struct WindowSettings: View {
                 Toggle(isOn: $config.dragToSnap) {
                     Text(L("拖到屏幕边缘分屏"))
                     Text(L("拖到左右边分到半边，拖到上边最大化，拖到四个角分到四分之一；拖动分着屏的窗口，会恢复原来的大小"))
+                    Text(L("多屏之间可直接拖动；在两屏交界附近停一下，出现预览后松开即可分屏"))
                 }
                 .settingsAnchor(.dragToSnap)
                 if config.dragToSnap && tiling.conflicting {
@@ -1140,6 +1190,7 @@ private struct GeneralSettings: View {
     @ObservedObject var tiling: NativeTilingStatus
     /// 我们的拖动分屏开着
     let dragToSnap: Bool
+    @AppStorage(InstallReport.enabledKey) private var sendStats = true
 
     /// 还没授权的几项，按页面上的顺序
     private var missingPermissions: [PermissionKind] {
@@ -1250,6 +1301,14 @@ private struct GeneralSettings: View {
             }
 
             Section {
+                Toggle(L("发送匿名统计"), isOn: $sendStats)
+                    .settingsAnchor(.stats)
+            } footer: {
+                Text(L("每天最多一次，只发送随机化的电脑标识（不可还原）、版本号、系统版本和芯片架构，用于统计用户数；不含文件、剪贴板或任何个人信息。"))
+                    .settingsFooter()
+            }
+
+            Section {
                 UpdateRow(updater: updater)
                     .settingsAnchor(.version)
                 Toggle(L("自动检查更新"), isOn: $update.automatic)
@@ -1258,7 +1317,7 @@ private struct GeneralSettings: View {
                 Text(L("更新"))
             } footer: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(L("新版本发布在 GitHub 上。检查更新时只访问 GitHub，不发送任何个人信息。"))
+                    Text(L("检查更新连接拾穗发布服务；下载安装包时经由加速镜像或 GitHub，安装前都会核对 SHA-256 和签名。不上传剪贴板、文件或其他个人内容。"))
                         .settingsFooter()
                     Text(L("Windows 是微软公司的商标，Mac 是苹果公司的商标。本程序与微软、苹果没有任何关联。"))
                         .settingsFooter()

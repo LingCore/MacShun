@@ -8,18 +8,23 @@ import SwiftUI
 struct ShortcutRecorder: NSViewRepresentable {
     @Binding var shortcut: WinShortcut?
 
+    var validationMessage: ((WinShortcut) -> String?)? = nil
+
     func makeNSView(context: Context) -> ShortcutRecorderButton {
         ShortcutRecorderButton()
     }
 
     func updateNSView(_ button: ShortcutRecorderButton, context: Context) {
+        button.isEnabled = context.environment.isEnabled
         button.shortcut = shortcut
+        button.validationMessage = validationMessage
         button.onRecord = { shortcut = $0 }
     }
 }
 
 final class ShortcutRecorderButton: NSButton {
-    var shortcut: WinShortcut? { didSet { updateTitle() } }
+    var shortcut: WinShortcut? { didSet { if oldValue != shortcut { updateTitle() } } }
+    var validationMessage: ((WinShortcut) -> String?)?
     var onRecord: (WinShortcut) -> Void = { _ in }
 
     private var recording = false {
@@ -33,6 +38,7 @@ final class ShortcutRecorderButton: NSButton {
         super.init(frame: .zero)
         bezelStyle = .rounded
         setButtonType(.momentaryPushIn)
+        imagePosition = .imageLeading
         target = self
         action = #selector(startRecording)
         updateTitle()
@@ -75,6 +81,12 @@ final class ShortcutRecorderButton: NSButton {
         let modifiers = SideButtons.modifiers(of: flags, layout: FrontAppTracker.shared.keyboardLayout.get())
         let recorded = WinShortcut(keyCode: CGKeyCode(event.keyCode), modifiers: modifiers)
         stopRecording()
+        if let message = validationMessage?(recorded) {
+            let alert = NSAlert()
+            alert.messageText = message
+            if let window { alert.beginSheetModal(for: window) }
+            return
+        }
         shortcut = recorded
         onRecord(recorded)
         window?.makeFirstResponder(nil)
@@ -91,6 +103,9 @@ final class ShortcutRecorderButton: NSButton {
     }
 
     private func updateTitle() {
+        let keyboard = NSImage(systemSymbolName: recording ? "keyboard.fill" : "keyboard", accessibilityDescription: nil)
+        image = recording ? keyboard?.withSymbolConfiguration(.init(paletteColors: [.controlAccentColor])) : keyboard
+        toolTip = recording ? L("请按快捷键（Esc 取消）") : L("点这里录快捷键")
         title = recording ? L("请按快捷键（Esc 取消）") : (shortcut?.title ?? L("点这里录快捷键"))
     }
 }

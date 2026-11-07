@@ -353,7 +353,7 @@ enum ContentExtractor {
         // 主程序一分钟就会结束卡住的子进程；主程序退出或崩了没人管时，自己最多活一分半
         alarm(90)
         let url = URL(fileURLWithPath: path)
-        guard let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageTextInProcess(url) else { exit(1) }
+        guard let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageText(at: url) else { exit(1) }
         FileHandle.standardOutput.write(Data(text.utf8))
         exit(0)
     }
@@ -365,7 +365,7 @@ enum ContentExtractor {
     private static func helperText(_ kind: Kind, _ url: URL) -> Outcome {
         let ocr = readsImages.get()
         guard let executable = helperExecutable, let argument = helperArguments[kind] else {
-            let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageTextInProcess(url)
+            let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageText(at: url)
             return text.map { .text($0) } ?? .empty
         }
         let process = Process()
@@ -458,7 +458,7 @@ enum ContentExtractor {
     /// 认字时图片最多这么多像素：全景照片、超大扫描图缩小再认，免得解出来占几 GB 内存
     static let maxOCRPixels = 30_000_000
 
-    private static func imageTextInProcess(_ url: URL) -> String? {
+    static func imageText(at url: URL) -> String? {
         autoreleasepool {
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -473,17 +473,21 @@ enum ContentExtractor {
                 kCGImageSourceThumbnailMaxPixelSize: max(1, Int(Double(max(width, height)) * scale)),
             ]
             guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-            return recognizeText(in: image)
+            return try? recognizedLines(in: image)
         }
     }
 
     /// 系统的文字识别：简体、繁体中文和英文，一行一段
     static func recognizeText(in image: CGImage) -> String {
+        (try? recognizedLines(in: image)) ?? ""
+    }
+
+    private static func recognizedLines(in image: CGImage) throws -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
         request.usesLanguageCorrection = true
-        try? VNImageRequestHandler(cgImage: image).perform([request])
+        try VNImageRequestHandler(cgImage: image).perform([request])
         return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
     }
 }

@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macshun}",
+            "name": "Debug MacShun",
+            "target": "MacShun",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug MacShun"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:macshun}",
+            "name": "Release MacShun",
+            "target": "MacShun",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release MacShun"
+        }
+    ]
+}

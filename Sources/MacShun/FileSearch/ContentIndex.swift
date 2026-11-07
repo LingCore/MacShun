@@ -256,14 +256,11 @@ final class ContentIndex: ObservableObject {
     func sync(files: [String], scopes: [Scope]) {
         workQueue.async {
             guard self.database != nil else { return }
-            var present = Set<String>()
-            present.reserveCapacity(files.count)
             // 外接硬盘上查一个文件的大小和修改时间要零点几毫秒，几个线程一起查
             let candidates = files.compactMap { path in
                 ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent).map { (path, $0) }
             }
             let infos = Self.fileInfos(candidates.map(\.0))
-            present.formUnion(files)
             for ((path, kind), info) in zip(candidates, infos) {
                 guard let info else { continue }
                 // iCloud 里还没下载到这台电脑的文件，读一下就会开始下载，不读
@@ -279,24 +276,26 @@ final class ContentIndex: ObservableObject {
                     self.enqueue(path, kind: kind)
                 }
             }
-            let scopes = ScopeSet(scopes)
-            let gone = self.known.keys.filter { !present.contains($0) && scopes.contains($0) }
-            for path in self.todo.keys where !present.contains(path) && scopes.contains(path) { self.todo[path] = nil }
-            if !gone.isEmpty { self.transaction { gone.forEach(self.remove) } }
-            self.publish(force: !gone.isEmpty)
+            // 外接盘分批交来的文件只增不删，不必遍历整个已有索引。
+            let removed = !scopes.isEmpty && self.removeMissingNow(present: Set(files), scopes: scopes)
+            self.publish(force: removed)
             self.scheduleWork()
         }
+    }
+
+    private func removeMissingNow(present: Set<String>, scopes: [Scope]) -> Bool {
+        let scopes = ScopeSet(scopes)
+        let gone = known.keys.filter { !present.contains($0) && scopes.contains($0) }
+        for path in todo.keys where !present.contains(path) && scopes.contains(path) { todo[path] = nil }
+        guard !gone.isEmpty else { return false }
+        transaction { gone.forEach(remove) }
+        return true
     }
 
     /// 去掉 scopes 范围里、不在 present 里的文件（全部扫完以后调用，前面分批 sync 时只增不删）。
     func removeMissing(present: Set<String>, scopes: [Scope]) {
         workQueue.async {
-            guard self.database != nil else { return }
-            let scopes = ScopeSet(scopes)
-            let gone = self.known.keys.filter { !present.contains($0) && scopes.contains($0) }
-            for path in self.todo.keys where !present.contains(path) && scopes.contains(path) { self.todo[path] = nil }
-            guard !gone.isEmpty else { return }
-            self.transaction { gone.forEach(self.remove) }
+            guard self.database != nil, self.removeMissingNow(present: present, scopes: scopes) else { return }
             self.publish(force: true)
         }
     }
@@ -574,25 +573,25 @@ final class ContentIndex: ObservableObject {
     // MARK: - 搜索
 
     /// 按内容搜，结果在主线程上回调。查询太短（一个汉字、两个字母）时直接返回空，免得一个“的”字搜出整个硬盘。
-    func search(_ query: String, limit: Int = 30, completion: @escaping ([Hit]) -> Void) {
-        guard let match = Self.matchExpression(for: query) else {
+    func search(_ query: String, limit: Int = 30, within folder: String? = nil, cancelled: Locked<Bool> = Locked(false), completion: @escaping ([Hit]) -> Void) {
+        let parsed = FileMatcher.Query(query)
+        guard let match = Self.matchExpression(for: parsed.contentText), limit > 0 else {
             completion([])
             return
         }
-        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
         searchQueue.async {
-            let hits = self.runSearch(match, terms: terms, roots: roots, limit: limit)
-            DispatchQueue.main.async { completion(hits) }
+            let hits = self.runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, cancelled: cancelled)
+            DispatchQueue.main.async { if !cancelled.get() { completion(hits) } }
         }
     }
 
     /// 测试用：同步搜索
-    func searchNow(_ query: String, limit: Int = 30) -> [Hit] {
-        guard let match = Self.matchExpression(for: query) else { return [] }
-        let terms = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    func searchNow(_ query: String, limit: Int = 30, within folder: String? = nil) -> [Hit] {
+        let parsed = FileMatcher.Query(query)
+        guard let match = Self.matchExpression(for: parsed.contentText), limit > 0 else { return [] }
         let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
-        return searchQueue.sync { runSearch(match, terms: terms, roots: roots, limit: limit) }
+        return searchQueue.sync { runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, cancelled: Locked(false)) }
     }
 
     /// 测试用：等到排队的文件都读完
@@ -603,29 +602,33 @@ final class ContentIndex: ObservableObject {
     /// 测试用：收录了内容的文件数（不经过主线程）
     var documentCountNow: Int { workQueue.sync { textCount } }
 
-    private func runSearch(_ match: String, terms: [String], roots: [Scope], limit: Int) -> [Hit] {
+    private func runSearch(_ match: String, query: FileMatcher.Query, roots: [Scope], within folder: String?, limit: Int, cancelled: Locked<Bool>) -> [Hit] {
+        guard !cancelled.get() else { return [] }
+        let terms = query.contentText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        let selectedFolder = folder.map { Scope(folder: $0, recursive: true) }
+        let directory = query.filters.isEmpty ? nil : query.directoryInput.map { Scope(folder: $0.folder, recursive: false) }
         if reader == nil {
             guard FileManager.default.fileExists(atPath: databasePath) else { return [] }
             reader = SQLiteDatabase(path: databasePath, create: false)
         }
         // 原文只给最后用上的几个取，排序时不带着它
         guard let reader, let statement = reader.prepare("""
-            SELECT d.id, d.path FROM
-                (SELECT rowid, rank FROM docs_fts WHERE docs_fts MATCH ? ORDER BY rank LIMIT ?) AS f
-            JOIN docs AS d ON d.id = f.rowid
-            ORDER BY f.rank
+            SELECT rowid, (SELECT path FROM docs WHERE id = docs_fts.rowid)
+            FROM docs_fts WHERE docs_fts MATCH ? ORDER BY rank
             """), let textStatement = reader.prepare("SELECT text FROM docs WHERE id = ?")
         else {
             self.reader = nil   // 可能索引还没建好，下次再试
             return []
         }
-        // 多取很多：拔掉的外接硬盘上的文件还在索引里，可能排在前面，要跳过它们往下找
+        // 按相关性顺次取路径，达到「通过筛选」的条数才停。已拔盘或大量同类文件不会挤掉后面的命中。
+        reader.observeCancellation(cancelled)
+        defer { withExtendedLifetime(cancelled) { reader.observeCancellation(nil) } }
         statement.bind(1, match)
-        statement.bind(2, Int64(max(limit * 2, 1000)))
         var hits: [Hit] = []
-        while hits.count < limit && statement.step() {
+        while hits.count < limit && !cancelled.get() && statement.step() {
             let path = statement.string(1)
-            guard roots.isEmpty || roots.contains(where: { $0.contains(path) }),
+            guard selectedFolder?.contains(path) != false, directory?.contains(path) != false, query.filters.accepts(fileAt: path),
+                  roots.isEmpty || roots.contains(where: { $0.contains(path) }),
                   FileManager.default.fileExists(atPath: path) else { continue }
             textStatement.reset()
             textStatement.bind(1, statement.int(0))
@@ -804,6 +807,15 @@ final class SQLiteDatabase {
             return nil
         }
         return SQLiteStatement(statement)
+    }
+
+    /// 只在读取连接的串行队列上安装，调用方在移除回调前持有标记。
+    func observeCancellation(_ flag: Locked<Bool>?) {
+        guard let flag else { sqlite3_progress_handler(handle, 0, nil, nil); return }
+        sqlite3_progress_handler(handle, 2048, { pointer in
+            guard let pointer else { return 0 }
+            return Unmanaged<Locked<Bool>>.fromOpaque(pointer).takeUnretainedValue().get() ? 1 : 0
+        }, Unmanaged.passUnretained(flag).toOpaque())
     }
 
     func int(_ sql: String) -> Int32 {

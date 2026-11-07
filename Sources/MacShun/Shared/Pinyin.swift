@@ -164,7 +164,7 @@ struct PinyinIndex {
     func matches(_ query: String) -> Bool {
         let q = query.lowercased().filter { !$0.isWhitespace }
         if q.isEmpty { return true }
-        if lowercased.contains(q) { return true }
+        if lowercased.contains(query.lowercased()) || lowercased.contains(q) { return true }
         // 查询里有汉字等非 ASCII 字符时只按原文匹配。
         guard q.allSatisfy({ $0.isASCII }) else { return false }
         return Self.syllableMatch(Array(q), syllables)

@@ -16,7 +16,6 @@ enum WindowShortcut: Equatable {
 final class WindowSnapper {
     private let configStore: ConfigStore
     private let preview = SnapPreview()
-    private let stickyEdges = StickyEdges()
     private lazy var assist = SnapAssist { [weak self] window, area in
         self?.fill(area, with: window)
     }
@@ -32,6 +31,9 @@ final class WindowSnapper {
 
     private var mouseMonitor: Any?
     private var drag: DragState?
+    private var previewTask: DispatchWorkItem?
+    private var dragGeneration = UUID()
+    private var screenObserver: NSObjectProtocol?
     /// 自测用：系统自带的拖动分屏开着也照样处理拖动
     var ignoresNativeTiling = false
     /// 自测用：拖动时预览的位置（AX 坐标）
@@ -39,6 +41,15 @@ final class WindowSnapper {
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.cancelDrag() }
+    }
+
+    deinit {
+        if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        previewTask?.cancel()
     }
 
     private var config: WindowConfig { configStore.config.window }
@@ -47,16 +58,14 @@ final class WindowSnapper {
     func applyConfig() {
         let wantsDrag = config.enabled && config.dragToSnap
         if wantsDrag && mouseMonitor == nil {
-            mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged]) { [weak self] event in
                 self?.handleMouse(event)
             }
         } else if !wantsDrag, let monitor = mouseMonitor {
             NSEvent.removeMonitor(monitor)
             mouseMonitor = nil
-            drag = nil
-            preview.hide()
-            stickyEdges.deactivate()
         }
+        if !wantsDrag { cancelDrag() }
         if !config.enabled || !config.snapAssist { assist.hide() }
     }
 
@@ -75,6 +84,7 @@ final class WindowSnapper {
     }
 
     func handle(_ shortcut: WindowShortcut) {
+        cancelDrag()
         guard config.enabled, let window = Self.focusedWindow(), !window.isFullScreen,
               let frame = window.frame else { return }
         let screens = ScreenGeometry.screens()
@@ -185,6 +195,8 @@ final class WindowSnapper {
         let start: CGPoint
         /// 按下时鼠标下面的窗口编号
         let windowNumber: CGWindowID?
+        let screens: [ScreenGeometry.Screen]
+        var intent: DragSnapIntent
         var window: WindowElement?
         var startFrame: CGRect?
         /// 已经找过窗口（只找一次）
@@ -193,7 +205,6 @@ final class WindowSnapper {
         var moving = false
         /// 拖之前的样子，分屏后恢复用
         var restoreFrame: CGRect?
-        var target: (position: WindowLayout.Position, screen: ScreenGeometry.Screen)?
     }
 
     /// 只有从窗口顶部（标题栏、工具栏、标签栏）开始的拖动才可能是在拖窗口。
@@ -201,26 +212,35 @@ final class WindowSnapper {
     private static let titleBarHeight: CGFloat = 80
 
     private func handleMouse(_ event: NSEvent) {
-        let point = ScreenGeometry.axPoint(NSEvent.mouseLocation)
+        // 事件的坐标与时间必须成对使用：主线程处理回调时，全局光标可能已经跨了屏。
+        let point = event.cgEvent?.location ?? ScreenGeometry.axPoint(NSEvent.mouseLocation)
+        if event.type == .keyDown {
+            if event.keyCode == KeyCode.escape { cancelDrag() }
+            return
+        }
+        if event.type == .flagsChanged {
+            if yieldsToNativeTiling(event.modifierFlags) { cancelDrag() }
+            return
+        }
         switch event.type {
         case .leftMouseDown:
-            stickyEdges.deactivate()
+            cancelDrag()
             // 系统自带的拖动分屏开着时让它来，两个一起会打架
             guard ignoresNativeTiling || !NativeTiling.dragTilingEnabled else {
-                drag = nil
                 return
             }
+            assist.hide()
             let number = event.cgEvent?.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) ?? 0
-            drag = DragState(start: point, windowNumber: number > 0 ? CGWindowID(number) : nil)
+            let screens = ScreenGeometry.screens()
+            drag = DragState(start: point, windowNumber: number > 0 ? CGWindowID(number) : nil,
+                             screens: screens,
+                             intent: DragSnapIntent(screens: screens.map(\.frame), cursor: point, time: event.timestamp))
 
         case .leftMouseDragged:
             guard var state = drag else { return }
             // 系统的“按住 ⌥ 拖动平铺”开着时，按着 ⌥ 拖让给系统
-            if event.modifierFlags.contains(.option) && NativeTiling.optionAcceleratorEnabled && !ignoresNativeTiling {
-                drag = nil
-                preview.hide()
-                previewFrame = nil
-                stickyEdges.deactivate()
+            if yieldsToNativeTiling(event.modifierFlags) || state.screens != ScreenGeometry.screens() {
+                cancelDrag()
                 return
             }
             if !state.resolved {
@@ -230,7 +250,7 @@ final class WindowSnapper {
                       state.windowNumber == nil || window.windowID == state.windowNumber,
                       window.isStandard, window.isMovable, !window.isFullScreen
                 else {
-                    drag = nil
+                    cancelDrag()
                     return
                 }
                 state.window = window
@@ -240,7 +260,7 @@ final class WindowSnapper {
             guard let window = state.window, let startFrame = state.startFrame else { return }
             if !state.moving {
                 guard let frame = window.frame, frame.size == startFrame.size else {
-                    drag = nil   // 在改大小
+                    cancelDrag()   // 在改大小
                     return
                 }
                 guard frame.origin != startFrame.origin else {
@@ -248,29 +268,26 @@ final class WindowSnapper {
                     return
                 }
                 state.moving = true
-                // 确定是在拖窗口了，才在两块屏幕相接的边上挡一下鼠标
-                stickyEdges.activate(screens: ScreenGeometry.screens().map(\.frame))
                 unsnapIfNeeded(window, frame: frame, cursor: point, state: &state)
             }
-            updateTarget(cursor: point, state: &state)
+            updateTarget(cursor: point, time: event.timestamp, state: &state)
             drag = state
 
         case .leftMouseUp:
-            stickyEdges.deactivate()
-            guard let state = drag else { return }
+            guard var state = drag else { return }
             drag = nil
+            previewTask?.cancel()
+            previewTask = nil
             preview.hide()
             previewFrame = nil
-            guard state.moving, let target = state.target, let window = state.window else { return }
-            let restoreFrame = state.restoreFrame ?? state.startFrame ?? .zero
-            // 等系统处理完这次拖动的最后一下再放
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                guard let self else { return }
-                let screens = ScreenGeometry.screens()
-                let fromArea = ScreenGeometry.index(of: restoreFrame, in: screens).map { screens[$0].area } ?? target.screen.area
-                if let id = window.windowID { self.history[id]?.snappedFrame = nil }
-                self.snap(window, id: window.windowID, from: restoreFrame, fromArea: fromArea,
-                          to: target.position, on: target.screen, showAssist: true)
+            guard state.moving, state.screens == ScreenGeometry.screens(),
+                  !yieldsToNativeTiling(event.modifierFlags),
+                  let target = state.intent.release(cursor: point, time: event.timestamp) else { return }
+            let generation = dragGeneration
+            let expiresAt = ProcessInfo.processInfo.systemUptime + 0.12
+            // 下一轮开始检查原生拖动是否结束；窗口位置稳定以后才写 AX，最多等约 100ms。
+            DispatchQueue.main.async { [weak self] in
+                self?.finishDrop(state, target: target, generation: generation, expiresAt: expiresAt)
             }
 
         default:
@@ -291,18 +308,74 @@ final class WindowSnapper {
         history[id] = nil
     }
 
-    private func updateTarget(cursor: CGPoint, state: inout DragState) {
-        let screens = ScreenGeometry.screens()
-        let target = WindowLayout.dragTarget(cursor: cursor, screens: screens.map(\.frame)).map { (position: $0.position, screen: screens[$0.screen]) }
-        let changed = target?.position != state.target?.position || target?.screen.frame != state.target?.screen.frame
-        state.target = target
-        previewFrame = target.map { $0.position.frame(in: $0.screen.area) }
-        guard changed else { return }
-        if let target {
-            preview.show(ScreenGeometry.appKitRect(target.position.frame(in: target.screen.area)))
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-        } else {
-            preview.hide()
+    private func yieldsToNativeTiling(_ flags: NSEvent.ModifierFlags) -> Bool {
+        !ignoresNativeTiling && (NativeTiling.dragTilingEnabled
+            || (flags.contains(.option) && NativeTiling.optionAcceleratorEnabled))
+    }
+
+    private func cancelDrag() {
+        dragGeneration = UUID()
+        drag = nil
+        previewTask?.cancel()
+        previewTask = nil
+        preview.hide()
+        previewFrame = nil
+    }
+
+    private func updateTarget(cursor: CGPoint, time: TimeInterval, state: inout DragState) {
+        state.intent.update(cursor: cursor, time: time)
+        let frame = state.intent.target.map { $0.position.frame(in: state.screens[$0.screen].area) }
+        if frame != previewFrame {
+            previewFrame = frame
+            if let frame {
+                preview.show(ScreenGeometry.appKitRect(frame))
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            } else {
+                preview.hide()
+            }
+        }
+        previewTask?.cancel()
+        previewTask = nil
+        guard let deadline = state.intent.deadline else { return }
+        let generation = dragGeneration
+        let task = DispatchWorkItem { [weak self] in
+            guard let self, generation == self.dragGeneration, var state = self.drag else { return }
+            guard NSEvent.pressedMouseButtons & 1 != 0, self.config.enabled, self.config.dragToSnap,
+                  !self.yieldsToNativeTiling(NSEvent.modifierFlags), state.screens == ScreenGeometry.screens() else {
+                self.cancelDrag()
+                return
+            }
+            let cursor = CGEvent(source: nil)?.location ?? ScreenGeometry.axPoint(NSEvent.mouseLocation)
+            self.updateTarget(cursor: cursor, time: ProcessInfo.processInfo.systemUptime, state: &state)
+            self.drag = state
+        }
+        previewTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.001, deadline - ProcessInfo.processInfo.systemUptime), execute: task)
+    }
+
+    private func finishDrop(_ state: DragState, target: WindowLayout.DragTarget, generation: UUID,
+                            expiresAt: TimeInterval, previousFrame: CGRect? = nil, attempt: Int = 0) {
+        guard generation == dragGeneration, ProcessInfo.processInfo.systemUptime <= expiresAt,
+              config.enabled, config.dragToSnap,
+              NSEvent.pressedMouseButtons & 1 == 0, !yieldsToNativeTiling(NSEvent.modifierFlags),
+              state.screens == ScreenGeometry.screens(), let window = state.window,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == window.pid,
+              state.windowNumber == nil || window.windowID == state.windowNumber,
+              !window.isFullScreen, let frame = window.frame,
+              ProcessInfo.processInfo.systemUptime <= expiresAt else { return }
+        // 目标已在 mouse-up 用事件坐标重新核验。松手后正常移动鼠标不应撤销这次放置。
+        if let previousFrame, Self.same(frame, previousFrame, tolerance: 1) {
+            let screen = state.screens[target.screen]
+            let restoreFrame = state.restoreFrame ?? state.startFrame ?? frame
+            let fromArea = ScreenGeometry.index(of: restoreFrame, in: state.screens).map { state.screens[$0].area } ?? screen.area
+            if let id = window.windowID { history[id]?.snappedFrame = nil }
+            snap(window, id: window.windowID, from: restoreFrame, fromArea: fromArea,
+                 to: target.position, on: screen, showAssist: true)
+        } else if attempt < 6 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
+                self?.finishDrop(state, target: target, generation: generation, expiresAt: expiresAt,
+                                 previousFrame: frame, attempt: attempt + 1)
+            }
         }
     }
 }

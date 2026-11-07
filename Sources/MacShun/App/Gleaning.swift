@@ -5,7 +5,7 @@ import SwiftUI
 
 /// “拾穗”：作者的其他作品，开源的和付费的。作者的每个程序都带这一页。
 /// 名字取自米勒的《拾穗者》。内容只写在这里，不联网获取（隐私原则：除了检查更新不联网）。
-/// 换到别的程序里用时，把这个文件和 AuthorMark.swift 复制过去，只改 `works`、`authorURL` 和 `feedbackEmail`。
+/// 换到别的程序里用时，把这个文件和 AuthorMark.swift 复制过去，只改 `works` 和 `authorURL`；反馈页的地址由更新源推出（InstallReport.feedbackURL），项目名在 InstallReport.project。
 struct Work: Identifiable {
     enum Kind {
         case openSource, paid
@@ -41,8 +41,8 @@ enum Gleaning {
     /// 作者主页。填上后作者那一行会出现“作者主页”按钮。
     static let authorURL: URL? = nil
 
-    /// 收建议的邮箱。nil 时反馈卡片显示“还没有”，按钮不可用。
-    static let feedbackEmail: String? = nil
+    /// 官网的反馈页，和更新用同一个服务器。nil 时反馈卡片的按钮不可用。
+    static var feedbackURL: URL? { InstallReport.feedbackURL(feed: Updater.feedURL) }
 
     /// 新作品加在这里，开源的和付费的会自动分开显示。
     static let works: [Work] = [
@@ -93,6 +93,8 @@ struct GleaningBackdrop: View {
 
 /// “拾穗”页的内容，背景由 GleaningBackdrop 铺在整个窗口下面。
 struct GleaningPage: View {
+    /// 设置窗口看不看得见，看不见时头像不动、声音停下
+    var windowVisible = true
     @Environment(\.colorScheme) private var colorScheme
 
     private var palette: WarmPalette { .current(colorScheme) }
@@ -166,10 +168,11 @@ struct GleaningPage: View {
         }
     }
 
-    /// 作者：头像、名字和一句话。每次打开这一页头像都会弹出来打个招呼，点它可以再来一次。
+    /// 作者：头像、名字和一句话。每次打开这一页头像都会弹出来打个招呼，之后慢慢摇；点它有彩蛋（见 AuthorAvatar）。
     private var author: some View {
-        HStack(spacing: 14) {
-            AuthorAvatar(size: 56)
+        // 头像最大时（鼠标下 1.15 倍，再跟着声音 1.2 倍）也碰不到名字
+        HStack(spacing: 18) {
+            AuthorAvatar(size: 64, windowVisible: windowVisible)
                 .shadow(color: Color(red: 0.55, green: 0.25, blue: 0.08).opacity(0.3), radius: 10, y: 5)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -573,10 +576,10 @@ private struct ComingSoonItem: View {
     }
 }
 
-/// 请用户写信提建议：居中的一小封“信”，微微歪着的信封，加一个胶囊按钮。
+/// 请用户提建议：居中的一小封“信”，微微歪着的信封，加一个胶囊按钮，点开官网的反馈页。
 private struct FeedbackNote: View {
     let palette: WarmPalette
-    private var email: String? { Gleaning.feedbackEmail }
+    private var url: URL? { Gleaning.feedbackURL }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -590,60 +593,38 @@ private struct FeedbackNote: View {
                     .shadow(color: palette.halo, radius: 5)
                     .shadow(color: palette.halo, radius: 2)
             }
-            Text(L("有任何建议，或想对开发者说的话，欢迎写信给我"))
+            Text(L("有任何建议，或想对开发者说的话，欢迎到官网告诉我"))
                 .font(.callout)
                 .foregroundStyle(palette.ink.opacity(0.85))
                 .shadow(color: palette.halo, radius: 4)
                 .shadow(color: palette.halo, radius: 2)
-            HStack(spacing: 12) {
-                Button(action: compose) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(email ?? L("还没有"))
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(palette.accent.gradient))
-                    .shadow(color: palette.accent.opacity(0.4), radius: 8, y: 4)
-                    .contentShape(Capsule())
+            Button(action: openFeedback) {
+                HStack(spacing: 6) {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(L("进官网反馈"))
+                        .font(.system(size: 13, weight: .semibold))
                 }
-                .buttonStyle(HoverTintStyle(shape: Capsule()))
-                .help(L("用邮件程序写信"))
-                Button(L("复制"), action: copy)
-                    .buttonStyle(HoverLinkStyle(color: nil))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(palette.ink.opacity(0.85))
-                    .shadow(color: palette.halo, radius: 3)
-                    .help(L("复制邮箱地址"))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(palette.accent.gradient))
+                .shadow(color: palette.accent.opacity(0.4), radius: 8, y: 4)
+                .contentShape(Capsule())
             }
+            .buttonStyle(HoverTintStyle(shape: Capsule()))
+            .help(L("在浏览器中打开反馈页"))
             .padding(.top, 6)
-            // 不用 .disabled：禁用的按钮会被画成半透明，透出后面的麦子。没填邮箱时按钮本来就什么也不做。
-            .allowsHitTesting(email != nil)
+            // 不用 .disabled：禁用的按钮会被画成半透明，透出后面的麦子。没有地址时按钮本来就什么也不做。
+            .allowsHitTesting(url != nil)
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
     }
 
-    /// 用默认的邮件程序新建一封邮件，主题里带上程序名和版本，方便作者分类。
-    private func compose() {
-        guard let email else { return }
-        let info = Bundle.main.infoDictionary
-        let app = info?["CFBundleName"] as? String ?? L("Mac顺")
-        let version = AppVersion.display
-        var components = URLComponents()
-        components.scheme = "mailto"
-        components.path = email
-        components.queryItems = [URLQueryItem(name: "subject", value: L("%@ %@ 的建议", app, version))]
-        if let url = components.url { NSWorkspace.shared.open(url) }
-    }
-
-    private func copy() {
-        guard let email else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(email, forType: .string)
+    private func openFeedback() {
+        guard let url else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 

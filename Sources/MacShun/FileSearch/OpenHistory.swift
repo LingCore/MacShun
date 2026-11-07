@@ -38,7 +38,7 @@ final class OpenHistory {
     }
 
     /// 给搜索结果加的分：打开的次数（最多算 6 次），一周内打开过再加一点。
-    /// 加满 24 分：常用的“开头一样”能排到没用过的“全名一样”前面，但“包含”排不过“开头一样”。
+    /// 最多加 24 分，同一匹配等级里优先常用项；全名精确命中的优先级由文件名搜索单独保证。
     func boosts(now: Date = Date()) -> [String: Double] {
         entries.mapValues { entry in
             Double(min(entry.count, 6)) * 3 + (now.timeIntervalSince(entry.last) < 7 * 86400 ? 6 : 0)

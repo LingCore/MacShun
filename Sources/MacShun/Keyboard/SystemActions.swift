@@ -13,7 +13,7 @@ enum SystemActions {
         case .spotlight: openSpotlight()
         case .switchInputSource: switchInputSource()
         case .missionControl: missionControl()
-        case .clipboardHistory, .fileSearch, .window: break  // 由剪贴板、文件搜索、分屏模块处理
+        case .clipboardHistory, .fileSearch, .window, .capture, .finishScrollingCapture, .cancelScrollingCapture: break  // 由相应的界面模块处理
         }
     }
 

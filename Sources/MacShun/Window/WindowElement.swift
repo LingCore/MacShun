@@ -207,7 +207,8 @@ extension AXUIElement {
 
 /// 屏幕的位置换成 AX 坐标，排好顺序。
 enum ScreenGeometry {
-    struct Screen {
+    struct Screen: Equatable {
+        let id: CGDirectDisplayID
         /// 整块屏幕（含菜单栏）
         let frame: CGRect
         /// 去掉菜单栏和程序坞的可用区域
@@ -222,7 +223,8 @@ enum ScreenGeometry {
             CGRect(x: rect.minX, y: height - rect.maxY, width: rect.width, height: rect.height)
         }
         return NSScreen.screens
-            .map { Screen(frame: flip($0.frame), area: flip($0.visibleFrame)) }
+            .map { Screen(id: ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0,
+                          frame: flip($0.frame), area: flip($0.visibleFrame)) }
             .sorted { $0.frame.minX != $1.frame.minX ? $0.frame.minX < $1.frame.minX : $0.frame.minY < $1.frame.minY }
     }
 

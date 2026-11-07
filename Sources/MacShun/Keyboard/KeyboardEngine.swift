@@ -86,7 +86,7 @@ final class KeyboardEngine {
         }
 
         if type == .flagsChanged {
-            watchDoubleControl(event)
+            if !environment.captureActive.get() { watchDoubleControl(event) }
             if switcherOpen {
                 // 切换器开着时按 Shift（Alt+Shift+Tab）：保持 ⌘、去掉 Alt，免得系统以为 ⌘ 松开了。
                 event.flags = Self.switcherFlags(event.flags, altFlag: switcherAltFlag)
@@ -108,6 +108,18 @@ final class KeyboardEngine {
 
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
+        // 选区面板处理自己的键；热键本身的松键仍由上面的 handleKeyUp 配对。
+        if environment.captureActive.get() {
+            if isRepeat, activeKeys[keyCode] != nil { return nil }
+            return Unmanaged.passUnretained(event)
+        }
+
+        // 历史面板里 F3 留给选中的图片，即使用户把 F3 录成了全局截图键。
+        if environment.clipboardPanelActive.get(), keyCode == KeyCode.f3,
+           event.flags.intersection(.modifierKeys).isEmpty {
+            return Unmanaged.passUnretained(event)
+        }
+
         // 从按法学习键盘的 Win/Mac 模式。
         if cfg.autoDetectLayout && learningEnabled.get() && !isRepeat,
            let learned = inference.observe(keyCode: keyCode, flags: event.flags, current: layout, device: device?.key) {
@@ -119,6 +131,10 @@ final class KeyboardEngine {
         let action: KeyAction
         if isRepeat, let previous = activeKeys[keyCode] {
             action = previous
+        } else if environment.scrollingCaptureActive.get(), event.flags.intersection(.modifierKeys).isEmpty,
+                  [KeyCode.returnKey, KeyCode.keypadEnter, KeyCode.escape].contains(keyCode) {
+            // 接住完整的按下/松开，避免结束长截图的回车同时发到下面的聊天窗口。
+            action = .command(keyCode == KeyCode.escape ? .cancelScrollingCapture : .finishScrollingCapture)
         } else {
             let context: KeyContext
             if environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get()

@@ -6,6 +6,13 @@ import AppKit
 enum MacShunMain {
     @MainActor
     static func main() {
+        #if DEBUG
+        if let source = ProcessInfo.processInfo.environment["MACSHUN_UPDATE_PROBE_FEED"] {
+            do { try UpdateProbe.run(source: source) }
+            catch { fputs("UPDATE_PROBE_REJECTED: \(error.localizedDescription)\n", stderr); exit(1) }
+            return
+        }
+        #endif
         // 被自己启动来读 PDF、认图片文字的子进程：读完就退出，不启动界面（见 ContentExtractor）
         if let request = ContentExtractor.helperRequest(in: CommandLine.arguments) {
             // 主程序忽略了 SIGTERM（见 AppDelegate），子进程会继承；恢复默认，超时时才结束得了

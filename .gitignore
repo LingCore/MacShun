@@ -25,3 +25,6 @@ DerivedData/
 *.key
 .env
 sparkle_private_key*
+
+# 拾穗计划网站是独立的私有仓库（github.com/LingCore/gleaning-web），不进 Mac顺 仓库
+gleaning-web/

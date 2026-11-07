@@ -8,7 +8,7 @@ import SwiftUI
 struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
-        case chatScreenshot, terminal, remoteDesktop, excludedApps
+        case captureShortcuts, chatScreenshot, terminal, remoteDesktop, excludedApps
         case fileSearchEnabled, fileIndex, externalDrives, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
@@ -16,7 +16,7 @@ struct SettingsItem: Identifiable {
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
-        case autoUpdate, tilingConflict
+        case autoUpdate, tilingConflict, stats
         case works, feedback
     }
 
@@ -64,6 +64,8 @@ extension SettingsItem {
               keywords: "alt+tab alt+f4 win+e win+d win+l win+s 切换程序 关闭窗口 显示桌面 锁屏 输入法 switch apps close lock desktop input source"),
         .init(id: .finderShortcuts, tab: .keyboard, title: "Finder",
               keywords: "访达 文件 剪切 移动 重命名 删除 f2 files rename move"),
+        .init(id: .captureShortcuts, tab: .keyboard, title: "截图快捷键",
+              keywords: "截图 截屏 识别屏幕文字 取字 screenshot capture screen text ocr"),
         .init(id: .chatScreenshot, tab: .keyboard, title: "微信、QQ 截图",
               keywords: "wechat qq screenshot 截屏 alt+a"),
         .init(id: .terminal, tab: .keyboard, title: "终端",
@@ -95,7 +97,7 @@ extension SettingsItem {
               keywords: "指针大小 鼠标指针 光标 箭头 变大 cursor pointer size bigger"),
 
         .init(id: .fileSearchEnabled, tab: .fileSearch, title: "文件搜索",
-              keywords: "everything 搜索文件 查找 找文件 ctrl 连按 双击 file search find spotlight"),
+              keywords: "everything 系统功能 系统搜索 口语搜索 system features system search 搜索文件 查找 找文件 ctrl 连按 双击 file search find spotlight"),
         .init(id: .fileIndex, tab: .fileSearch, title: "重新建立索引",
               keywords: "索引 收录 权限 桌面 文稿 下载 index rebuild permission"),
 
@@ -119,7 +121,7 @@ extension SettingsItem {
               keywords: "赫兹 hz 高刷 144 120 60 流畅 帧率 refresh rate fps monitor screen"),
 
         .init(id: .clipboardEnabled, tab: .clipboard, title: "剪贴板历史",
-              keywords: "win+v clipboard history 历史 复制记录"),
+              keywords: "win+v option+v ⌥v command+v cmd+v ⌘v clipboard history 历史 粘贴 复制记录"),
         .init(id: .maxItems, tab: .clipboard, title: "最多保存",
               keywords: "数量 条数 上限 limit count"),
         .init(id: .recordImages, tab: .clipboard, title: "记录图片",
@@ -149,6 +151,8 @@ extension SettingsItem {
               keywords: "开机 启动 自启 login startup boot"),
         .init(id: .language, tab: .general, title: "语言",
               keywords: "language english chinese 中文 英文 简体"),
+        .init(id: .stats, tab: .general, title: "发送匿名统计",
+              keywords: "统计 用户数 隐私 联网 上报 telemetry analytics privacy anonymous statistics"),
         .init(id: .version, tab: .general, title: "检查更新",
               keywords: "版本 version 关于 about 更新 升级 新版本 update upgrade github"),
         .init(id: .autoUpdate, tab: .general, title: "自动检查更新",
@@ -157,7 +161,7 @@ extension SettingsItem {
         .init(id: .works, tab: .gleaning, title: "拾穗计划",
               keywords: "作品 开源 作者 lingcore projects author gleaning"),
         .init(id: .feedback, tab: .gleaning, title: "您的建议非常重要",
-              keywords: "反馈 建议 邮箱 联系 feedback email contact"),
+              keywords: "反馈 建议 官网 联系 意见 feedback suggestion website contact"),
     ]
 
     static func search(_ query: String) -> [SettingsItem] {
@@ -242,7 +246,7 @@ struct SettingsSearchField: NSViewRepresentable {
 
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != selection.query { field.stringValue = selection.query }
+        field.applySearchQuery(selection.query)
         if field.isBezeled == warm {
             field.isBezeled = !warm
             field.drawsBackground = !warm
@@ -257,11 +261,13 @@ struct SettingsSearchField: NSViewRepresentable {
         init(_ parent: SettingsSearchField) { self.parent = parent }
 
         func controlTextDidChange(_ note: Notification) {
-            guard let field = note.object as? NSSearchField else { return }
-            parent.selection.query = field.stringValue
+            guard let field = note.object as? NSSearchField, let query = field.committedSearchQuery,
+                  query != parent.selection.query else { return }
+            parent.selection.query = query
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard !textView.hasMarkedText() else { return false }
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
                 parent.onSubmit()

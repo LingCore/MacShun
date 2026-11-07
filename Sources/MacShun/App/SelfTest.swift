@@ -10,17 +10,25 @@ import ApplicationServices
 /// 运行期间不要操作键盘鼠标。不测 Win+L（会锁屏）；Win+D 只能看屏幕确认，也不测。
 @MainActor
 final class SelfTest {
-    nonisolated static var isRequested: Bool { CommandLine.arguments.contains("--self-test") || onlyWindow || onlySearch }
+    nonisolated static var isRequested: Bool {
+        CommandLine.arguments.contains("--self-test") || onlyWindow || onlySearch || onlySystemSearch || onlyGleaning || onlyFileDialog
+    }
     /// 只测分屏：scripts/selftest.sh window
     nonisolated static var onlyWindow: Bool { CommandLine.arguments.contains("--self-test-window") }
     /// 只测文件搜索：scripts/selftest.sh search
     nonisolated static var onlySearch: Bool { CommandLine.arguments.contains("--self-test-search") }
+    nonisolated static var onlySystemSearch: Bool { CommandLine.arguments.contains("--self-test-system-search") }
+    /// 只测“拾穗计划”页的头像：scripts/selftest.sh gleaning
+    nonisolated static var onlyGleaning: Bool { CommandLine.arguments.contains("--self-test-gleaning") }
+
+    nonisolated static var onlyFileDialog: Bool { CommandLine.arguments.contains("--self-test-file-dialog") }
 
     private enum Mod { case ctrl, alt, win, shift }
 
     private let config: AppConfig
     private let clipboard: ClipboardController
-    private let openSettings: () -> Void
+    /// 打开设置窗口，可以指定换到哪一页
+    private let openSettings: (SettingsTab?) -> Void
     /// 临时改设置（测鼠标侧键的几种设置），测完改回去
     private let updateConfig: ((inout AppConfig) -> Void) -> Void
     private let windowSnapper: WindowSnapper?
@@ -41,7 +49,7 @@ final class SelfTest {
     /// - Parameter layout: 事件拦截对当前键盘使用的布局，模拟按键要按同样的布局发出修饰键。
     init(config: AppConfig, layout: KeyboardLayoutKind, clipboard: ClipboardController, windowSnapper: WindowSnapper? = nil,
          fileSearch: FileSearchController? = nil, updateConfig: @escaping ((inout AppConfig) -> Void) -> Void = { _ in },
-         openSettings: @escaping () -> Void) {
+         openSettings: @escaping (SettingsTab?) -> Void) {
         var config = config
         config.keyboard.layout = layout
         self.config = config
@@ -61,11 +69,28 @@ final class SelfTest {
             fail("权限", "没有辅助功能权限")
             return finish()
         }
+        if Self.onlyFileDialog {
+            await fileDialogTest()
+            return finish()
+        }
         if Self.onlyWindow {
+            let savedCursor = cursorLocation
+            defer {
+                postMouse(.leftMouseUp, at: cursorLocation)
+                CGWarpMouseCursorPosition(savedCursor)
+            }
             setUpWindow()
             await windowTests()
             if let monitor { NSEvent.removeMonitor(monitor) }
             window.orderOut(nil)
+            return finish()
+        }
+        if Self.onlySystemSearch {
+            await systemSearchTest()
+            return finish()
+        }
+        if Self.onlyGleaning {
+            await gleaningAvatarTest()
             return finish()
         }
         if Self.onlySearch {
@@ -94,6 +119,7 @@ final class SelfTest {
             await finderTests()
             await spotlightTest()
             await settingsWindowTest()
+            await gleaningAvatarTest()
             await windowTests()
         } else {
             fail("测试窗口", "无法把测试窗口切到前台，没有继续，以免按键打到别的程序里")
@@ -109,6 +135,42 @@ final class SelfTest {
         }
         try? FileManager.default.removeItem(at: clipboard.store.directory)
         finish()
+    }
+
+    private func fileDialogTest() async {
+        guard let fileSearch, let arg = CommandLine.arguments.firstIndex(of: "--self-test-file-dialog"),
+              CommandLine.arguments.indices.contains(arg + 2),
+              let front = NSRunningApplication.runningApplications(withBundleIdentifier: "io.lingcore.qa.dialogfixture").first else {
+            return fail("对话框测试", "请运行 scripts/selftest-file-dialog.sh")
+        }
+        let query = URL(fileURLWithPath: CommandLine.arguments[arg + 1]).standardizedFileURL.path
+        front.activate()
+        guard await waitUntil(timeout: 3, { front.isActive && FileDialogTarget.focused() != nil }) else {
+            return fail("对话框测试", "未找到测试应用的原生文件面板")
+        }
+        let pasteboardCount = NSPasteboard.general.changeCount
+        await tapControl()
+        await tapControl()
+        defer { fileSearch.hide() }
+        guard await waitUntil(timeout: 3, { fileSearch.isKey && NSApp.keyWindow?.firstResponder is NSTextView }),
+              let field = NSApp.keyWindow?.firstResponder as? NSTextView else { return fail("输入", "未找到搜索输入框") }
+        field.insertText(query, replacementRange: field.selectedRange())
+        guard await waitUntil(timeout: 5, { fileSearch.visibleResults.first?.path == query }) else {
+            return fail("结果", "测试输入是否到达：\(fileSearch.currentQuery == query)，匹配项：\(fileSearch.visibleResults.count)")
+        }
+        field.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        let arrived = CommandLine.arguments[arg + 2]
+        let returned = await waitUntil(timeout: 6) {
+            FileManager.default.fileExists(atPath: arrived) && !fileSearch.isVisible && front.isActive && FileDialogTarget.focused() != nil
+        }
+        check("选中结果后返回原生文件面板", returned)
+        check("保留剪贴板", NSPasteboard.general.changeCount == pasteboardCount)
+        if returned, let target = FileDialogTarget.focused() {
+            front.hide()
+            defer { front.unhide() }
+            guard await waitUntil(timeout: 2, { !front.isActive }) else { return fail("切换窗口", "测试面板仍在前台") }
+            check("切走后停止对原面板的操作", await target.navigate(to: URL(fileURLWithPath: query)) == .interrupted)
+        }
     }
 
     private func finish() {
@@ -179,6 +241,10 @@ final class SelfTest {
 
     // MARK: - C1、C2：剪贴板历史
 
+    private var clipboardEditor: NSTextView? {
+        NSApp.windows.first { $0 is ClipboardPanel && $0.isKeyWindow }?.firstResponder as? NSTextView
+    }
+
     private func clipboardPanelTest() async {
         say("— 剪贴板历史（C1、C2）")
         guard config.clipboard.enabled else { return say("跳过：剪贴板历史已关闭") }
@@ -192,9 +258,9 @@ final class SelfTest {
         check("Win+V 打开面板", clipboard.isVisible)
         guard clipboard.isVisible else { return }
 
-        for key in [KeyCode.y, KeyCode.h, KeyCode.k] {
-            await press(key, settle: 120)
-        }
+        // 测试给编辑器已上屏的拼音，避免测试结果依赖运行者当前的输入法。
+        guard let editor = clipboardEditor else { return fail("剪贴板搜索框取得焦点", "找不到文本编辑器") }
+        editor.insertText("yhk", replacementRange: editor.selectedRange())
         await pause(300)
         let top = clipboard.visibleResults.first?.text ?? "无"
         check("拼音首字母 yhk 搜到“银行卡号”", top.hasPrefix("银行卡号"),
@@ -214,11 +280,24 @@ final class SelfTest {
         let count = store.items.count
         postClick(at: clipboard.clearButtonPoint)
         let confirming = await waitUntil(timeout: 1) { self.clipboard.confirmingClear }
-        await press(KeyCode.y, settle: 300)
+        if let editor = clipboardEditor {
+            editor.insertText("y", replacementRange: editor.selectedRange())
+        }
         check("点一下“全部清除”等着确认，搜索框照样能打字，一打字就取消", confirming && clipboard.query == "y"
                 && !clipboard.confirmingClear && store.items.count == count && clipboard.isVisible,
               "等确认：\(confirming)，搜索框里：\(clipboard.query.debugDescription)，还在等确认：\(clipboard.confirmingClear)，"
                 + "条数 \(count) → \(store.items.count)，面板开着：\(clipboard.isVisible)")
+        if let editor = clipboardEditor {
+            editor.setMarkedText("wen", selectedRange: NSRange(location: 3, length: 0),
+                                 replacementRange: editor.selectedRange())
+            clipboard.close()
+            clipboard.show()
+            let fresh = await waitUntil(timeout: 2) {
+                guard let editor = self.clipboardEditor else { return false }
+                return editor.string.isEmpty && !editor.hasMarkedText() && self.clipboard.query.isEmpty
+            }
+            check("组字时关闭，重新打开后可以从头输入", fresh)
+        }
         await press(KeyCode.escape, settle: 300)
         check("然后 Esc 照样关掉面板", !clipboard.isVisible)
         clipboard.hide()
@@ -235,12 +314,14 @@ final class SelfTest {
         let rootName = "Mac顺自测-\(Int(Date().timeIntervalSince1970))"
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop").appendingPathComponent(rootName)
         let file = root.appendingPathComponent("art/gpt/style_reference.png")
+        let dotFolder = root.appendingPathComponent(".macshun-" + UUID().uuidString)
         // 右键菜单测试用：一个同名文件夹（左键点它打开），一个要移到废纸篓的文件；还有一个用结果右边的“删除”删
         let folder = root.appendingPathComponent("art/gpt/style_reference")
         let junk = root.appendingPathComponent("art/gpt/style_reference \(rootName).txt")
         let junk2 = root.appendingPathComponent("art/gpt/style_reference \(rootName) 2.txt")
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try fm.createDirectory(at: dotFolder, withIntermediateDirectories: false)
             try Data().write(to: file)
             try Data().write(to: junk)
             try Data().write(to: junk2)
@@ -285,6 +366,16 @@ final class SelfTest {
         await tapControl()
         await pause(400)
         check("开着时再连按两下 Ctrl 不会关掉", fileSearch.isVisible)
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(dotFolder.lastPathComponent, forType: .string)
+        await press(KeyCode.v, [.ctrl], settle: 200)
+        _ = await waitUntil(timeout: 30) { !fileSearch.isKey || fileSearch.visibleResults.first?.path == dotFolder.path }
+        let dotFound = fileSearch.isKey && fileSearch.visibleResults.first?.path == dotFolder.path
+            && fileSearch.visibleResults.first?.isDirectory == true
+        check("直接输入点号目录名，第一条就是该目录", dotFound)
+        guard dotFound else { return }
+        await press(KeyCode.a, [.ctrl], settle: 100)
 
         let query = "桌面/\(rootName)/art/gpt/style_reference.png"
         NSPasteboard.general.clearContents()
@@ -386,7 +477,7 @@ final class SelfTest {
             return fail("右键菜单测试准备", "没搜到：\(fileSearch.visibleResults.map(\.name))")
         }
         let junkRow = row(junk), selectedBefore = fileSearch.selectedIndex
-        let expected = [L("打开"), L("打开方式"), L("在访达中显示"), L("复制"), L("复制路径"), L("移到废纸篓")]
+        let expected = [L("打开"), L("打开方式"), L("快速查看"), L("在访达中显示"), L("复制"), L("复制路径"), L("移到废纸篓")]
         let trashMenu = await rightClick(junk, choose: L("移到废纸篓"))
         check("在没选中的一条上点右键：弹出菜单，在搜索框上面，先选中这一条，搜索框不关",
               trashMenu.titles == expected && trashMenu.onTop && junkRow != selectedBefore && trashMenu.selected == junkRow && trashMenu.visible,
@@ -469,6 +560,45 @@ final class SelfTest {
         } else {
             fail("左键点一条照常打开", "没搜到：\(fileSearch.visibleResults.map(\.name))")
         }
+    }
+
+    /// 直接向本程序的字段编辑器输入，不碰系统剪贴板，也不向其他程序发送按键。
+    private func systemSearchTest() async {
+        guard let fileSearch, config.fileSearch.enabled else { return fail("系统功能搜索", "搜索未开启") }
+        let previous = NSWorkspace.shared.frontmostApplication
+        defer {
+            fileSearch.hide()
+            if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.systempreferences" {
+                previous?.activate()
+            }
+        }
+        fileSearch.show()
+        guard await waitUntil(timeout: 3, { fileSearch.isKey && NSApp.keyWindow?.firstResponder is NSTextView }),
+              let panel = NSApp.keyWindow as? FileSearchPanel, let editor = panel.firstResponder as? NSTextView else {
+            return fail("系统功能搜索", "搜索框未获得焦点")
+        }
+        let query = "耳机连不上怎么办"
+        editor.insertText(query, replacementRange: editor.selectedRange())
+        guard await waitUntil(timeout: 2, { fileSearch.currentQuery == query }) else {
+            return fail("输入口语搜索", "编辑器未提交查询")
+        }
+        guard panel.isKeyWindow, let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil,
+            characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36) else {
+            return fail("系统功能搜索", "面板已失焦")
+        }
+        panel.sendEvent(enter)
+        let opened = await waitUntil(timeout: 6) {
+            guard !fileSearch.isVisible, let app = NSWorkspace.shared.frontmostApplication,
+                  app.bundleIdentifier == "com.apple.systempreferences" else { return false }
+            let ax = AXUIElementCreateApplication(app.processIdentifier)
+            var window: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &window) == .success,
+                  let window, CFGetTypeID(window) == AXUIElementGetTypeID(),
+                  let title = FocusInspector.string(window as! AXUIElement, kAXTitleAttribute) else { return false }
+            return title.localizedCaseInsensitiveContains("Bluetooth") || title.contains("蓝牙") || title.contains("藍牙")
+        }
+        check("输入口语并按回车打开系统蓝牙设置", opened)
     }
 
     /// 单独按一下 Ctrl
@@ -603,7 +733,7 @@ final class SelfTest {
         postClick(at: CGPoint(x: frame.midX, y: frame.maxY - 40))
         await pause(800)
 
-        openSettings()
+        openSettings(nil)
         let settingsWindow = { NSApp.keyWindow.flatMap { $0 !== self.window && $0.isVisible ? $0 : nil } }
         let ok = await waitUntil(timeout: 2) {
             NSWorkspace.shared.frontmostApplication?.bundleIdentifier == self.ownBundleID && settingsWindow() != nil
@@ -611,6 +741,87 @@ final class SelfTest {
         check("正在用别的程序时，设置窗口到最前面", ok,
               "前台：\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")，本程序\(NSApp.isActive ? "已" : "未")激活")
         settingsWindow()?.close()
+    }
+
+    // MARK: - “拾穗计划”页的头像
+
+    /// 头像：慢慢摇；鼠标移上去放大、停住；点一下放声音，跟着声音胀大；连点不从头再放；放完回到原大；
+    /// 离开这一页声音停下。声音音量调成 0，照样放，只是听不见。
+    private func gleaningAvatarTest() async {
+        say("— “拾穗计划”页的头像")
+        let motion = AvatarMotion.shared
+        let clip = motion.clip
+        let settingsWindow = { NSApp.windows.first { $0.identifier == SettingsWindowController.windowID && $0.isVisible } }
+        func screenPoint(_ point: CGPoint) -> CGPoint? {
+            guard let frame = settingsWindow()?.frame else { return nil }
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            return CGPoint(x: frame.minX + point.x, y: primaryHeight - (frame.maxY - point.y))
+        }
+        clip.volume = 0
+        defer {
+            clip.volume = 1
+            settingsWindow()?.close()
+        }
+        openSettings(.gleaning)
+        guard await waitUntil(timeout: 3, { settingsWindow() != nil && motion.frameInWindow != nil }),
+              let avatar = motion.frameInWindow, let center = screenPoint(CGPoint(x: avatar.midX, y: avatar.midY)),
+              let away = screenPoint(CGPoint(x: avatar.midX, y: avatar.maxY + 120)) else {
+            return fail("头像", "没能打开“拾穗计划”页")
+        }
+        guard clip.available else { return fail("头像", "声音文件没打包进去，或者解不开") }
+        let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        postMouse(.mouseMoved, at: away)
+        if still {
+            say("系统开了“减弱动态效果”，头像不动，只测声音")
+        } else {
+            let swaying = await waitUntil(timeout: 2.5) { motion.swayAmount > 0.99 }
+            check("打开这一页，头像慢慢摇起来", swaying, "摇的幅度：\(motion.swayAmount)")
+        }
+
+        postMouse(.mouseMoved, at: center)
+        let hovered = await waitUntil(timeout: 1) { motion.hovering }
+        await pause(400)
+        if still {
+            check("鼠标移到头像上：不放大", hovered && motion.lift == 1, "鼠标在上面：\(hovered)，放大：\(motion.lift)")
+        } else {
+            check("鼠标移到头像上：放大 15%，不再摇", hovered && abs(motion.lift - AvatarMotion.hoverScale) < 0.001 && motion.swayAmount == 0,
+                  "鼠标在上面：\(hovered)，放大：\(motion.lift)，摇的幅度：\(motion.swayAmount)")
+        }
+
+        postClick(at: center, clickState: 1)
+        let playing = await waitUntil(timeout: 1) { clip.playing }
+        check("点一下头像：放出声音", playing, "")
+        guard playing else { return }
+        // 按下那一下的跳动 0.1 秒内就缩回去了，之后的胀大是声音给的
+        await pause(150)
+        var loudest = 1.0
+        for _ in 0 ..< 40 {
+            loudest = max(loudest, motion.beat)
+            await pause(20)
+        }
+        if still {
+            check("头像不跟着声音动", loudest == 1, "最大：\(loudest)")
+        } else {
+            check("头像跟着声音胀大", loudest > 1.08, "最大：\(loudest)")
+        }
+
+        let before = clip.position ?? 0
+        postClick(at: center, clickState: 2)
+        await pause(150)
+        let after = clip.position ?? 0
+        check("再点一下（双击的第二下）：声音接着放，不从头来", clip.playing && after > before,
+              "在放：\(clip.playing)，之前 \(before) 秒，之后 \(after) 秒")
+
+        let ended = await waitUntil(timeout: 5) { !clip.playing }
+        await pause(300)
+        check("放完回到原大", ended && motion.beat == 1, "放完：\(ended)，大小：\(motion.beat)")
+
+        postClick(at: center, clickState: 1)
+        _ = await waitUntil(timeout: 1) { clip.playing }
+        openSettings(.keyboard)
+        let stopped = await waitUntil(timeout: 1) { !clip.playing && !motion.lively }
+        check("放着声音换到别的页：声音停下，头像不再动", stopped, "在放：\(clip.playing)，在动：\(motion.lively)")
+        postMouse(.mouseMoved, at: away)
     }
 
     // MARK: - K3：系统快捷键
@@ -812,7 +1023,7 @@ final class SelfTest {
     }
 
     /// W2：用模拟的鼠标拖 Finder 窗口经过两块屏幕相接的边。
-    /// 每一下都从光标现在的位置往前移一点，和真鼠标一样，这样光标被挡住时下一下也从挡住的地方算。
+    /// 共享边缘不改写光标：直接跨屏，或者在候选区停留后松手吸附。
     private func dragTests(_ finder: WindowElement, screens: [ScreenGeometry.Screen]) async {
         guard let snapper = windowSnapper, config.window.dragToSnap else { return say("拖动分屏没打开，跳过拖动测试") }
         // 找左右相邻、有一段挨着的两块屏幕
@@ -853,9 +1064,8 @@ final class SelfTest {
         }
         let y = (shared.lowerBound + shared.upperBound) / 2
         let edgeX = left.frame.maxX - 1
-        let pushes = 6   // 每下 8 点，一共 48 点，没到挡不住的距离
 
-        // 1. 拖到交界处停住，松开分到左边屏幕的右半边
+        // 1. 主动停在交界处的候选区，光标不被移动，停留后预览并吸附。
         let start = WindowLayout.clamped(CGRect(x: edgeX - 900, y: y - 10, width: 700, height: 450), to: left.area)
         finder.setFrame(start)
         await pause(300)
@@ -866,38 +1076,120 @@ final class SelfTest {
             await release()
             return fail("拖动分屏", "模拟的拖动没有拖动窗口：\(describe(before)) → \(describe(finder.frame))")
         }
-        await drag(toward: CGPoint(x: edgeX + 400, y: y), step: 8, maxSteps: 60 / 8 + pushes)
+        let nearLeft = CGPoint(x: edgeX - 4, y: y)
+        await drag(toward: nearLeft, step: 8)
+        await pause(320)
         let held = cursorLocation
-        check("拖到两块屏幕交界处，光标停在边上", abs(held.x - edgeX) <= 1, "光标在 \(Int(held.x)),\(Int(held.y))，边在 x=\(Int(edgeX))")
+        check("在交界候选区停留，光标保持原位置", abs(held.x - nearLeft.x) <= 1, "光标在 \(Int(held.x)),\(Int(held.y))")
         let leftRight = WindowLayout.Position.rightHalf.frame(in: left.area)
         check("停住时预览左边屏幕的右半边", near(snapper.previewFrame, leftRight), "预览 \(describe(snapper.previewFrame))")
         await release()
         check("松开分到左边屏幕的右半边", near(finder.frame, leftRight), describe(finder.frame))
 
-        // 2. 再拖：先恢复原来的大小，往外多推一段就过去，松开时不分屏
+        // 2. 再拖：恢复原来的大小后直接跨屏，途中不应因路过边缘而吸附。
         guard await grab() else { return }
         await drag(toward: CGPoint(x: edgeX - 100, y: y), step: 10)
         let unsnapped = finder.frame
         check("拖动分好的窗口，恢复原来的大小",
               unsnapped.map { abs($0.width - start.width) <= 3 && abs($0.height - start.height) <= 3 } ?? false, describe(unsnapped))
-        await drag(toward: CGPoint(x: right.frame.minX + 250, y: y), step: 12)
+        await drag(toward: CGPoint(x: right.frame.minX + start.width / 2 + 24, y: y), step: 12)
         let crossed = cursorLocation
-        check("继续往外推，光标过到另一块屏幕", right.frame.contains(crossed), "光标在 \(Int(crossed.x)),\(Int(crossed.y))")
+        check("直接拖过交界，光标进入另一块屏幕", right.frame.contains(crossed), "光标在 \(Int(crossed.x)),\(Int(crossed.y))")
         check("推过去以后不预览", snapper.previewFrame == nil, "预览 \(describe(snapper.previewFrame))")
         await release()
-        let inRight = finder.frame.map { right.frame.intersects($0) && WindowLayout.position(of: $0, in: right.area) == nil } ?? false
+        let inRight = finder.frame.map { frame in
+            ScreenGeometry.index(of: frame, in: screens).map { screens[$0] == right } == true
+                && WindowLayout.position(of: frame, in: right.area) == nil
+        } ?? false
         check("松开时窗口在另一块屏幕上、没有分屏", inRight, describe(finder.frame))
 
-        // 3. 往回拖到交界处，停在右边屏幕的左边上，松开分到右边屏幕的左半边
+        // 3. 从目标屏这一侧主动停留，松开分到目标屏的左半边。
         guard await grab() else { return }
         await drag(toward: CGPoint(x: right.frame.minX + 60, y: y), step: 8)
-        await drag(toward: CGPoint(x: right.frame.minX - 400, y: y), step: 8, maxSteps: 60 / 8 + pushes)
+        let nearRight = CGPoint(x: right.frame.minX + 4, y: y)
+        await drag(toward: nearRight, step: 8)
+        await pause(320)
         let heldBack = cursorLocation
-        check("往回拖，光标停在另一边的边上", abs(heldBack.x - right.frame.minX) <= 1, "光标在 \(Int(heldBack.x)),\(Int(heldBack.y))")
+        check("在另一侧候选区停留，光标保持原位置", abs(heldBack.x - nearRight.x) <= 1, "光标在 \(Int(heldBack.x)),\(Int(heldBack.y))")
         let rightLeft = WindowLayout.Position.leftHalf.frame(in: right.area)
         check("停住时预览右边屏幕的左半边", near(snapper.previewFrame, rightLeft), "预览 \(describe(snapper.previewFrame))")
         await release()
         check("松开分到右边屏幕的左半边", near(finder.frame, rightLeft), describe(finder.frame))
+
+        // 4. 一直按住鼠标往返过屏，逐次核对实际光标，不能只看最后能否过屏。
+        finder.setFrame(start)
+        await pause(300)
+        guard await grab() else { return }
+        let returnPoint = cursorLocation
+        func moveFreely(to target: CGPoint) async -> (notPulledBack: Bool, noPreview: Bool) {
+            var notPulledBack = true, noPreview = true
+            for _ in 0 ..< 150 {
+                let cursor = cursorLocation
+                let distance = hypot(target.x - cursor.x, target.y - cursor.y)
+                if distance < 0.5 { break }
+                let scale = min(1, 24 / distance)
+                let delta = CGVector(dx: (target.x - cursor.x) * scale, dy: (target.y - cursor.y) * scale)
+                let intended = CGPoint(x: cursor.x + delta.dx, y: cursor.y + delta.dy)
+                postMouse(.leftMouseDragged, at: intended, delta: delta)
+                await pause(18)
+                let actual = cursorLocation
+                if hypot(actual.x - intended.x, actual.y - intended.y) > 2 { notPulledBack = false }
+                if snapper.previewFrame != nil { noPreview = false }
+            }
+            return (notPulledBack, noPreview)
+        }
+        let forward = await moveFreely(to: CGPoint(x: right.frame.minX + start.width / 2 + 24, y: y))
+        let backward = await moveFreely(to: returnPoint)
+        check("连续往返跨屏，每次鼠标移动都没有被拉回", forward.notPulledBack && backward.notPulledBack)
+        check("连续往返跨屏，途中不闪吸附预览", forward.noPreview && backward.noPreview)
+        await release()
+        let returned = finder.frame.map { frame in
+            ScreenGeometry.index(of: frame, in: screens).map { screens[$0] == left } == true
+                && WindowLayout.position(of: frame, in: left.area) == nil
+        } ?? false
+        check("往返松手后留在原屏，保持普通窗口", returned, describe(finder.frame))
+
+        // 5. 预览出现后退回屏内，再松手，不能按旧目标吸回去。
+        finder.setFrame(start)
+        await pause(300)
+        guard await grab() else { return }
+        await drag(toward: nearLeft, step: 8)
+        await pause(320)
+        check("撤离测试：停留后先出现预览", near(snapper.previewFrame, leftRight), describe(snapper.previewFrame))
+        await drag(toward: CGPoint(x: edgeX - 80, y: y), step: 8)
+        check("撤离边缘后取消预览", snapper.previewFrame == nil, describe(snapper.previewFrame))
+        await release()
+        check("撤离后松手不吸附", finder.frame.map { WindowLayout.position(of: $0, in: left.area) == nil } ?? false,
+              describe(finder.frame))
+
+        // 6. 按住鼠标时用 Esc 取消，随后松手也不能提交旧目标。
+        finder.setFrame(start)
+        await pause(300)
+        guard await grab() else { return }
+        await drag(toward: nearLeft, step: 8)
+        await pause(320)
+        check("Esc 测试：停留后先出现预览", near(snapper.previewFrame, leftRight), describe(snapper.previewFrame))
+        await press(KeyCode.escape, settle: 80)
+        check("拖动时 Esc 取消预览", snapper.previewFrame == nil, describe(snapper.previewFrame))
+        await release()
+        check("Esc 后松手不吸附", finder.frame.map { WindowLayout.position(of: $0, in: left.area) == nil } ?? false,
+              describe(finder.frame))
+
+        // 7. 没有最后一帧 dragged，mouse-up 已经在另一屏：不能提交原屏的预览。
+        finder.setFrame(start)
+        await pause(300)
+        guard await grab() else { return }
+        await drag(toward: nearLeft, step: 8)
+        await pause(320)
+        check("松手重检：原屏预览已出现", near(snapper.previewFrame, leftRight),
+              "窗口 \(describe(finder.frame))，预览 \(describe(snapper.previewFrame))")
+        postMouse(.leftMouseUp, at: CGPoint(x: right.frame.minX + 40, y: y))
+        await pause(600)
+        let notSnapped = finder.frame.map { frame in
+            !screens.contains { WindowLayout.position(of: frame, in: $0.area) != nil }
+        } ?? false
+        check("松手位置跨屏时，不提交旧屏吸附", notSnapped && snapper.previewFrame == nil && !snapper.isAssistVisible,
+              describe(finder.frame))
     }
 
     private var cursorLocation: CGPoint { CGEvent(source: nil)?.location ?? .zero }

@@ -186,6 +186,15 @@ struct SystemShortcutTests {
         #expect(m.action(keyCode: KeyCode.e, flags: cmd, context: context()) == .pass)
     }
 
+    @Test func macClipboardShortcutPreservesPaste() {
+        let mac = mapper(.mac)
+        #expect(mac.action(keyCode: KeyCode.v, flags: opt, context: context()) == .command(.clipboardHistory))
+        #expect(mac.action(keyCode: KeyCode.v, flags: cmd, context: context()) == .pass)
+        #expect(mac.action(keyCode: KeyCode.v, flags: opt, context: context(clipboard: false)) == .pass)
+        let disabled = mapper(.mac) { $0.enabled = false }
+        #expect(disabled.action(keyCode: KeyCode.v, flags: opt, context: context()) == .pass)
+    }
+
     @Test func winV() {
         #expect(mapper().action(keyCode: KeyCode.v, flags: cmd, context: context()) == .command(.clipboardHistory))
         #expect(mapper().action(keyCode: KeyCode.v, flags: cmd, context: context(clipboard: false)) == .pass)

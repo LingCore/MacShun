@@ -23,8 +23,8 @@ struct FileEntry {
 
 /// 一个文件夹里的文件名，紧凑存放：名字、小写后的名字、拼音都放在一块连续的字节里，每个文件只另占一个 24 字节的 Item。
 /// 每个文件各用一个 String 和几个数组时，光对象头就要几百字节（实测 43 万个文件占了 150 MB）。
-struct FolderEntries {
-    struct Item {
+struct FolderEntries: Equatable {
+    struct Item: Equatable {
         var nameStart: UInt32
         var lowerStart: UInt32
         var pinyinStart: UInt32
@@ -43,6 +43,8 @@ struct FolderEntries {
     static let hasDisplayNameFlag: UInt8 = 4
     /// 这个 Item 是上一个文件的显示名字，不单独算一个文件
     static let displayNameFlag: UInt8 = 8
+    /// 初扫时允许进入的真实文件夹；增量更新沿用同一决定。
+    static let traversableFlag: UInt8 = 16
 
     private(set) var bytes: [UInt8] = []
     private(set) var items: [Item] = []
@@ -59,10 +61,11 @@ struct FolderEntries {
         items.reserveCapacity(count)
     }
 
-    mutating func append(_ entry: FileEntry) {
+    mutating func append(_ entry: FileEntry, mayDescend: Bool = true) {
         var flags: UInt8 = 0
         if entry.isDirectory { flags |= Self.directoryFlag }
         if entry.isPackage { flags |= Self.packageFlag }
+        if entry.isDirectory && !entry.isPackage && mayDescend { flags |= Self.traversableFlag }
         if entry.displayName != nil { flags |= Self.hasDisplayNameFlag }
         items.append(store(entry.name, flags: flags))
         count += 1
@@ -86,17 +89,33 @@ struct FolderEntries {
         items[index].flags & Self.hasDisplayNameFlag != 0 ? name(at: index + 1) : nil
     }
 
+    /// 直接比较扫描时存好的小写字节，包含访达显示名。
+    func hasFullName(_ name: FileMatcher.Term, at index: Int) -> Bool {
+        func equals(_ item: Item) -> Bool {
+            guard Int(item.lowerLength) == name.bytes.count else { return false }
+            let start = Int(item.lowerStart)
+            return bytes[start ..< start + name.bytes.count].elementsEqual(name.bytes)
+        }
+        let item = items[index]
+        if equals(item) || (item.flags & Self.hasDisplayNameFlag != 0 && equals(items[index + 1])) { return true }
+        // 访达通常省略 .app；这个显示名没有重复存进索引。
+        guard item.flags & Self.packageFlag != 0, Int(item.stemLength) == name.bytes.count,
+              Int(item.lowerLength) == name.bytes.count + 4 else { return false }
+        let start = Int(item.lowerStart), stemEnd = start + name.bytes.count
+        return bytes[stemEnd ..< stemEnd + 4].elementsEqual(".app".utf8) && bytes[start ..< stemEnd].elementsEqual(name.bytes)
+    }
+
     func isDirectory(at index: Int) -> Bool { items[index].flags & Self.directoryFlag != 0 }
 
-    func isPackage(at index: Int) -> Bool { items[index].flags & Self.packageFlag != 0 }
+    func isTraversable(at index: Int) -> Bool { items[index].flags & Self.traversableFlag != 0 }
 
-    /// 有没有这个名字的文件夹（不算“包”）
+    /// 这个名字是不是允许扫描的子文件夹
     func containsFolder(named name: String) -> Bool {
         let target = Array(name.utf8)
         var i = 0
         while i < items.count {
             let item = items[i]
-            if item.flags & (Self.directoryFlag | Self.packageFlag) == Self.directoryFlag, Int(item.nameLength) == target.count {
+            if isTraversable(at: i), Int(item.nameLength) == target.count {
                 let start = Int(item.nameStart)
                 if bytes[start ..< start + target.count].elementsEqual(target) { return true }
             }
@@ -106,27 +125,40 @@ struct FolderEntries {
     }
 
     /// 每个文件（不含显示名字）的位置
-    var indices: [Int] {
-        var result: [Int] = []
-        result.reserveCapacity(count)
-        var i = 0
-        while i < items.count {
-            result.append(i)
-            i += items[i].flags & Self.hasDisplayNameFlag != 0 ? 2 : 1
-        }
-        return result
+    var indices: some Sequence<Int> {
+        items.indices.lazy.filter { items[$0].flags & Self.displayNameFlag == 0 }
     }
 
     /// 和查询匹配的文件，回调位置和得分。
-    func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, _ body: (Int, Double) -> Void) {
+    func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, folderTerms: [Bool] = [], filters: FileSearchFilters = .init(),
+                      isCancelled: () -> Bool = { false }, _ body: (Int, Double) -> Void) {
+        // 单独输入点号时只列点号开头的名字，避免把所有带扩展名的文件都列出来。
+        let dotNamesOnly = terms.count == 1 && terms[0].bytes == [0x2E]
         bytes.withUnsafeBufferPointer { buffer in
             var i = 0
+            var nextCheck = 0
             while i < items.count {
+                if i >= nextCheck {
+                    if isCancelled() { return }
+                    nextCheck = i + 512
+                }
                 let hasDisplay = items[i].flags & Self.hasDisplayNameFlag != 0
-                let score = FileMatcher.score(query: terms, item: items[i], display: hasDisplay ? items[i + 1] : nil,
-                                              in: buffer, depth: depth)
-                if score > 0 { body(i, score) }
+                let index = i
+                let item = items[index]
+                let display = hasDisplay ? items[index + 1] : nil
                 i += hasDisplay ? 2 : 1
+                if dotNamesOnly && (item.nameLength == 0 || buffer[Int(item.nameStart)] != 0x2E) { continue }
+                if !filters.isEmpty {
+                    func lower(_ value: Item) -> UnsafeBufferPointer<UInt8> {
+                        let start = Int(value.lowerStart)
+                        return UnsafeBufferPointer(rebasing: buffer[start ..< start + Int(value.lowerLength)])
+                    }
+                    guard filters.accepts(lower(item), display: display.map(lower), isDirectory: isDirectory(at: index)) else { continue }
+                    if terms.isEmpty { body(index, 1); continue }
+                }
+                let score = FileMatcher.score(query: terms, item: item, display: display, in: buffer, depth: depth,
+                                              folderTerms: folderTerms, matchedExtension: !filters.suffixes.isEmpty)
+                if score > 0 { body(index, score) }
             }
         }
     }
@@ -180,6 +212,8 @@ struct FolderEntries {
 
 /// 一条搜索结果。
 struct FileSearchResult: Identifiable, Equatable {
+    enum NameRank: Int { case partial, exact, exactInFinder }
+
     let path: String
     /// 显示的名字（应用程序用访达里的名字）
     let name: String
@@ -187,6 +221,9 @@ struct FileSearchResult: Identifiable, Equatable {
     let score: Double
     /// 按内容搜到的：匹配处附近的一段文字
     var snippet: String? = nil
+
+    var nameRank: NameRank = .partial
+    var canSearchInside = false
 
     var id: String { path }
 }
@@ -223,13 +260,21 @@ enum FileMatcher {
 
     /// 整个查询（空格分开的几个词都要匹配）的得分，再加上类型、长度、深度的微调。0 表示不匹配。
     static func score(query terms: [Term], item: FolderEntries.Item, display: FolderEntries.Item?,
-                      in buffer: UnsafeBufferPointer<UInt8>, depth: Int) -> Double {
+                      in buffer: UnsafeBufferPointer<UInt8>, depth: Int, folderTerms: [Bool], matchedExtension: Bool) -> Double {
         var total = 0.0
-        for term in terms {
-            let s = score(term: term, item: item, display: display, in: buffer)
-            if s == 0 { return 0 }
-            total += s
+        var matchedName = matchedExtension
+        for (i, term) in terms.enumerated() {
+            let byName = score(term: term, item: item, display: display, in: buffer)
+            if byName > 0 {
+                matchedName = true
+                total += byName
+            } else if !folderTerms.isEmpty && folderTerms[i] {
+                total += 15
+            } else {
+                return 0
+            }
         }
+        guard matchedName else { return 0 }
         let lower = UnsafeBufferPointer(rebasing: buffer[Int(item.lowerStart) ..< Int(item.lowerStart) + Int(item.lowerLength)])
         if item.flags & FolderEntries.packageFlag != 0 && lower.count > 4 && lower.suffix(4).elementsEqual(".app".utf8) {
             total += 8
@@ -252,11 +297,13 @@ enum FileMatcher {
     }
 
     struct Term {
+        let text: String
         let bytes: [UInt8]
         let isASCII: Bool
 
         init(_ text: String) {
-            bytes = Array(FolderEntries.matchForm(text, isASCII: text.utf8.allSatisfy { $0 < 0x80 }).utf8)
+            self.text = FolderEntries.matchForm(text, isASCII: text.utf8.allSatisfy { $0 < 0x80 })
+            bytes = Array(self.text.utf8)
             isASCII = bytes.allSatisfy { $0 < 0x80 }
         }
     }
@@ -270,6 +317,17 @@ enum FileMatcher {
     /// 文件夹可以写访达里显示的名字（“桌面/…”）或 Windows 的叫法（“文档”“视频”）；“~/” 是个人文件夹；
     /// Windows 的盘符（“D:\”）去掉，旧硬盘上的路径照样找得到；两边的引号（Windows“复制为路径”会带上）和 file:// 去掉。
     struct Query {
+        struct DirectoryInput {
+            let folder: String
+            /// 末尾的 / 明确要求列出子项。否则最后一段是本层的文件名。
+            let listsChildren: Bool
+        }
+
+        let filters: FileSearchFilters
+        let contentText: String
+        let fullName: Term
+        let isPlainName: Bool
+        let directoryInput: DirectoryInput?
         let terms: [Term]
         /// 路径里的文件夹，一段一段（比较用的形式），每段是能对上的写法（本来的、对应的真名）
         let folders: [Set<String>]
@@ -280,14 +338,31 @@ enum FileMatcher {
         let nameTerms: [Term]?
 
         init(_ query: String) {
-            let quotes = CharacterSet(charactersIn: "\"'“”‘’")
-            // 两边的空格、换行（从别处复制常带着）和引号
-            var text = query.trimmingCharacters(in: .whitespacesAndNewlines.union(quotes))
-            guard text.contains("/") || text.contains("\\") else {
-                (terms, folders, absolutePath, nameTerms) = (FileMatcher.terms(of: query), [], nil, nil)
+            var text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            var literal = false
+            // 只移除成对的外层引号，保留文件名末尾真正的撇号。
+            if let first = text.first, let last = text.last, text.count >= 2,
+               ["\"": "\"", "'": "'", "“": "”", "‘": "’"][String(first)] == String(last) {
+                text = String(text.dropFirst().dropLast())
+                literal = true
+            }
+            isPlainName = !text.contains("/") && !text.contains("\\")
+            if isPlainName {
+                let parsed = FileSearchFilters.parse(text, literal: literal)
+                filters = parsed.filters
+                contentText = parsed.words
+                fullName = Term(parsed.words)
+                directoryInput = nil
+                (terms, folders, absolutePath, nameTerms) = (FileMatcher.terms(of: parsed.words), [], nil, nil)
                 return
             }
-            if text.hasPrefix("file://"), let url = URL(string: text), url.isFileURL { text = url.path }
+            var endsInSlash = text.hasSuffix("/")
+            if text.hasPrefix("file://"), let url = URL(string: text), url.isFileURL {
+                text = url.path
+                literal = true
+                endsInSlash = url.hasDirectoryPath
+            }
+            let nativePath = text.hasPrefix("/") || text.hasPrefix("~/")
             if text.contains("/") {
                 // Mac 的路径：\ 是终端里的转义（“My\ Project”）
                 text = text.replacingOccurrences(of: #"\\(.)"#, with: "$1", options: .regularExpression)
@@ -312,9 +387,19 @@ enum FileMatcher {
                 if part == ".." { _ = parts.popLast() } else if !part.isEmpty && part != "." { parts.append(part) }
             }
             let absolute = text.hasPrefix("/") ? "/" + parts.joined(separator: "/") : nil
-            absolutePath = absolute.flatMap { $0.count > 1 ? $0 : nil }
-            nameTerms = looksAbsolute || query.contains("\\") ? nil : FileMatcher.terms(of: text.replacingOccurrences(of: "/", with: ":"))
-            terms = FileMatcher.terms(of: parts.last ?? "")
+            let parsed = FileSearchFilters.parse(parts.last ?? "", literal: literal || endsInSlash)
+            filters = parsed.filters
+            contentText = filters.isEmpty ? query : parsed.words
+            absolutePath = filters.isEmpty ? absolute.flatMap { $0.count > 1 ? $0 : nil } : nil
+            fullName = Term(parsed.words)
+            if nativePath, let absolute {
+                let folder = endsInSlash ? absolute : (absolute as NSString).deletingLastPathComponent
+                directoryInput = DirectoryInput(folder: folder, listsChildren: endsInSlash)
+            } else {
+                directoryInput = nil
+            }
+            nameTerms = !filters.isEmpty || looksAbsolute || query.contains("\\") ? nil : FileMatcher.terms(of: text.replacingOccurrences(of: "/", with: ":"))
+            terms = FileMatcher.terms(of: parsed.words)
             folders = parts.dropLast().map { part in
                 let form = FolderEntries.matchForm(part, isASCII: part.utf8.allSatisfy { $0 < 0x80 })
                 return Set([form] + (FileMatcher.folderAliases[form].map { [$0] } ?? []))
@@ -376,12 +461,12 @@ enum FileMatcher {
 /// 文件名索引（F1）：第一次扫描一遍，之后用 FSEvents 跟着文件变化更新。只存在内存里，不联网。
 ///
 /// 搜索范围：个人文件夹（不含“资源库”）、应用程序、系统自带的应用程序、共享文件夹，以及外接硬盘。
-/// 不收录隐藏文件、应用程序包里的内容；外接硬盘上不收录 Windows 的系统文件夹。
+/// 点号开头的用户文件也按名称收录；跳过系统杂项、应用包内部及工具缓存。
 /// 外接硬盘可能很大、读起来很慢（例如 macOS 只读挂载的 NTFS 盘），放在第二轮后台扫，不耽误搜索。
 /// NTFS 驱动（FSKit）查每个文件的属性很慢，而且一次只处理一个，所以外接硬盘只读目录（readdir），
 /// 只给文件夹查隐藏标记，几块盘一起用几个线程扫：实测 6 万个文件从 10 秒降到 0.5 秒。
 ///
-/// 索引数据只在 queue 上读写（搜索、合并扫描结果、处理 FSEvents）；扫描在别的队列上做；状态在主线程上发布给界面。
+/// queue 合并扫描结果、处理 FSEvents。搜索在独立队列读取快照，状态在主线程发布。
 final class FileIndex: ObservableObject {
     static let shared = FileIndex()
 
@@ -416,8 +501,8 @@ final class FileIndex: ObservableObject {
     /// 正在扫描、还没并进索引的位置。这期间这些位置下的变化先记下来，扫完再处理，免得漏掉或被扫描结果盖掉
     private var pendingRoots: [String] = []
     private var deferredChanges: [String: Bool] = [:]
-    /// 最近一次搜索的编号：打字很快时，排在后面还没开始的旧搜索直接跳过
-    private let latestSearch = Locked(0)
+    /// 搜索只读一次快照，避免匹配和后台索引更新互相占住队列。
+    private let searchQueue = DispatchQueue(label: "MacShun.FileIndex.search", qos: .userInitiated)
 
     /// 以下只在主线程上读写
     private var generation = 0
@@ -427,10 +512,16 @@ final class FileIndex: ObservableObject {
     /// 这次扫描的外接硬盘
     private var currentDrives: [String] = []
 
-    private static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private let mainRoots: [String]
+
+    init(mainRoots: [String] = FileIndex.defaultRoots) {
+        self.mainRoots = mainRoots
+    }
+
+    static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     /// 第一轮扫描的位置。Safari 的真身在 Cryptexes 里，“应用程序”里只有一个带隐藏标记的替身
-    private static let mainRoots = [
+    private static let defaultRoots = [
         home, "/Applications", "/System/Applications", "/System/Cryptexes/App/System/Applications", "/Users/Shared",
     ]
 
@@ -446,16 +537,6 @@ final class FileIndex: ObservableObject {
             return volume.path
         }
     }
-
-    /// 不扫描的文件夹（里面的东西对用户没用，或者太多）
-    private static let excluded: Set<String> = [home + "/Library", home + "/.Trash"]
-
-    /// 外接硬盘上不扫描的文件夹：Windows 的系统文件、程序和缓存，几十万个文件，对找自己的文件没有用
-    private static let windowsSystemFolders: Set<String> = [
-        "Windows", "Program Files", "Program Files (x86)", "ProgramData", "AppData", "$Recycle.Bin", "$RECYCLE.BIN",
-        "System Volume Information", "Recovery", "$WinREAgent", "$SysReset", "PerfLogs", "Config.Msi", "MSOCache",
-        "$Windows.~BT", "$Windows.~WS", "Windows.old", "OneDriveTemp",
-    ]
 
     /// 开始建立索引并跟踪变化。已经开始过就不再重复。只在主线程上调用。
     func start() {
@@ -500,7 +581,7 @@ final class FileIndex: ObservableObject {
     func rebuild() {
         generation += 1
         let gen = generation
-        let mainRoots = Self.mainRoots
+        let mainRoots = self.mainRoots
         let drives = includeExternalDrives ? Self.driveRoots() : []
         currentDrives = drives
         isIndexing = true
@@ -605,15 +686,18 @@ final class FileIndex: ObservableObject {
         contentIndex.sync(files: files, scopes: scopes)
     }
 
+    static func indexesContents(in folder: String) -> Bool {
+        guard !systemContentRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) else { return false }
+        return !folder.split(separator: "/").contains { part in
+            part.hasPrefix(".") || skippedForContent.contains(String(part)) || part.lowercased().contains("cache")
+        }
+    }
+
     private static func collectContentFiles(_ folder: String, _ entries: FolderEntries, into files: inout [String]) {
-        // 只读用户自己的文件：“应用程序”和系统文件夹里不是 .app 的文件夹（素材库、自带文档）不读内容
-        guard !systemContentRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) else { return }
-        // 缓存文件夹里是程序生成的东西（例如成千上万张缩略图），不读
-        guard !folder.split(separator: "/").contains(where: { skippedForContent.contains(String($0)) || $0.lowercased().contains("cache") })
-        else { return }
+        guard indexesContents(in: folder) else { return }
         for index in entries.indices where !entries.isDirectory(at: index) {
             let name = entries.name(at: index)
-            guard ContentExtractor.kind(ofFileNamed: name) != nil else { continue }
+            guard !name.hasPrefix("."), ContentExtractor.kind(ofFileNamed: name) != nil else { continue }
             files.append(folder == "/" ? "/" + name : folder + "/" + name)
         }
     }
@@ -629,48 +713,27 @@ final class FileIndex: ObservableObject {
 
     /// 搜索，结果在主线程上回调。boosts：常打开的文件加的分（见 OpenHistory）
     func search(_ query: String, limit: Int = 60, boosts: [String: Double] = [:],
-                completion: @escaping ([FileSearchResult]) -> Void) {
-        let parsed = FileMatcher.Query(query)
-        let terms = parsed.terms
-        guard !terms.isEmpty || parsed.absolutePath != nil else {
-            completion([])
+                isCancelled: @escaping () -> Bool = { false }, completion: @escaping ([FileSearchResult]) -> Void) {
+        searchPage(FileMatcher.Query(query), limit: limit, boosts: boosts, isCancelled: isCancelled) {
+            completion($0.results)
+        }
+    }
+
+    func searchPage(_ query: FileMatcher.Query, limit: Int = 60, boosts: [String: Double] = [:],
+                    preferredFolder: String? = nil, within: FileSearchFolder? = nil, isCancelled: @escaping () -> Bool = { false },
+                    completion: @escaping (FileNameSearch.Page) -> Void) {
+        guard limit > 0, !query.terms.isEmpty || !query.filters.isEmpty || query.directoryInput != nil || within != nil else {
+            completion(.init(results: []))
             return
         }
-        let token = latestSearch.update { value -> Int in
-            value += 1
-            return value
-        }
         queue.async {
-            // 已经有更新的搜索了：这次的结果反正用不上
-            guard self.latestSearch.get() == token else { return }
-            var matches: [FileSearchResult] = []
-            for (folder, entries) in self.folders where !terms.isEmpty {
-                let depth = folder.utf8.reduce(0) { $1 == 0x2F ? $0 + 1 : $0 }
-                var folderBonus: Double?
-                func add(_ index: Int, _ score: Double) {
-                    let name = entries.name(at: index)
-                    let path = folder == "/" ? "/" + name : folder + "/" + name
-                    matches.append(FileSearchResult(path: path, name: entries.displayName(at: index) ?? name,
-                                                    isDirectory: entries.isDirectory(at: index), score: score + (boosts[path] ?? 0)))
-                }
-                entries.forEachMatch(terms, depth: depth) { index, score in
-                    if folderBonus == nil { folderBonus = parsed.folderBonus(folder) }
-                    add(index, score + (folderBonus ?? 0))
-                }
-                if let nameTerms = parsed.nameTerms { entries.forEachMatch(nameTerms, depth: depth, add) }
+            guard !isCancelled() else { return }
+            let folders = self.folders
+            self.searchQueue.async {
+                let search = FileNameSearch(query: query, limit: limit, boosts: boosts, preferredFolder: preferredFolder, within: within)
+                guard let page = search.run(in: folders, isCancelled: isCancelled) else { return }
+                DispatchQueue.main.async { completion(page) }
             }
-            if parsed.nameTerms != nil {
-                // 两种搜法都搜到的，留分高的那个
-                var best: [String: FileSearchResult] = [:]
-                for match in matches where match.score > best[match.path]?.score ?? -.infinity { best[match.path] = match }
-                matches = Array(best.values)
-            }
-            if let path = parsed.absolutePath, let hit = Self.existingFile(path, among: &matches) {
-                matches.append(hit)
-            }
-            matches.sort { $0.score != $1.score ? $0.score > $1.score : $0.path < $1.path }
-            let top = Array(matches.prefix(limit))
-            DispatchQueue.main.async { completion(top) }
         }
     }
 
@@ -678,98 +741,21 @@ final class FileIndex: ObservableObject {
     static func existingFile(_ path: String, among matches: inout [FileSearchResult]) -> FileSearchResult? {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
-        let key = FolderEntries.matchForm(path, isASCII: false)
-        if let i = matches.firstIndex(where: { FolderEntries.matchForm($0.path, isASCII: false) == key }) {
+        var foundIndex = matches.firstIndex { $0.path == path }
+        if foundIndex == nil, !matches.isEmpty,
+           (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames) == false {
+            let key = FolderEntries.matchForm(path, isASCII: false)
+            foundIndex = matches.firstIndex { FolderEntries.matchForm($0.path, isASCII: false) == key }
+        }
+        if let i = foundIndex {
             let found = matches.remove(at: i)
-            return FileSearchResult(path: found.path, name: found.name, isDirectory: found.isDirectory, score: 1000)
+            return FileSearchResult(path: found.path, name: found.name, isDirectory: found.isDirectory, score: 1000, canSearchInside: found.canSearchInside)
         }
         return FileSearchResult(path: path, name: (path as NSString).lastPathComponent,
                                 isDirectory: isDirectory.boolValue, score: 1000)
     }
 
     // MARK: - 扫描（不碰索引数据，哪个队列都可以）
-
-    private static let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]
-
-    /// 列出一个文件夹，返回里面的文件和要继续往下扫描的子文件夹。读不了时返回 nil。
-    private static func list(_ folder: String) -> (entries: FolderEntries, subfolders: [String])? {
-        if folder.hasPrefix("/Volumes/") { return listDrive(folder) }
-        let url = URL(fileURLWithPath: folder, isDirectory: true)
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
-        ) else { return nil }
-        let onDrive = folder.hasPrefix("/Volumes/")
-        var entries = FolderEntries()
-        var subfolders: [String] = []
-        entries.reserveCapacity(urls.count)
-        for child in urls {
-            let name = child.lastPathComponent
-            let values = try? child.resourceValues(forKeys: Set(keys))
-            let isDirectory = values?.isDirectory == true
-            let isPackage = values?.isPackage == true
-            let path = folder == "/" ? "/" + name : folder + "/" + name
-            if onDrive && isDirectory && windowsSystemFolders.contains(name) { continue }
-            // 应用程序和个人文件夹里的“桌面”“下载”这些再记一个访达里显示的名字（系统语言下的名字，例如“备忘录”）
-            var displayName: String?
-            if (isPackage && child.pathExtension == "app") || (isDirectory && folder == home) {
-                let shown = FileManager.default.displayName(atPath: path)
-                if shown != name && shown != child.deletingPathExtension().lastPathComponent {
-                    displayName = shown
-                }
-            }
-            entries.append(FileEntry(name: name, isDirectory: isDirectory, isPackage: isPackage, displayName: displayName))
-            if isDirectory && !isPackage && values?.isSymbolicLink != true && !excluded.contains(path) {
-                subfolders.append(path)
-            }
-        }
-        entries.compact()
-        return (entries, subfolders)
-    }
-
-    /// Windows 的隐藏系统文件。外接硬盘上不查每个文件的隐藏标记（太慢），按名字跳过
-    private static let windowsHiddenFiles: Set<String> = [
-        "desktop.ini", "thumbs.db", "ehthumbs.db", "pagefile.sys", "hiberfil.sys", "swapfile.sys",
-        "dumpstack.log", "dumpstack.log.tmp", "bootmgr", "bootnxt", "ntuser.ini", "ntuser.pol",
-    ]
-
-    /// 外接硬盘上列一个文件夹：只读目录项（名字和类型），不查文件属性；文件夹查一下隐藏标记，
-    /// 隐藏的（ProgramData、Default 用户、目录联接）和 Windows 系统文件夹一样整个跳过。
-    private static func listDrive(_ folder: String) -> (entries: FolderEntries, subfolders: [String])? {
-        guard let dir = opendir(folder) else { return nil }
-        defer { closedir(dir) }
-        var entries = FolderEntries()
-        var subfolders: [String] = []
-        // Windows 的系统文件夹、$ 开头的系统文件都在盘的最上一层；AppData 在每个用户的文件夹里
-        let atRoot = (folder as NSString).deletingLastPathComponent == "/Volumes"
-        while let item = readdir(dir) {
-            let name = withUnsafePointer(to: item.pointee.d_name) {
-                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
-            }
-            if name.hasPrefix(".") || (atRoot && name.hasPrefix("$")) { continue }
-            let path = folder + "/" + name
-            var type = item.pointee.d_type
-            var info = stat()
-            if type == DT_UNKNOWN {
-                guard lstat(path, &info) == 0 else { continue }
-                type = info.st_mode & S_IFMT == S_IFDIR ? UInt8(DT_DIR) : UInt8(DT_REG)
-            }
-            if type == DT_DIR {
-                if (atRoot ? windowsSystemFolders.contains(name) : name == "AppData") || excluded.contains(path) { continue }
-                if lstat(path, &info) == 0 && info.st_flags & UInt32(UF_HIDDEN) != 0 { continue }
-                // 只有带扩展名的文件夹可能是“包”（例如 .app），这种很少，单独问一下系统
-                let isPackage = name.contains(".")
-                    && (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isPackageKey]).isPackage) == true
-                entries.append(FileEntry(name: name, isDirectory: true, isPackage: isPackage))
-                if !isPackage { subfolders.append(path) }
-            } else {
-                if name.hasPrefix("~$") || windowsHiddenFiles.contains(name.lowercased())
-                    || name.lowercased().hasPrefix("ntuser.dat") { continue }
-                entries.append(FileEntry(name: name, isDirectory: false, isPackage: false))
-            }
-        }
-        entries.compact()
-        return (entries, subfolders)
-    }
 
     /// 几个线程一起扫这些位置（外接硬盘）。每个线程攒够一批（或者过了一秒）就交给 onBatch，可能在不同线程上调用。
     private static func scanTreesInParallel(_ roots: [String], threads: Int,
@@ -796,11 +782,11 @@ final class FileIndex: ObservableObject {
                 }
                 busy += 1
                 lock.unlock()
-                let listed = autoreleasepool { list(folder) }
+                let listed = autoreleasepool { FileSearchDirectory.read(folder) }
                 lock.lock()
-                if let (entries, subfolders) = listed {
-                    local[folder] = entries
-                    pending.append(contentsOf: subfolders)
+                if let listed {
+                    local[folder] = listed.entries
+                    pending.append(contentsOf: listed.subfolders)
                 }
                 busy -= 1
                 lock.unlock()
@@ -813,15 +799,15 @@ final class FileIndex: ObservableObject {
         var stack = [root]
         while let folder = stack.popLast() {
             // 每个文件夹读完就释放 FileManager 产生的临时对象，不然要等整个扫描结束，峰值高、留下很多内存碎片
-            guard let (entries, subfolders) = autoreleasepool(invoking: { list(folder) }) else {
+            guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder) }) else {
                 // 个人文件夹下第一层读不了，多半是没给权限（桌面、文稿、下载）
                 if (folder as NSString).deletingLastPathComponent == home {
                     denied.append(FileManager.default.displayName(atPath: folder))
                 }
                 continue
             }
-            result[folder] = entries
-            stack.append(contentsOf: subfolders)
+            result[folder] = listed.entries
+            stack.append(contentsOf: listed.subfolders)
         }
     }
 
@@ -882,19 +868,22 @@ final class FileIndex: ObservableObject {
                 continue
             }
             guard isIndexed(folder) else { continue }
-            touched = true
             // 系统说要整个重新扫描时，先把这个文件夹下面的全部去掉
-            if recursive { removeSubtree(folder) }
-            guard let (entries, subfolders) = autoreleasepool(invoking: { Self.list(folder) }) else {
+            if recursive {
+                touched = true
+                removeSubtree(folder)
+            }
+            guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder) }) else {
+                if folders[folder] != nil { touched = true }
                 removeSubtree(folder)   // 文件夹被删了
                 contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
                 continue
             }
             // 消失的子文件夹（被删除、改名或移走）：和原来列着的子文件夹比
-            let current = Set(subfolders)
+            let current = Set(listed.subfolders)
             var gone: [String] = []
             if let old = folders[folder] {
-                for index in old.indices where old.isDirectory(at: index) && !old.isPackage(at: index) {
+                for index in old.indices where old.isTraversable(at: index) {
                     let name = old.name(at: index)
                     let child = folder == "/" ? "/" + name : folder + "/" + name
                     if !current.contains(child) && folders[child] != nil {
@@ -903,13 +892,16 @@ final class FileIndex: ObservableObject {
                     }
                 }
             }
-            folders[folder] = entries
-            Self.collectContentFiles(folder, entries, into: &contentFiles)
+            // 只改正文也会收到事件。仍同步内容，但无需让面板重新搜一遍文件名。
+            if folders[folder] != listed.entries { touched = true }
+            folders[folder] = listed.entries
+            Self.collectContentFiles(folder, listed.entries, into: &contentFiles)
             contentScopes.append(ContentIndex.Scope(folder: folder, recursive: recursive))
             var denied: [String] = []
-            for sub in subfolders where folders[sub] == nil {
+            for sub in listed.subfolders where folders[sub] == nil {
                 var scanned: [String: FolderEntries] = [:]
                 Self.scanTree(sub, into: &scanned, denied: &denied)
+                if !scanned.isEmpty { touched = true }
                 folders.merge(scanned) { _, new in new }
                 for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }
                 if !recursive { contentScopes.append(ContentIndex.Scope(folder: sub, recursive: true)) }
@@ -917,14 +909,14 @@ final class FileIndex: ObservableObject {
             if !recursive { contentScopes += gone.map { ContentIndex.Scope(folder: $0, recursive: true) } }
         }
         if touched { publishCount() }
-        if !contentScopes.isEmpty { contentIndex?.sync(files: contentFiles, scopes: contentScopes) }
+        // 只收名称的位置经常有日志和缓存写入，不能因此让全文索引逐条检查已有文档。
+        let scopes = contentScopes.filter { Self.indexesContents(in: $0.folder) }
+        if !scopes.isEmpty { contentIndex?.sync(files: contentFiles, scopes: scopes) }
     }
 
-    /// 这个文件夹在索引范围里吗：是扫过的位置本身，或者上一级文件夹里列着它、而且它不是“包”。
-    /// 包（.app、照片图库）、隐藏文件夹、外接硬盘上的 Windows 系统文件夹扫描时都没收，里面有变化也不收。
+    /// 这个文件夹在索引范围里吗：是扫描根目录，或者上一级扫描时明确允许进入。
     /// 上一级也是新的时不用管：处理上一级时会把它整个扫一遍。
     private func isIndexed(_ folder: String) -> Bool {
-        if Self.excluded.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) { return false }
         if scannedRoots.contains(folder) { return true }
         guard scannedRoots.contains(where: { folder.hasPrefix($0 + "/") }) else { return false }
         let parent = (folder as NSString).deletingLastPathComponent
@@ -943,7 +935,7 @@ final class FileIndex: ObservableObject {
     /// 去掉这个文件夹和它下面所有的文件夹（按列着的子文件夹往下找，不用把所有文件夹比一遍）。
     private func removeSubtree(_ folder: String) {
         guard let entries = folders.removeValue(forKey: folder) else { return }
-        for index in entries.indices where entries.isDirectory(at: index) && !entries.isPackage(at: index) {
+        for index in entries.indices where entries.isTraversable(at: index) {
             let name = entries.name(at: index)
             removeSubtree(folder == "/" ? "/" + name : folder + "/" + name)
         }

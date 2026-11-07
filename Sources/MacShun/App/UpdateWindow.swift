@@ -134,14 +134,8 @@ struct UpdateView: View {
                     .font(.callout)
                 }
                 Spacer()
-                if updater.downloadedPackage != nil {
-                    // 下载好了却装不上（签名不对、没有权限），再试也一样，让用户自己拖进“应用程序”
-                    Button(L("手动安装")) { updater.installManually() }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        .nativeButtonHover()
-                } else if updater.problem != nil {
-                    Button(L("手动安装")) { updater.installManually() }
+                if updater.problem != nil {
+                    Button(L("打开官网下载")) { updater.installManually() }
                         .nativeButtonHover()
                     Button(L("重试")) { updater.install() }
                         .keyboardShortcut(.defaultAction)
@@ -158,7 +152,7 @@ struct UpdateView: View {
                 }
             } else if updater.problem != nil {
                 Spacer()
-                Button(L("去 GitHub 下载")) { updater.installManually() }
+                Button(L("打开官网下载")) { updater.installManually() }
                     .nativeButtonHover()
                 Button(L("重试")) { updater.check(manual: true) }
                     .keyboardShortcut(.defaultAction)
@@ -216,7 +210,7 @@ private struct ReleaseNotesBox: View {
                         .strokeBorder(Color.primary.opacity(0.08))
                 )
             }
-            Button(L("在 GitHub 上查看完整说明")) { NSWorkspace.shared.open(release.pageURL) }
+            Button(L("查看完整更新说明")) { NSWorkspace.shared.open(release.pageURL) }
                 .buttonStyle(.hoverLink)
                 .font(.callout)
         }

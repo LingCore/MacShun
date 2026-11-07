@@ -2,7 +2,6 @@
 
 import AppKit
 import ApplicationServices
-import Carbon
 import SwiftUI
 
 /// 剪贴板历史：记录、弹出面板、选中后粘贴（C1–C5）。只在主线程上使用。
@@ -16,8 +15,6 @@ final class ClipboardController {
     private var keyMonitor: Any?
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
     private var host: Host?
-    /// 打开面板前的输入法。搜索框只允许英文输入，系统可能因此切换输入法，关闭面板时切回来。
-    private var savedInputSource: TISInputSource?
 
     /// store 不给时用默认目录。不写成默认参数：默认参数不在主线程上下文里求值，不能调用 ClipboardStore()
     init(configStore: ConfigStore, store: ClipboardStore? = nil) {
@@ -30,6 +27,7 @@ final class ClipboardController {
     /// 按配置开始或停止记录。
     func applyConfig() {
         let cfg = configStore.config.clipboard
+        store.setImageRecognition(enabled: cfg.enabled && cfg.recordImages)
         if cfg.enabled {
             watcher.start()
             store.trim(maxItems: cfg.maxItems)
@@ -66,7 +64,7 @@ final class ClipboardController {
 
     func show(in host: Host? = nil) {
         guard configStore.config.clipboard.enabled else { return }
-        // 已经开着：放到前面就行，别把原来的搜索框、输入法记录换掉
+        // 已经开着：放到前面就行，保留正在输入的查询
         if panel.isVisible {
             panel.makeKeyAndOrderFront(nil)
             return
@@ -74,7 +72,6 @@ final class ClipboardController {
         model.prepareForShow()
         self.host = host
         if let host { position(panel, below: host.anchor) } else { position(panel) }
-        savedInputSource = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
         FrontAppTracker.shared.clipboardPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
         installKeyMonitor()
@@ -94,18 +91,12 @@ final class ClipboardController {
         self.host = nil
         removeKeyMonitor()
         FrontAppTracker.shared.clipboardPanelActive.set(false)
-        if panel.isVisible { panel.orderOut(nil) }
-        restoreInputSource()
-        host?.resigned()
-    }
-
-    private func restoreInputSource() {
-        guard let saved = savedInputSource else { return }
-        savedInputSource = nil
-        let current = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue()
-        if current.map({ CFEqual($0, saved) }) != true {
-            TISSelectInputSource(saved)
+        if panel.isVisible {
+            model.cancelTextCopy()
+            panel.endEditing(for: nil)
+            panel.orderOut(nil)
         }
+        host?.resigned()
     }
 
     /// 把选中的条目放进剪贴板，再模拟 ⌘V 粘贴到原来的应用里。
@@ -160,6 +151,15 @@ final class ClipboardController {
     private func makeModel() -> ClipboardPanelModel {
         let model = ClipboardPanelModel(store: store)
         model.onPaste = { [weak self] item in self?.paste(item) }
+        model.onFloat = { [weak self] item in
+            guard let self, let url = store.imageURL(for: item),
+                  let data = try? Data(contentsOf: url), let picture = PinPicture(png: data) else {
+                NSSound.beep()
+                return
+            }
+            hide()
+            ScreenPins.shared.show(picture)
+        }
         model.onClose = { [weak self] in self?.close() }
         return model
     }
@@ -169,6 +169,7 @@ final class ClipboardController {
         let host = NSHostingView(rootView: ClipboardPanelView(model: model))
         // 面板带隐藏的标题栏（为了圆角和阴影），不给它让位置，否则搜索框上面会空出一条
         host.safeAreaRegions = []
+        host.sizingOptions = []
         panel.contentView = host
         panel.onResignKey = { [weak self] in self?.hide() }
         return panel
@@ -181,6 +182,11 @@ final class ClipboardController {
             guard let self, event.window === self.panel else { return event }
             let mods = event.modifierFlags.intersection([.command, .control, .option])
             let key = CGKeyCode(event.keyCode)
+            if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
+            if key == KeyCode.f3, mods.isEmpty, let item = self.model.selectedItem, item.kind == .image {
+                self.model.onFloat(item)
+                return nil
+            }
             if key == KeyCode.p, mods == .command || mods == .control {
                 self.model.togglePinSelected()
                 return nil
@@ -200,7 +206,6 @@ final class ClipboardController {
 
     /// 放在文字光标下方；问不到光标位置时放在鼠标指针旁边。
     private func position(_ panel: NSPanel, below given: NSRect? = nil) {
-        let size = panel.frame.size
         let anchor = given ?? CaretLocator.caretRect() ?? {
             let mouse = NSEvent.mouseLocation
             return NSRect(x: mouse.x, y: mouse.y, width: 0, height: 0)
@@ -208,13 +213,15 @@ final class ClipboardController {
         let screen = NSScreen.screens.first { $0.frame.contains(anchor.origin) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
 
+        let size = CGSize(width: min(ClipboardPanel.size.width, max(1, visible.width - 16)),
+                          height: min(ClipboardPanel.size.height, max(1, visible.height - 16)))
         var origin = NSPoint(x: anchor.minX, y: anchor.minY - size.height - 6)
         if origin.y < visible.minY {
             origin.y = anchor.maxY + 6  // 下方放不下就放到上方
         }
         origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
         origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
-        panel.setFrameOrigin(origin)
+        panel.setFrame(CGRect(origin: origin, size: size), display: false)
     }
 }
 
