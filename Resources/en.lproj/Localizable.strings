@@ -510,3 +510,4 @@
 " · R 恢复上次选区" = " · R for previous region";
 "图片里没有可复制的文字" = "No text to copy from this image";
 "复制图中文字" = "Copy Text from Image";
+"粘贴为纯文本" = "Paste as Plain Text";

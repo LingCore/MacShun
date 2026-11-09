@@ -130,6 +130,13 @@ final class ClipboardPanelModel: ObservableObject {
         if let item = selectedItem { onPaste(item) }
     }
 
+    func pasteAsPlainText(_ item: ClipboardItem) {
+        guard item.kind == .text, item.text != nil else { return }
+        var plainItem = item
+        plainItem.extraFiles = [:]
+        onPaste(plainItem)
+    }
+
     func togglePinSelected() {
         if let item = selectedItem { store.togglePin(item.id) }
     }
@@ -400,6 +407,8 @@ private struct ClipboardRow: View {
             if item.kind == .image {
                 Button(L("复制图中文字")) { model.copyImageText(item) }
                 Button(L("贴到屏幕")) { model.onFloat(item) }
+            } else {
+                Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
             }
         }
         .onHover { inside in

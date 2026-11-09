@@ -44,6 +44,7 @@
 #### 📋 剪贴板历史（Option+V / Win+V）
 
 - Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。选中一条按回车即可粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
+- **粘贴为纯文本**。右键点击文字条目，选“粘贴为纯文本”，即可去掉来源格式。按 Enter 可以按原格式粘贴。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
 - 记录文字和图片，常用的内容可以固定在最上面。右上角“全部清除”一键清空历史，固定的保留。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
@@ -246,6 +247,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
 
 - Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Press Return to paste an item. In the file search bar, the selected text goes into the query.
+- **Paste as plain text.** Right-click a text item and choose **Paste as Plain Text** to strip the original formatting. Press Enter for a regular paste with formatting.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
 - Stores text and images; pin the items you use often. “Clear All” in the top-right corner empties the history and keeps pinned items.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.

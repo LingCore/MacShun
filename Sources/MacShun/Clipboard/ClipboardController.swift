@@ -141,7 +141,7 @@ final class ClipboardController {
             }
         }
         pasteboard.clearContents()
-        pasteboard.writeObjects([pbItem])
+        guard pasteboard.writeObjects([pbItem]) else { return false }
         watcher.noteOwnWrite()
         return true
     }
