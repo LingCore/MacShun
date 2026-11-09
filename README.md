@@ -35,7 +35,7 @@
 
 ## 中文
 
-**Mac顺 是什么？** 一个让 Mac 用得更顺手的小工具。Mac 自带的没有、或者藏得很深的常用功能，装上就有：剪贴板历史、连按两下 Ctrl 搜文件（文件里的字也能搜）、窗口分屏、关掉鼠标加速、每块屏幕按百分比调缩放。从 Windows 换过来的人，还能直接用熟悉的习惯：Ctrl+C / Ctrl+V 复制粘贴、Alt+Tab 切换窗口、鼠标滚轮方向和 Windows 一样。不用学新的快捷键，也不用写任何配置。
+**Mac顺 是什么？** 一个让 Mac 用得更顺手的小工具。Mac 自带的没有、或者藏得很深的常用功能，装上就有：剪贴板历史、连按两下 Ctrl 搜文件（文件里的字也能搜）、窗口分屏、关掉鼠标加速、每块屏幕按百分比调缩放。从 Windows 换过来的人，还能直接用熟悉的习惯：Alt+Tab 切换程序、Win+E 打开访达，鼠标滚轮方向也和 Windows 一样。不用学新的快捷键，也不用写任何配置。
 
 它常驻在屏幕顶部的菜单栏，不占程序坞，除了检查更新和每天一次的匿名装机报告（可在“设置 › 通用”关闭）不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
 
@@ -132,12 +132,9 @@
 
 #### ⌨️ 快捷键像 Windows
 
-- **Ctrl 组合键**：Ctrl+C / V / X / Z / S / A / F 等代替 ⌘，Ctrl+Y 重做。
-- **文字光标**：Home / End 到行首行尾，Ctrl+Home / End 到文档首尾，Ctrl+← / → 按词移动，Ctrl+Backspace 删一个词，按住 Shift 同时选中。
-- **系统快捷键**：Alt+Tab 切换程序，Alt+F4 关闭窗口，Win+E 打开访达，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索，Win+Space 切换输入法。
+- **系统快捷键**：Alt+Tab 切换程序，Alt+F4 退出当前应用，Win+E 打开访达，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索，Win+Space 切换输入法。
 - **访达（Finder）**：Ctrl+X 再 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级。
-- **聊天软件截图**：微信、QQ 里的 Alt+A、Ctrl+Alt+A 截图照常能用。
-- **不该改的地方不改**：终端里保留原来的 Ctrl 键，远程桌面和虚拟机里不改写任何按键（包括 ToDesk、向日葵、UU 远程）。
+- **远程桌面和虚拟机**：保留原生按键行为，包括 ToDesk、向日葵和 UU 远程。
 - **两种键盘都能用**：Windows 键盘和 Mac 键盘上 Ctrl、Option、⌘ 的位置不同，Mac顺 自动识别，不用设置。
 
 所有选项都能用设置窗口顶部的**搜索框**找到（⌘F，支持拼音）。
@@ -166,9 +163,6 @@
 
 ### 常见问题
 
-**Mac 上怎么用 Ctrl+C、Ctrl+V 复制粘贴？**
-装上 Mac顺 就行。它把 Ctrl+字母自动换成 ⌘+字母，所有程序里都有效；终端里保持原样，不影响命令行。
-
 **Mac 鼠标滚轮方向是反的，怎么只改鼠标、不改触控板？**
 macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的。Mac顺 只改鼠标的方向，触控板不受影响。
 
@@ -179,7 +173,7 @@ macOS 自带的设置里，鼠标和触控板的滚动方向是绑在一起的�
 有。Mac 键盘按 **Option+V** 打开历史，**Command+V** 直接粘贴。Windows 键盘按 **Win+V** 打开。关闭“快捷键像 Windows”后，仍可从菜单栏选择“打开剪贴板历史”。
 
 **和 Karabiner-Elements、LinearMouse、Maccy、Rectangle 有什么区别？**
-这些都是很好的工具，但要分别安装、自己配置。Mac顺 把“快捷键 + 鼠标 + 剪贴板 + 分屏”一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、微信 QQ 截图、国产远程软件）。
+这些都是很好的工具，但要分别安装、自己配置。Mac顺 把“快捷键 + 鼠标 + 剪贴板 + 分屏”一次做好，默认就是 Windows 的习惯，装上即用，并且针对中文用户做了优化（拼音搜索、国产远程软件）。
 
 **Mac 怎么像 Windows 一样用 Win+方向键分屏？**
 装上 Mac顺 就行：Win+← / → 分到左右半边，Win+↑ 最大化，拖到屏幕边缘也能分屏，分好一半后还会列出其他窗口让你选另一半（贴靠助手）。
@@ -229,7 +223,7 @@ scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 
 
 ## English
 
-**What is MacShun?** MacShun (Mac顺, "a Mac that feels smooth"; formerly WinShun) is a small macOS menu bar app that makes your Mac smoother to use. It adds everyday tools that macOS lacks or hides away: clipboard history, press-Ctrl-twice file search (including text inside files), window snapping, turning off pointer acceleration, and per-display scaling in percentages. If you come from Windows, your habits work too: Ctrl+C / Ctrl+V to copy and paste, Alt+Tab to switch apps, Windows-style mouse wheel direction. No new shortcuts to learn and no configuration files to write.
+**What is MacShun?** MacShun (Mac顺, "a Mac that feels smooth"; formerly WinShun) is a small macOS menu bar app that makes your Mac smoother to use. It adds everyday tools that macOS lacks or hides away: clipboard history, press-Ctrl-twice file search (including text inside files), window snapping, turning off pointer acceleration, and per-display scaling in percentages. If you come from Windows, your habits work too: Alt+Tab to switch apps, Win+E to open Finder, and Windows-style mouse wheel direction. No new shortcuts to learn and no configuration files to write.
 
 It lives in the menu bar, stays out of the Dock, works offline apart from checking for updates and a once-a-day anonymous install report (which you can turn off in Settings › General), needs no account, and is completely free.
 
@@ -336,11 +330,9 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 #### ⌨️ Windows keyboard shortcuts on Mac
 
-- **Ctrl shortcuts**: Ctrl+C / V / X / Z / S / A / F and friends work like ⌘; Ctrl+Y is redo.
-- **Text navigation**: Home / End jump to the start / end of the line, Ctrl+Home / End to the start / end of the document, Ctrl+← / → move by word, Ctrl+Backspace deletes a word; hold Shift to select.
-- **System shortcuts**: Alt+Tab switches apps, Alt+F4 closes the window, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
+- **System shortcuts**: Alt+Tab switches apps, Alt+F4 quits the current app, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
 - **Finder**: Ctrl+X then Ctrl+V cuts and moves files, F2 renames, Enter opens, Delete moves to Trash, Backspace goes up a folder.
-- **Leaves things alone where it should**: Terminal keeps its Ctrl keys; remote desktop and virtual machine apps are never remapped.
+- **Remote desktops and virtual machines** receive their original keyboard input.
 - **Works with both keyboard types**: Windows and Mac keyboards put Ctrl, Option and ⌘ in different places — MacShun detects which one you are typing on.
 
 Every option can be found with the **search box** at the top of the settings window (⌘F).
@@ -369,9 +361,6 @@ The settings window walks you through each one, and changes take effect immediat
 
 ### FAQ
 
-**How do I use Ctrl+C and Ctrl+V on a Mac?**
-Install MacShun. It turns Ctrl+letter into ⌘+letter in every app, except Terminal, where Ctrl keeps its usual meaning.
-
 **How do I reverse the mouse scroll direction without changing the trackpad?**
 macOS ties the two together. MacShun changes the direction for mice only.
 
@@ -385,7 +374,7 @@ Yes. On a Mac keyboard, **Option+V** opens history and **Command+V** pastes. On 
 Install MacShun: Win+← / → snaps to halves, Win+↑ maximizes, dragging to screen edges snaps too, and Snap Assist offers your other windows for the other half.
 
 **How is it different from Karabiner-Elements, LinearMouse, Maccy or Rectangle?**
-Those are great tools, but each does one thing and needs setup. MacShun does keyboard, mouse, clipboard and window snapping together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search, WeChat / QQ screenshot keys, popular Chinese remote desktop apps).
+Those are great tools, but each does one thing and needs setup. MacShun does keyboard, mouse, clipboard and window snapping together, with Windows behavior as the default, and is tuned for Chinese users (pinyin search and support for popular Chinese remote desktop apps).
 
 **Is there an Everything-like file search for Mac?**
 MacShun includes one: press Ctrl twice and start typing.

@@ -6,15 +6,11 @@
 
 | 编号 | 要求 |
 |---|---|
-| K1 | Ctrl+字母、数字、符号代替 ⌘+同一个键（复制、粘贴、剪切、撤销、保存、全选、查找等）；Ctrl+Y 是重做 |
-| K2 | Home/End 跳到行首行尾，Ctrl+Home/End 跳到文档首尾，Ctrl+←/→ 按词移动，Ctrl+Backspace 删除一个词，以上按住 Shift 时同时选中文字 |
-| K3 | Alt+Tab 切换，Alt+F4 关闭，Win+E 打开 Finder，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索 |
+| K3 | Alt+Tab 切换程序，Alt+F4 退出当前应用，Win+E 打开 Finder，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索 |
 | K4 | Finder 里：Ctrl+X 加 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级；光标在输入框里时不改写 |
-| K5 | 在终端里不改写 Ctrl 组合键，终端改用 Ctrl+Shift+C/V 复制粘贴 |
 | K6 | 在远程桌面和虚拟机里不改写任何按键，包括国产远程工具（UU远程、ToDesk、向日葵） |
 | K7 | Win+V 呼出剪贴板历史（见 C1） |
 | K8 | 提供“Windows 键盘 / Mac 键盘”两种布局选项，两种键盘上 Ctrl、Option、Command 的位置不同 |
-| K9 | 检查与常用软件的快捷键冲突：微信、QQ、钉钉、搜狗输入法、微信输入法 |
 | ~~K10~~ | ~~Caps Lock 只管大写~~（2026-10-03 试过后去掉：macOS 切换输入法时会自动关掉 Caps Lock，做不到比系统默认的“按住锁定大写”更好用） |
 
 ## 2. 鼠标像 Windows

@@ -7,8 +7,8 @@ import SwiftUI
 /// 首字母和额外的关键词都能匹配，不管界面是哪种语言。
 struct SettingsItem: Identifiable {
     enum ID: String {
-        case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
-        case captureShortcuts, chatScreenshot, terminal, remoteDesktop, excludedApps
+        case keyboardEnabled, keyboardMode, systemShortcuts, finderShortcuts
+        case captureShortcuts, remoteDesktop, excludedApps
         case fileSearchEnabled, fileIndex, externalDrives, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
@@ -56,20 +56,12 @@ extension SettingsItem {
               keywords: "keyboard 键盘 开关 shortcuts enable"),
         .init(id: .keyboardMode, tab: .keyboard, title: "键盘模式",
               keywords: "win mac 模式 布局 layout type"),
-        .init(id: .ctrlAsCommand, tab: .keyboard, title: "Ctrl 组合键",
-              keywords: "复制 粘贴 剪切 撤销 重做 全选 保存 查找 copy paste cut undo redo save find select command ⌘"),
-        .init(id: .textNavigation, tab: .keyboard, title: "文字光标",
-              keywords: "home end 行首 行尾 删词 按词移动 cursor word backspace"),
         .init(id: .systemShortcuts, tab: .keyboard, title: "系统快捷键",
               keywords: "alt+tab alt+f4 win+e win+d win+l win+s 切换程序 关闭窗口 显示桌面 锁屏 输入法 switch apps close lock desktop input source"),
         .init(id: .finderShortcuts, tab: .keyboard, title: "Finder",
               keywords: "访达 文件 剪切 移动 重命名 删除 f2 files rename move"),
         .init(id: .captureShortcuts, tab: .keyboard, title: "截图快捷键",
               keywords: "截图 截屏 识别屏幕文字 取字 screenshot capture screen text ocr"),
-        .init(id: .chatScreenshot, tab: .keyboard, title: "微信、QQ 截图",
-              keywords: "wechat qq screenshot 截屏 alt+a"),
-        .init(id: .terminal, tab: .keyboard, title: "终端",
-              keywords: "terminal iterm 命令行 ctrl+shift+c"),
         .init(id: .remoteDesktop, tab: .keyboard, title: "远程桌面、虚拟机",
               keywords: "todesk 向日葵 parallels vmware rdp remote vm"),
         .init(id: .excludedApps, tab: .keyboard, title: "另外不改写按键的应用",

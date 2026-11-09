@@ -49,12 +49,8 @@ enum KeyAction: Equatable {
 /// 判断按键时需要的环境信息。
 struct KeyContext {
     var appKind: AppKind
-    var isBrowser: Bool
     var clipboardEnabled: Bool
-    /// 微信或 QQ 是否在运行
-    var chatAppRunning: Bool = false
-    /// 当前输入源的标识
-    var inputSourceID: String? = nil
+    var searchPanelActive = false
     /// Win+方向键分屏是否打开
     var windowShortcuts = false
     /// 查询键盘焦点。代价较高，只在规则需要时才调用。
@@ -79,13 +75,6 @@ struct KeyMapper {
         return m
     }
 
-    /// Ctrl+这些键会变成 ⌘+同一个键（K1）。
-    /// 不改写的：Ctrl+H（⌘H 会隐藏程序）、Ctrl+M（⌘M 会最小化）、Ctrl+Q（⌘Q 会退出程序）、Ctrl+`。
-    static let ctrlAsCommandKeys: Set<CGKeyCode> = KeyCode.letters
-        .subtracting([KeyCode.h, KeyCode.m, KeyCode.q])
-        .union(KeyCode.digits)
-        .union(KeyCode.symbols)
-
     func action(keyCode: CGKeyCode, flags: CGEventFlags, context: KeyContext) -> KeyAction {
         guard context.appKind != .excluded else { return .pass }
         let mods = modifiers(of: flags)
@@ -102,15 +91,9 @@ struct KeyMapper {
         }
         guard config.enabled else { return .pass }
 
-        let shift: CGEventFlags = mods.contains(.shift) ? .maskShift : []
-
-        // 焦点只查一次。
-        var cachedFocus: FocusKind?
-        func focus() -> FocusKind {
-            if let cachedFocus { return cachedFocus }
-            let f = context.focus()
-            cachedFocus = f
-            return f
+        // 搜索面板保留 Ctrl+V 粘贴，Windows 布局下 ⌘V 用于打开剪贴板历史。
+        if context.searchPanelActive, keyCode == KeyCode.v, mods == [.ctrl] {
+            return .send(KeyStroke(KeyCode.v, .maskCommand))
         }
 
         // K3、K7：所有应用里都生效，终端也一样。
@@ -118,47 +101,9 @@ struct KeyMapper {
             return action
         }
 
-        // K5：终端里只改 Ctrl+Shift+C/V。
-        if context.appKind == .terminal {
-            if config.ctrlAsCommand, mods == [.ctrl, .shift] {
-                if keyCode == KeyCode.c { return .send(KeyStroke(KeyCode.c, .maskCommand)) }
-                if keyCode == KeyCode.v { return .send(KeyStroke(KeyCode.v, .maskCommand)) }
-            }
-            return .pass
-        }
-
-        // K9：微信、QQ 的截图。Windows 上是 Alt+A（微信）和 Ctrl+Alt+A（QQ），Mac 上都是 ⌃⌘A。
-        // 只在它们运行时才换，否则 ⌃⌘A 在 Finder 里是“制作替身”。
-        // 只认 ⌥：Mac 模式下 Alt 发出 ⌘，⌘A 是全选不能动，而 Ctrl+Alt+A 本来就是 ⌃⌘A。
-        let rawMods = flags.intersection(.modifierKeys)
-        if config.chatScreenshot, context.chatAppRunning, keyCode == KeyCode.a,
-           rawMods == .maskAlternate || rawMods == [.maskControl, .maskAlternate] {
-            return .send(KeyStroke(KeyCode.a, [.maskControl, .maskCommand]))
-        }
-
-        // K4：Finder 的文件列表里。光标在输入框里（例如正在重命名）时不改写。
-        if context.appKind == .finder, config.finderShortcuts,
-           let action = finderShortcut(keyCode: keyCode, mods: mods, focus: focus) {
-            return action
-        }
-
-        // K2：文字光标移动。
-        if config.textNavigation,
-           let action = textNavigation(keyCode: keyCode, mods: mods, shift: shift, context: context, focus: focus) {
-            return action
-        }
-
-        // K1：Ctrl+键 → ⌘+键。
-        if config.ctrlAsCommand, mods.subtracting(.shift) == [.ctrl], Self.ctrlAsCommandKeys.contains(keyCode) {
-            // K9：搜狗输入法用 ⌃. 切换中英文标点，和 Windows 版的 Ctrl+. 一样，保留给它。
-            if keyCode == KeyCode.period,
-               context.inputSourceID?.hasPrefix(AppCatalog.sogouInputSourcePrefix) == true {
-                return .pass
-            }
-            if keyCode == KeyCode.y && shift.isEmpty {
-                return .send(KeyStroke(KeyCode.z, [.maskCommand, .maskShift]))  // Ctrl+Y 重做
-            }
-            return .send(KeyStroke(keyCode, CGEventFlags.maskCommand.union(shift)))
+        // K4：只改写 Finder 文件列表上的按键，保留搜索框和重命名的原生行为。
+        if context.appKind == .finder, config.finderShortcuts {
+            return finderShortcut(keyCode: keyCode, mods: mods, focus: context.focus) ?? .pass
         }
 
         return .pass
@@ -233,46 +178,6 @@ struct KeyMapper {
         case KeyCode.forwardDelete: return .send(KeyStroke(KeyCode.backspace, .maskCommand)) // 移到废纸篓
         case KeyCode.backspace: return .send(KeyStroke(KeyCode.upArrow, .maskCommand))       // 上一级
         default: return nil
-        }
-    }
-
-    private func textNavigation(
-        keyCode: CGKeyCode, mods: WinModifiers, shift: CGEventFlags,
-        context: KeyContext, focus: () -> FocusKind
-    ) -> KeyAction? {
-        let base = mods.subtracting(.shift)
-
-        // 光标是否在可以输入文字的地方。浏览器里 ⌘← 是“后退”，所以浏览器里必须确定是输入框才算。
-        func inText() -> Bool {
-            switch focus() {
-            case .text: return true
-            case .unknown: return !context.isBrowser
-            case .browsing, .other: return false
-            }
-        }
-
-        switch (keyCode, base) {
-        case (KeyCode.home, []), (KeyCode.end, []):
-            // 不在输入框里时，Mac 原本的 Home/End 就是滚到顶部/底部，和 Windows 一样。
-            guard inText() else { return nil }
-            let arrow = keyCode == KeyCode.home ? KeyCode.leftArrow : KeyCode.rightArrow
-            return .send(KeyStroke(arrow, CGEventFlags.maskCommand.union(shift)))
-
-        case (KeyCode.home, [.ctrl]), (KeyCode.end, [.ctrl]):
-            if inText() {
-                let arrow = keyCode == KeyCode.home ? KeyCode.upArrow : KeyCode.downArrow
-                return .send(KeyStroke(arrow, CGEventFlags.maskCommand.union(shift)))
-            }
-            return .send(KeyStroke(keyCode, shift))
-
-        case (KeyCode.leftArrow, [.ctrl]), (KeyCode.rightArrow, [.ctrl]):
-            return .send(KeyStroke(keyCode, CGEventFlags.maskAlternate.union(shift)))
-
-        case (KeyCode.backspace, [.ctrl]), (KeyCode.forwardDelete, [.ctrl]):
-            return .send(KeyStroke(keyCode, CGEventFlags.maskAlternate.union(shift)))
-
-        default:
-            return nil
         }
     }
 }

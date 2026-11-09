@@ -137,13 +137,13 @@ final class KeyboardEngine {
             action = .command(keyCode == KeyCode.escape ? .cancelScrollingCapture : .finishScrollingCapture)
         } else {
             let context: KeyContext
-            if environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get()
-                || environment.snapAssistActive.get() {
+            let searchPanelActive = environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get()
+            if searchPanelActive || environment.snapAssistActive.get() {
                 // 剪贴板面板、文件搜索框或贴靠助手开着时，按键在本程序的面板里，不按后面那个应用的规则处理。
                 context = KeyContext(
-                    appKind: .normal, isBrowser: false,
+                    appKind: .normal,
                     clipboardEnabled: config.get().clipboard.enabled,
-                    inputSourceID: environment.inputSourceID.get(),
+                    searchPanelActive: searchPanelActive,
                     windowShortcuts: config.get().window.enabled,
                     focus: { .text }
                 )
@@ -151,10 +151,7 @@ final class KeyboardEngine {
                 let app = environment.current.get()
                 context = KeyContext(
                     appKind: AppCatalog.kind(of: app, userExcluded: cfg.excludedApps),
-                    isBrowser: AppCatalog.isBrowser(app),
                     clipboardEnabled: config.get().clipboard.enabled,
-                    chatAppRunning: environment.chatAppRunning.get(),
-                    inputSourceID: environment.inputSourceID.get(),
                     windowShortcuts: config.get().window.enabled,
                     focus: { [focusInspector] in focusInspector.focusKind() }
                 )

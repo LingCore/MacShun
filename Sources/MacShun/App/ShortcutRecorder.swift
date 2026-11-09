@@ -4,7 +4,7 @@ import AppKit
 import SwiftUI
 
 /// 录一组快捷键（鼠标侧键用）。点一下开始，按下组合键就记下，Esc 取消。
-/// 录的时候 Mac顺 的键盘规则先停一下，记下用户实际按的键（按 Ctrl+C 就记 Ctrl+C，不是改写后的 ⌘C）。
+/// 录制期间暂时放行原始按键，记下用户实际按的组合。
 struct ShortcutRecorder: NSViewRepresentable {
     @Binding var shortcut: WinShortcut?
 

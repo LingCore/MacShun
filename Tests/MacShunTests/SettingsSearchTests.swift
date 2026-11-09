@@ -26,7 +26,8 @@ struct SettingsSearchTests {
 
     @Test func keywords() {
         #expect(finds("开机", .launchAtLogin))
-        #expect(finds("copy", .ctrlAsCommand))
+        #expect(finds("Alt+Tab", .systemShortcuts))
+        #expect(finds("F2", .finderShortcuts))
         #expect(finds("Option+V", .clipboardEnabled))
         #expect(finds("⌘V", .clipboardEnabled))
         #expect(finds("language", .language))

@@ -80,7 +80,7 @@ struct WindowKeyTests {
         var config = KeyboardConfig()
         config.layout = .windows
         let mapper = KeyMapper(config: config)
-        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) { .text }
+        var context = KeyContext(appKind: .normal, clipboardEnabled: true) { .text }
         // Windows 键盘上 Win 键是 ⌘
         #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskCommand, context: context) != .command(.window(.snap(.left))))
         context.windowShortcuts = true
@@ -96,7 +96,7 @@ struct WindowKeyTests {
         var config = KeyboardConfig()
         config.layout = .mac
         let mapper = KeyMapper(config: config)
-        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) { .text }
+        var context = KeyContext(appKind: .normal, clipboardEnabled: true) { .text }
         context.windowShortcuts = true
         // Mac 键盘上和 Win 键同一个位置的是 ⌥
         #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskAlternate, context: context) == .command(.window(.snap(.left))))
@@ -108,7 +108,7 @@ struct WindowKeyTests {
         config.layout = .windows
         config.enabled = false
         let mapper = KeyMapper(config: config)
-        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) { .text }
+        var context = KeyContext(appKind: .normal, clipboardEnabled: true) { .text }
         context.windowShortcuts = true
         #expect(mapper.action(keyCode: KeyCode.leftArrow, flags: .maskCommand, context: context) == .command(.window(.snap(.left))))
         #expect(mapper.action(keyCode: KeyCode.c, flags: .maskControl, context: context) == .pass)

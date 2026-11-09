@@ -50,7 +50,7 @@ struct CaptureTests {
         config.captureShortcut = WinShortcut(keyCode: KeyCode.f6, modifiers: [])
         config.captureTextShortcut = WinShortcut(keyCode: KeyCode.f6, modifiers: .shift)
         let mapper = KeyMapper(config: config)
-        var context = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: false, focus: { .unknown })
+        var context = KeyContext(appKind: .normal, clipboardEnabled: false, focus: { .unknown })
         #expect(mapper.action(keyCode: KeyCode.f6, flags: [], context: context) == .command(.capture(.image)))
         #expect(mapper.action(keyCode: KeyCode.f6, flags: .maskShift, context: context) == .command(.capture(.text)))
         context.appKind = .excluded

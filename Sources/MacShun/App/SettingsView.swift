@@ -366,7 +366,7 @@ private struct KeyboardSettings: View {
     var body: some View {
         SearchableForm {
             Section {
-                SettingsPageHeader(tab: .keyboard, subtitle: L("Ctrl+C/V 复制粘贴，Alt+Tab 切换程序")) {
+                SettingsPageHeader(tab: .keyboard, subtitle: L("Alt+Tab 切换程序，Win+E 打开 Finder")) {
                     Toggle("", isOn: $config.enabled).labelsHidden()
                 }
                 .settingsAnchor(.keyboardEnabled)
@@ -400,11 +400,8 @@ private struct KeyboardSettings: View {
             .disabled(!config.enabled)
 
             Section(L("改写的按键")) {
-                rule(L("Ctrl 组合键"), L("Ctrl+C/V/X/Z/S/A/F 当作 ⌘ 组合键，Ctrl+Y 重做"), $config.ctrlAsCommand).settingsAnchor(.ctrlAsCommand)
-                rule(L("文字光标"), L("Home/End 到行首行尾，Ctrl+←/→ 按词移动，Ctrl+Backspace 删词"), $config.textNavigation).settingsAnchor(.textNavigation)
                 rule(L("系统快捷键"), L("Alt+Tab、Alt+F4、Win+E/D/L/S、Win+Space 切换输入法"), $config.systemShortcuts).settingsAnchor(.systemShortcuts)
                 rule("Finder", L("Ctrl+X 剪切移动文件，F2 重命名，Enter 打开，Delete 删除"), $config.finderShortcuts).settingsAnchor(.finderShortcuts)
-                rule(L("微信、QQ 截图"), L("Alt+A、Ctrl+Alt+A 截图"), $config.chatScreenshot).settingsAnchor(.chatScreenshot)
             }
             .disabled(!config.enabled)
 
@@ -418,8 +415,6 @@ private struct KeyboardSettings: View {
             }
 
             Section {
-                InfoRow(symbol: "terminal", title: L("终端"), detail: L("Ctrl 组合键保持原样，用 Ctrl+Shift+C/V 复制粘贴"))
-                    .settingsAnchor(.terminal)
                 InfoRow(symbol: "display.2", title: L("远程桌面、虚拟机"), detail: L("不改写任何按键，例如 ToDesk、向日葵、微软远程桌面、Parallels"))
                     .settingsAnchor(.remoteDesktop)
                 ExcludedAppsEditor(bundleIDs: $config.excludedApps)

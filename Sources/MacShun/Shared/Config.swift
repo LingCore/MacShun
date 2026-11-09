@@ -17,16 +17,10 @@ enum KeyboardLayoutKind: String, Codable, CaseIterable, Identifiable {
 struct KeyboardConfig: Codable, Equatable {
     var enabled = true
     var layout: KeyboardLayoutKind = .windows
-    /// K1：Ctrl+键 当作 ⌘+键
-    var ctrlAsCommand = true
-    /// K2：Home/End、Ctrl+←/→ 等文字光标移动
-    var textNavigation = true
     /// K3：Alt+Tab、Alt+F4、Win+E/D/L/S
     var systemShortcuts = true
     /// K4：Finder 里的剪切移动、F2、Enter、Delete、Backspace
     var finderShortcuts = true
-    /// K9：微信、QQ 运行时，Alt+A、Ctrl+Alt+A 换成它们的截图快捷键 ⌃⌘A
-    var chatScreenshot = true
     var captureShortcut: WinShortcut?
     var captureTextShortcut: WinShortcut?
     /// 每把键盘的布局，键是 InputDevice.key。没识别过的键盘用上面的 `layout`。
@@ -50,11 +44,8 @@ struct KeyboardConfig: Codable, Equatable {
         let d = KeyboardConfig()
         enabled = c.value(.enabled, default: d.enabled)
         layout = c.value(.layout, default: d.layout)
-        ctrlAsCommand = c.value(.ctrlAsCommand, default: d.ctrlAsCommand)
-        textNavigation = c.value(.textNavigation, default: d.textNavigation)
         systemShortcuts = c.value(.systemShortcuts, default: d.systemShortcuts)
         finderShortcuts = c.value(.finderShortcuts, default: d.finderShortcuts)
-        chatScreenshot = c.value(.chatScreenshot, default: d.chatScreenshot)
         captureShortcut = try? c.decodeIfPresent(WinShortcut.self, forKey: .captureShortcut)
         captureTextShortcut = try? c.decodeIfPresent(WinShortcut.self, forKey: .captureTextShortcut)
         layouts = c.value(.layouts, default: d.layouts)

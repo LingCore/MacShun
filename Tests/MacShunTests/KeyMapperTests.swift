@@ -16,117 +16,40 @@ private func mapper(_ layout: KeyboardLayoutKind = .windows, _ edit: (inout Keyb
     return KeyMapper(config: config)
 }
 
-private func context(
-    _ kind: AppKind = .normal, browser: Bool = false, focus: FocusKind = .unknown,
-    clipboard: Bool = true, chat: Bool = false, inputSource: String? = nil
-) -> KeyContext {
-    KeyContext(
-        appKind: kind, isBrowser: browser, clipboardEnabled: clipboard,
-        chatAppRunning: chat, inputSourceID: inputSource, focus: { focus }
-    )
+private func context(_ kind: AppKind = .normal, focus: FocusKind = .unknown, clipboard: Bool = true) -> KeyContext {
+    KeyContext(appKind: kind, clipboardEnabled: clipboard, focus: { focus })
 }
 
 private func send(_ key: CGKeyCode, _ flags: CGEventFlags = []) -> KeyAction {
     .send(KeyStroke(key, flags))
 }
 
-@Suite("K1 Ctrl 组合键")
-struct CtrlAsCommandTests {
-    @Test func ctrlLetterBecomesCommand() {
+@Suite("已移除的按键改写")
+struct RetiredRemappingTests {
+    @Test func pasteStillWorksInSearchPanels() {
+        var search = context()
+        search.searchPanelActive = true
         let m = mapper()
-        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: context()) == send(KeyCode.c, cmd))
-        #expect(m.action(keyCode: KeyCode.v, flags: ctrl, context: context()) == send(KeyCode.v, cmd))
-        #expect(m.action(keyCode: KeyCode.s, flags: ctrl, context: context()) == send(KeyCode.s, cmd))
-        #expect(m.action(keyCode: KeyCode.one, flags: ctrl, context: context()) == send(KeyCode.one, cmd))
-        #expect(m.action(keyCode: KeyCode.slash, flags: ctrl, context: context()) == send(KeyCode.slash, cmd))
+        #expect(m.action(keyCode: KeyCode.v, flags: ctrl, context: search) == send(KeyCode.v, cmd))
+        #expect(m.action(keyCode: KeyCode.v, flags: cmd, context: search) == .command(.clipboardHistory))
+        #expect(m.action(keyCode: KeyCode.a, flags: ctrl, context: search) == .pass)
     }
 
-    @Test func shiftIsKept() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.z, flags: [ctrl, shift], context: context()) == send(KeyCode.z, [cmd, shift]))
-    }
-
-    @Test func ctrlYIsRedo() {
-        #expect(mapper().action(keyCode: KeyCode.y, flags: ctrl, context: context()) == send(KeyCode.z, [cmd, shift]))
-    }
-
-    @Test func dangerousKeysAreNotRemapped() {
-        let m = mapper()
-        for key in [KeyCode.h, KeyCode.m, KeyCode.q, KeyCode.grave, KeyCode.space, KeyCode.tab, KeyCode.returnKey] {
-            #expect(m.action(keyCode: key, flags: ctrl, context: context()) == .pass)
+    @Test func ordinaryEditingAndChatKeysPassThrough() {
+        for layout in KeyboardLayoutKind.allCases {
+            let m = mapper(layout)
+            let ordinary = context(focus: .text)
+            for key in [KeyCode.a, KeyCode.c, KeyCode.v, KeyCode.x, KeyCode.y, KeyCode.backspace, KeyCode.leftArrow, KeyCode.rightArrow] {
+                #expect(m.action(keyCode: key, flags: ctrl, context: ordinary) == .pass)
+            }
+            for key in [KeyCode.home, KeyCode.end] {
+                #expect(m.action(keyCode: key, flags: [], context: ordinary) == .pass)
+                #expect(m.action(keyCode: key, flags: [ctrl, shift], context: ordinary) == .pass)
+            }
+            #expect(m.action(keyCode: KeyCode.a, flags: opt, context: ordinary) == .pass)
+            #expect(m.action(keyCode: KeyCode.a, flags: [ctrl, opt], context: ordinary) == .pass)
+            #expect(m.action(keyCode: KeyCode.v, flags: [ctrl, shift], context: ordinary) == .pass)
         }
-    }
-
-    /// 微信、QQ 的 ⌃⌘A 截图要原样保留。
-    @Test func ctrlWithCommandIsUntouched() {
-        #expect(mapper().action(keyCode: KeyCode.a, flags: [ctrl, cmd], context: context()) == .pass)
-    }
-
-    @Test func nativeCommandShortcutsStillWork() {
-        #expect(mapper().action(keyCode: KeyCode.c, flags: cmd, context: context()) == .pass)
-        #expect(mapper(.mac).action(keyCode: KeyCode.c, flags: cmd, context: context()) == .pass)
-    }
-
-    @Test func macLayoutUsesControlAsCtrl() {
-        #expect(mapper(.mac).action(keyCode: KeyCode.c, flags: ctrl, context: context()) == send(KeyCode.c, cmd))
-    }
-
-    @Test func disabled() {
-        let m = mapper { $0.ctrlAsCommand = false }
-        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: context()) == .pass)
-        let off = mapper { $0.enabled = false }
-        #expect(off.action(keyCode: KeyCode.c, flags: ctrl, context: context()) == .pass)
-    }
-
-    /// 普通的 Ctrl 组合键不需要查询焦点（查询焦点是跨进程调用）。
-    @Test func doesNotQueryFocusUnlessNeeded() {
-        var queried = 0
-        let ctx = KeyContext(appKind: .normal, isBrowser: false, clipboardEnabled: true) {
-            queried += 1
-            return .text
-        }
-        _ = mapper().action(keyCode: KeyCode.c, flags: ctrl, context: ctx)
-        #expect(queried == 0)
-        _ = mapper().action(keyCode: KeyCode.home, flags: [], context: ctx)
-        #expect(queried == 1)
-    }
-}
-
-@Suite("K2 文字光标")
-struct TextNavigationTests {
-    @Test func homeEndInText() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: context(focus: .text)) == send(KeyCode.leftArrow, cmd))
-        #expect(m.action(keyCode: KeyCode.end, flags: shift, context: context(focus: .text)) == send(KeyCode.rightArrow, [cmd, shift]))
-    }
-
-    @Test func homeEndOutsideTextKeepsScrolling() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: context(focus: .browsing)) == .pass)
-        #expect(m.action(keyCode: KeyCode.end, flags: [], context: context(focus: .other)) == .pass)
-    }
-
-    /// 浏览器里 ⌘← 是“后退”，问不到焦点时不能改写。
-    @Test func browserNeedsConfirmedTextFocus() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: context(browser: true, focus: .unknown)) == .pass)
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: context(browser: true, focus: .text)) == send(KeyCode.leftArrow, cmd))
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: context(browser: false, focus: .unknown)) == send(KeyCode.leftArrow, cmd))
-    }
-
-    @Test func ctrlHomeEnd() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.home, flags: ctrl, context: context(focus: .text)) == send(KeyCode.upArrow, cmd))
-        #expect(m.action(keyCode: KeyCode.end, flags: [ctrl, shift], context: context(focus: .text)) == send(KeyCode.downArrow, [cmd, shift]))
-        #expect(m.action(keyCode: KeyCode.home, flags: ctrl, context: context(focus: .browsing)) == send(KeyCode.home))
-    }
-
-    @Test func wordMovementAndDeletion() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.leftArrow, flags: ctrl, context: context()) == send(KeyCode.leftArrow, opt))
-        #expect(m.action(keyCode: KeyCode.rightArrow, flags: [ctrl, shift], context: context()) == send(KeyCode.rightArrow, [opt, shift]))
-        #expect(m.action(keyCode: KeyCode.backspace, flags: ctrl, context: context()) == send(KeyCode.backspace, opt))
-        #expect(m.action(keyCode: KeyCode.forwardDelete, flags: ctrl, context: context()) == send(KeyCode.forwardDelete, opt))
     }
 }
 
@@ -218,7 +141,7 @@ struct FinderTests {
         #expect(m.action(keyCode: KeyCode.backspace, flags: [], context: fileList) == send(KeyCode.upArrow, cmd))
         #expect(m.action(keyCode: KeyCode.x, flags: ctrl, context: fileList) == .finderCut)
         #expect(m.action(keyCode: KeyCode.v, flags: ctrl, context: fileList) == .finderPaste)
-        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: fileList) == send(KeyCode.c, cmd))
+        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: fileList) == .pass)
     }
 
     /// 正在重命名或在搜索框里时，按键保持输入框的行为。
@@ -228,7 +151,7 @@ struct FinderTests {
         #expect(m.action(keyCode: KeyCode.returnKey, flags: [], context: renaming) == .pass)
         #expect(m.action(keyCode: KeyCode.backspace, flags: [], context: renaming) == .pass)
         #expect(m.action(keyCode: KeyCode.forwardDelete, flags: [], context: renaming) == .pass)
-        #expect(m.action(keyCode: KeyCode.x, flags: ctrl, context: renaming) == send(KeyCode.x, cmd))
+        #expect(m.action(keyCode: KeyCode.x, flags: ctrl, context: renaming) == .pass)
     }
 
     /// 问不到焦点时按 Mac 原样处理，避免误删文件。
@@ -245,21 +168,8 @@ struct FinderTests {
     }
 }
 
-@Suite("K5 终端、K6 远程桌面")
+@Suite("K6 远程桌面")
 struct SpecialAppTests {
-    @Test func terminalKeepsCtrl() {
-        let m = mapper()
-        let terminal = context(.terminal, focus: .text)
-        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: terminal) == .pass)
-        #expect(m.action(keyCode: KeyCode.a, flags: ctrl, context: terminal) == .pass)
-        #expect(m.action(keyCode: KeyCode.leftArrow, flags: ctrl, context: terminal) == .pass)
-        #expect(m.action(keyCode: KeyCode.home, flags: [], context: terminal) == .pass)
-        #expect(m.action(keyCode: KeyCode.c, flags: [ctrl, shift], context: terminal) == send(KeyCode.c, cmd))
-        #expect(m.action(keyCode: KeyCode.v, flags: [ctrl, shift], context: terminal) == send(KeyCode.v, cmd))
-        // 系统快捷键在终端里照常。
-        #expect(m.action(keyCode: KeyCode.tab, flags: opt, context: terminal) == .appSwitcher(reverse: false))
-    }
-
     @Test func remoteDesktopGetsEverything() {
         let m = mapper()
         let remote = context(.excluded)
@@ -273,8 +183,6 @@ struct SpecialAppTests {
         func kind(_ id: String?, _ name: String? = nil, excluded: [String] = []) -> AppKind {
             AppCatalog.kind(of: AppIdentity(bundleID: id, name: name), userExcluded: excluded)
         }
-        #expect(kind("com.apple.Terminal") == .terminal)
-        #expect(kind("com.googlecode.iterm2") == .terminal)
         #expect(kind("com.apple.finder") == .finder)
         #expect(kind("com.youqu.todesk.mac") == .excluded)
         #expect(kind("com.netease.uuremote") == .excluded)
@@ -286,32 +194,5 @@ struct SpecialAppTests {
         #expect(kind("com.example.app", excluded: ["com.example.app"]) == .excluded)
         #expect(kind("com.apple.TextEdit") == .normal)
         #expect(kind(nil) == .normal)
-    }
-}
-
-@Suite("K9 常用软件")
-struct ChatAndInputMethodTests {
-    @Test func wechatScreenshot() {
-        let m = mapper()
-        #expect(m.action(keyCode: KeyCode.a, flags: opt, context: context(chat: true)) == send(KeyCode.a, [ctrl, cmd]))
-        #expect(m.action(keyCode: KeyCode.a, flags: [ctrl, opt], context: context(chat: true)) == send(KeyCode.a, [ctrl, cmd]))
-        // 微信、QQ 没开时不换，⌃⌘A 在 Finder 里是“制作替身”。
-        #expect(m.action(keyCode: KeyCode.a, flags: opt, context: context(chat: false)) == .pass)
-        let off = mapper { $0.chatScreenshot = false }
-        #expect(off.action(keyCode: KeyCode.a, flags: opt, context: context(chat: true)) == .pass)
-        // 终端里 Alt、Ctrl 组合键保持原样。
-        #expect(m.action(keyCode: KeyCode.a, flags: [ctrl, opt], context: context(.terminal, chat: true)) == .pass)
-        // Mac 键盘上 Alt 是 ⌘，⌘A 是全选，不能换。
-        #expect(mapper(.mac).action(keyCode: KeyCode.a, flags: cmd, context: context(chat: true)) == .pass)
-        #expect(mapper(.mac).action(keyCode: KeyCode.a, flags: opt, context: context(chat: true)) == send(KeyCode.a, [ctrl, cmd]))
-    }
-
-    @Test func sogouPunctuationToggle() {
-        let m = mapper()
-        let sogou = context(inputSource: "com.sogou.inputmethod.sogou.pinyin")
-        #expect(m.action(keyCode: KeyCode.period, flags: ctrl, context: sogou) == .pass)
-        #expect(m.action(keyCode: KeyCode.c, flags: ctrl, context: sogou) == send(KeyCode.c, cmd))
-        let apple = context(inputSource: "com.apple.inputmethod.SCIM.ITABC")
-        #expect(m.action(keyCode: KeyCode.period, flags: ctrl, context: apple) == send(KeyCode.period, cmd))
     }
 }

@@ -19,9 +19,9 @@ enum SideButtonAction: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .back: L("后退")
         case .forward: L("前进")
-        case .copy: L("复制（Ctrl+C）")
-        case .paste: L("粘贴（Ctrl+V）")
-        case .closeTab: L("关闭标签页（Ctrl+W）")
+        case .copy: L("复制（⌘C）")
+        case .paste: L("粘贴（⌘V）")
+        case .closeTab: L("关闭标签页（⌘W）")
         case .refresh: L("刷新（F5）")
         case .taskView: L("任务视图（Win+Tab）")
         case .showDesktop: L("显示桌面（Win+D）")
@@ -113,7 +113,7 @@ enum SideButtons {
         /// 本程序直接发出这个按键
         case keystroke(KeyStroke)
         case command(SystemCommand)
-        /// 像用户按了这组键一样发出去，经过 Mac顺 的键盘规则（例如普通程序里 Ctrl+C 变成 ⌘C，远程桌面里不变）
+        /// 像用户按下录制的键一样发送，经过现有的键盘规则。
         case shortcut(WinShortcut)
     }
 

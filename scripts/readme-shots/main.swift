@@ -39,7 +39,7 @@ state.keyboards = [
     InputDevice(key: "1133:50475:Logitech K845", name: "Logitech K845 Mechanical Keyboard", vendorID: 1133, productID: 50475),
 ]
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("macshun-shots-\(UUID().uuidString)")
-let store = ClipboardStore(directory: scratch.appendingPathComponent("clip"))
+let store = MainActor.assumeIsolated { ClipboardStore(directory: scratch.appendingPathComponent("clip")) }
 let now = Date()
 let samples: [(String, String, Double)] = en ? [
     ("Meeting notes: release planning, Friday 3 pm, Room 3", "Notes", 3600),
@@ -60,7 +60,7 @@ let samples: [(String, String, Double)] = en ? [
 ]
 for (i, s) in samples.enumerated() {
     let cap = ClipboardCapture(kind: .text, text: s.0, fingerprint: "sample-\(i)", sourceApp: s.1)
-    store.add(cap, maxItems: 200, now: now.addingTimeInterval(-s.2))
+    MainActor.assumeIsolated { store.add(cap, maxItems: 200, now: now.addingTimeInterval(-s.2)) }
 }
 
 func pump(_ s: Double) { RunLoop.main.run(until: Date().addingTimeInterval(s)) }
@@ -198,7 +198,7 @@ func render<V: View>(_ view: V, size: NSSize, wait: Double = 0.8) -> NSBitmapIma
 
 // MARK: - 设置窗口
 
-if wants("keyboard") { save(settingsWindow(.keyboard, size: NSSize(width: 720, height: 600)), "keyboard-\(suffix).png", radius: 16) }
+if wants("keyboard") { save(settingsWindow(.keyboard, size: NSSize(width: 720, height: en ? 648 : 622)), "keyboard-\(suffix).png", radius: 16) }
 // 底边落在“光标”和下一节之间的空白里
 if wants("mouse") { save(settingsWindow(.mouse, size: NSSize(width: 720, height: 590)), "mouse-\(suffix).png", radius: 16) }
 if wants("display") {
@@ -226,7 +226,7 @@ if wants("display") {
 
 // MARK: - 剪贴板面板
 
-if wants("panel") {
+@MainActor func renderClipboardPanel() {
     let model = ClipboardPanelModel(store: store)
     model.prepareForShow()
     let panel = ClipboardPanel()
@@ -240,10 +240,11 @@ if wants("panel") {
     save(capture(host), "panel-\(suffix).png", radius: 12)
     panel.orderOut(nil)
 }
+if wants("panel") { MainActor.assumeIsolated { renderClipboardPanel() } }
 
 // MARK: - 文件搜索
 
-if wants("search") {
+@MainActor func renderFileSearch() {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let contentIndex = ContentIndex(directory: scratch.appendingPathComponent("content"))
     let model = FileSearchModel(index: FileIndex.shared, contentIndex: contentIndex)
@@ -288,7 +289,7 @@ if wants("search") {
     pump(0.3)   // 等初始化时的那次空搜索回来
     model.showPreview(query: query, results: results, icons: icons)
     pump(0.3)
-    let height = FileSearchView.height(resultCount: results.count, hasContentSection: model.contentStart != nil, showsStatus: false)
+    let height = FileSearchView.height(resultCount: results.count, hasSectionHeader: model.contentStart != nil, showsStatus: false)
     let size = NSSize(width: FileSearchPanel.width + 80, height: height + 56)
     let view = ZStack(alignment: .top) {
         desktop
@@ -298,6 +299,7 @@ if wants("search") {
     }
     save(render(view, size: size), "search-\(suffix).png", radius: 12)
 }
+if wants("search") { MainActor.assumeIsolated { renderFileSearch() } }
 
 // MARK: - 分屏：左边一个窗口，右边是贴靠助手
 

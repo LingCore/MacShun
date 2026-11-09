@@ -11,8 +11,6 @@ struct AppIdentity: Equatable {
 /// 应用的类别，决定按键怎么改写。
 enum AppKind: Equatable {
     case normal
-    /// 终端：不改写 Ctrl 组合键，改用 Ctrl+Shift+C/V 复制粘贴（K5）。
-    case terminal
     case finder
     /// 远程桌面、虚拟机，以及用户排除的应用：不改写任何按键（K6）。
     case excluded
@@ -21,22 +19,6 @@ enum AppKind: Equatable {
 /// 各类应用的名单。
 enum AppCatalog {
     static let finder = "com.apple.finder"
-
-    static let terminals: Set<String> = [
-        "com.apple.Terminal",
-        "com.googlecode.iterm2",
-        "dev.warp.Warp-Stable",
-        "dev.warp.Warp",
-        "dev.warp.Warp-Preview",
-        "net.kovidgoyal.kitty",
-        "org.alacritty",
-        "io.alacritty",
-        "com.alacritty",
-        "com.github.wez.wezterm",
-        "co.zeit.hyper",
-        "com.mitchellh.ghostty",
-        "org.tabby",
-    ]
 
     /// 远程桌面和虚拟机（K6）。
     static let remoteAndVM: Set<String> = [
@@ -101,40 +83,6 @@ enum AppCatalog {
         "UTM",
     ]
 
-    /// 浏览器：网页里 ⌘← 是“后退”，所以只有确定光标在输入框里时才改写 Home/End。
-    static let browsers: Set<String> = [
-        "com.apple.Safari",
-        "com.apple.SafariTechnologyPreview",
-        "com.google.Chrome",
-        "com.google.Chrome.beta",
-        "com.google.Chrome.dev",
-        "com.google.Chrome.canary",
-        "com.microsoft.edgemac",
-        "com.microsoft.edgemac.Beta",
-        "com.microsoft.edgemac.Dev",
-        "org.mozilla.firefox",
-        "org.mozilla.firefoxdeveloperedition",
-        "org.mozilla.nightly",
-        "com.brave.Browser",
-        "company.thebrowser.Browser",
-        "com.vivaldi.Vivaldi",
-        "com.operasoftware.Opera",
-        "org.chromium.Chromium",
-        "com.kagi.kagimacOS",
-        "net.qihoo.360browser",
-        "com.tencent.qqbrowserappmac",
-        "com.tencent.QQBrowser",
-    ]
-
-    /// 截图快捷键是 ⌃⌘A 的聊天软件：微信、QQ（K9）。
-    static let chatAppsWithControlCommandAScreenshot: Set<String> = [
-        "com.tencent.xinWeChat",
-        "com.tencent.qq",
-    ]
-
-    /// 搜狗输入法的输入源前缀。它用 ⌃. 切换中英文标点，和 Windows 版的 Ctrl+. 一样（K9）。
-    static let sogouInputSourcePrefix = "com.sogou.inputmethod"
-
     /// 本身就支持鼠标侧键前进后退的应用，侧键原样交给它们（M4）。
     static let nativeSideButtonPrefixes: [String] = [
         "com.google.Chrome",
@@ -168,13 +116,7 @@ enum AppCatalog {
         if isRemoteOrVM(app) { return .excluded }
         guard let id = app.bundleID else { return .normal }
         if id == finder { return .finder }
-        if terminals.contains(id) { return .terminal }
         return .normal
-    }
-
-    static func isBrowser(_ app: AppIdentity) -> Bool {
-        guard let id = app.bundleID else { return false }
-        return browsers.contains(id)
     }
 
     static func handlesSideButtonsNatively(_ app: AppIdentity) -> Bool {

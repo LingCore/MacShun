@@ -23,7 +23,7 @@ final class SelfTest {
 
     nonisolated static var onlyFileDialog: Bool { CommandLine.arguments.contains("--self-test-file-dialog") }
 
-    private enum Mod { case ctrl, alt, win, shift }
+    private enum Mod { case ctrl, command, alt, win, shift }
 
     private let config: AppConfig
     private let clipboard: ClipboardController
@@ -106,7 +106,6 @@ final class SelfTest {
         let savedClipboard = NSPasteboard.general.string(forType: .string)
         setUpWindow()
         if await ensureFocus() {
-            await textTests()
             await clipboardPanelTest()
             await fileSearchTest()
             _ = await ensureFocus()
@@ -175,68 +174,6 @@ final class SelfTest {
 
     private func finish() {
         say("自测结束：通过 \(passed) 项，失败 \(failed) 项")
-    }
-
-    // MARK: - K1、K2：文字编辑
-
-    private func textTests() async {
-        say("— 键盘：文字编辑（K1、K2）")
-        let text = "hello world foo\nsecond line here"
-
-        await setText(text, caret: 3)
-        await press(KeyCode.a, [.ctrl])
-        expectKey("Ctrl+A → ⌘A", KeyCode.a, .command)
-        check("Ctrl+A 全选", textView.selectedRange() == NSRange(location: 0, length: (text as NSString).length))
-
-        NSPasteboard.general.clearContents()
-        await press(KeyCode.c, [.ctrl])
-        expectKey("Ctrl+C → ⌘C", KeyCode.c, .command)
-        check("Ctrl+C 复制", NSPasteboard.general.string(forType: .string) == text,
-              "剪贴板：\(NSPasteboard.general.string(forType: .string) ?? "空")")
-
-        await setText(text, caret: 7)
-        await press(KeyCode.end)
-        expectKey("End → ⌘→", KeyCode.rightArrow, .command)
-        check("End 到行尾", caret == 15, "光标在 \(caret)")
-
-        await press(KeyCode.home)
-        expectKey("Home → ⌘←", KeyCode.leftArrow, .command)
-        check("Home 到行首", caret == 0, "光标在 \(caret)")
-
-        await setText(text, caret: 7)
-        await press(KeyCode.end, [.shift])
-        check("Shift+End 选到行尾", textView.selectedRange() == NSRange(location: 7, length: 8),
-              "选区 \(textView.selectedRange())")
-
-        await setText(text, caret: 7)
-        await press(KeyCode.end, [.ctrl])
-        expectKey("Ctrl+End → ⌘↓", KeyCode.downArrow, .command)
-        check("Ctrl+End 到文末", caret == (text as NSString).length, "光标在 \(caret)")
-        await press(KeyCode.home, [.ctrl])
-        check("Ctrl+Home 到文首", caret == 0, "光标在 \(caret)")
-
-        await setText(text, caret: 0)
-        await press(KeyCode.rightArrow, [.ctrl])
-        expectKey("Ctrl+→ → ⌥→", KeyCode.rightArrow, .option)
-        check("Ctrl+→ 按词移动", caret == 5, "光标在 \(caret)")
-
-        await setText(text, caret: 11)
-        await press(KeyCode.backspace, [.ctrl])
-        expectKey("Ctrl+Backspace → ⌥⌫", KeyCode.backspace, .option)
-        let afterDelete = "hello  foo\nsecond line here"
-        check("Ctrl+Backspace 删除一个词", textView.string == afterDelete, "内容：\(textView.string.debugDescription)")
-
-        await press(KeyCode.z, [.ctrl])
-        expectKey("Ctrl+Z → ⌘Z", KeyCode.z, .command)
-        check("Ctrl+Z 撤销", textView.string == text, "内容：\(textView.string.debugDescription)")
-
-        await press(KeyCode.y, [.ctrl])
-        expectKey("Ctrl+Y → ⌘⇧Z", KeyCode.z, [.command, .shift])
-        check("Ctrl+Y 重做", textView.string == afterDelete, "内容：\(textView.string.debugDescription)")
-
-        await setText("abc", caret: 3)
-        await press(KeyCode.h, [.ctrl])
-        expectKey("Ctrl+H 保持原样", KeyCode.h, .control)
     }
 
     // MARK: - C1、C2：剪贴板历史
@@ -375,7 +312,7 @@ final class SelfTest {
             && fileSearch.visibleResults.first?.isDirectory == true
         check("直接输入点号目录名，第一条就是该目录", dotFound)
         guard dotFound else { return }
-        await press(KeyCode.a, [.ctrl], settle: 100)
+        await press(KeyCode.a, [.command], settle: 100)
 
         let query = "桌面/\(rootName)/art/gpt/style_reference.png"
         NSPasteboard.general.clearContents()
@@ -408,7 +345,7 @@ final class SelfTest {
             await press(KeyCode.escape, settle: 300)
             check("Esc 关掉剪贴板面板，回到搜索框", !clipboard.isVisible && fileSearch.isVisible && fileSearch.isKey,
                   "剪贴板面板：\(clipboard.isVisible)，搜索框：\(fileSearch.isVisible)，在接收按键：\(fileSearch.isKey)")
-            await press(KeyCode.a, [.ctrl], settle: 100)
+            await press(KeyCode.a, [.command], settle: 100)
             await press(KeyCode.backspace, settle: 300)
             await press(KeyCode.v, [.win], settle: 500)
             await press(KeyCode.returnKey, settle: 300)
@@ -448,7 +385,7 @@ final class SelfTest {
             await pause(300)
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(menuQuery, forType: .string)
-            await press(KeyCode.a, [.ctrl], settle: 100)
+            await press(KeyCode.a, [.command], settle: 100)
             await press(KeyCode.v, [.ctrl], settle: 300)
             return await waitUntil(timeout: 6) {
                 Set(fileSearch.visibleResults.map(\.path)).isSuperset(of: expected.map(\.path))
@@ -661,22 +598,21 @@ final class SelfTest {
     private func sideButtonSettingsTest(at point: CGPoint) async {
         let saved = (config.mouse.backButton, config.mouse.forwardButton)
         updateConfig {
-            $0.mouse.forwardButton = SideButtonSetting(.shortcut, shortcut: WinShortcut(keyCode: KeyCode.a, modifiers: .ctrl))
+            let modifiers = SideButtons.modifiers(of: .maskCommand, layout: config.keyboard.layout)
+            $0.mouse.forwardButton = SideButtonSetting(.shortcut, shortcut: WinShortcut(keyCode: KeyCode.a, modifiers: modifiers))
             $0.mouse.backButton = SideButtonSetting(.none)
         }
         defer { updateConfig { $0.mouse.backButton = saved.0; $0.mouse.forwardButton = saved.1 } }
         await pause(200)
 
-        // 按 Ctrl+A 的效果要和键盘上按的一样：经过键盘规则变成 ⌘A，全选
+        // 录制 ⌘A 后，侧键和键盘上的 ⌘A 一样全选。
         let text = "hello side button"
         await setText(text, caret: 3)
         postOtherMouse(4, at: point)
         let selected = await waitUntil(timeout: 1) {
             self.textView.selectedRange() == NSRange(location: 0, length: (text as NSString).length)
         }
-        if config.keyboard.enabled && config.keyboard.ctrlAsCommand {
-            check("侧键设成 Ctrl+A：和按 Ctrl+A 一样全选", selected, "选区 \(textView.selectedRange())")
-        }
+        check("侧键设成 ⌘A：和按 ⌘A 一样全选", selected, "选区 \(textView.selectedRange())")
 
         keyLog.removeAll()
         buttonLog.removeAll()
@@ -1227,6 +1163,7 @@ final class SelfTest {
     private func physical(_ mod: Mod) -> (key: CGKeyCode, flag: CGEventFlags) {
         switch mod {
         case .ctrl: return (KeyCode.control, .maskControl)
+        case .command: return (KeyCode.command, .maskCommand)
         case .shift: return (KeyCode.shift, .maskShift)
         case .alt: return mapper.altFlag == .maskAlternate ? (KeyCode.option, .maskAlternate) : (KeyCode.command, .maskCommand)
         case .win: return mapper.winFlag == .maskCommand ? (KeyCode.command, .maskCommand) : (KeyCode.option, .maskAlternate)
@@ -1374,8 +1311,6 @@ final class SelfTest {
         textView.setSelectedRange(NSRange(location: caret, length: 0))
         await pause(50)
     }
-
-    private var caret: Int { textView.selectedRange().location }
 
     private func windowCenter() -> CGPoint {
         let frame = window.frame

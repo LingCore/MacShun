@@ -150,11 +150,12 @@ struct ConfigTests {
     }
 
     @Test func partialConfig() throws {
-        let json = #"{"keyboard":{"layout":"mac","excludedApps":["a.b.c"]},"mouse":{"defaults":{"scrollLines":99}}}"#
+        let json = #"{"keyboard":{"layout":"mac","excludedApps":["a.b.c"],"systemShortcuts":false,"finderShortcuts":false,"ctrlAsCommand":true,"textNavigation":true,"chatScreenshot":true},"mouse":{"defaults":{"scrollLines":99}}}"#
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         #expect(config.keyboard.layout == .mac)
         #expect(config.keyboard.excludedApps == ["a.b.c"])
-        #expect(config.keyboard.ctrlAsCommand)
+        #expect(!config.keyboard.systemShortcuts)
+        #expect(!config.keyboard.finderShortcuts)
         #expect(config.mouse.defaults.scrollLines == 20)
         #expect(config.clipboard == ClipboardConfig())
     }
