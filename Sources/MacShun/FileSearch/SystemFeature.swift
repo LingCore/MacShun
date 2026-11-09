@@ -59,14 +59,15 @@ struct SystemFeature: Identifiable {
     }
 }
 
-/// System destinations have no file actions or file history.
+/// 搜索结果和首页的固定项目使用不同的操作与选中标识。
 enum LauncherRow: Identifiable {
-    case file(FileSearchResult), feature(SystemFeature)
-    enum ID: Hashable { case file(String), feature(SystemFeature.Destination) }
+    case file(FileSearchResult), feature(SystemFeature), project(PinnedSearchFolder)
+    enum ID: Hashable { case file(String), feature(SystemFeature.Destination), project(String) }
     var id: ID {
         switch self {
         case .file(let file): .file(file.path)
         case .feature(let feature): .feature(feature.id)
+        case .project(let folder): .project(folder.path)
         }
     }
     var file: FileSearchResult? {

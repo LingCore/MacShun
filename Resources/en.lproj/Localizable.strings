@@ -163,6 +163,10 @@
 "图片" = "Image";
 "图片 %@×%@" = "Image %@×%@";
 "取消固定" = "Unpin";
+"常用项目夹" = "Pinned Project Folders";
+"固定到常用项目夹" = "Pin to Project Folders";
+"返回常用项目夹" = "Back to Projects";
+"输入关键词" = "Type to search";
 "未知鼠标" = "Unknown mouse";
 "未知设备" = "Unknown device";
 

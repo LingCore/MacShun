@@ -155,7 +155,6 @@ final class FileSearchController {
         model.preferredFolder = dialog == nil ? Self.finderFolder() : nil
         model.prepareForShow(inFileDialog: dialog != nil)
         model.isShown = true
-        resize()
         position()
         FrontAppTracker.shared.fileSearchPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
@@ -249,7 +248,7 @@ final class FileSearchController {
     // MARK: - 面板
 
     private func makeModel() -> FileSearchModel {
-        let model = FileSearchModel(index: index, contentIndex: contentIndex)
+        let model = FileSearchModel(index: index, contentIndex: contentIndex, pinDefaults: SelfTest.isRequested ? nil : .standard)
         model.history = history
         model.onAction = { [weak self] result, action in self?.perform(action, on: result) }
         model.onFeature = { [weak self] feature in
@@ -306,14 +305,23 @@ final class FileSearchController {
         (event.keyCode == 36 || event.keyCode == 76) && !event.modifierFlags.intersection([.control, .command]).isEmpty
     }
 
-    /// 面板高度：胶囊加上下面的结果列表。保持顶边不动。
+    private var preferredHeight: CGFloat {
+        FileSearchView.height(resultCount: model.rows.count, hasSectionHeader: model.showsPinnedFolders || model.contentStart != nil,
+                              showsStatus: model.showsStatus, previewing: model.isPreviewing, inFolder: model.folder != nil)
+    }
+
+    /// 保持顶边不动，让列表在可见区域内滚动。
     private func resize() {
-        var height = FileSearchView.height(resultCount: model.rows.count, hasContentSection: model.contentStart != nil,
-                                           showsStatus: model.showsStatus, previewing: model.isPreviewing, inFolder: model.folder != nil)
+        var height = preferredHeight
         var frame = panel.frame
-        if model.isPreviewing, let visible = panel.screen?.visibleFrame {
-            height = min(height, visible.height, max(200, frame.maxY - visible.minY))
-            if frame.maxY - height < visible.minY { frame.origin.y += visible.minY - (frame.maxY - height) }
+        if let visible = panel.screen?.visibleFrame {
+            let available = frame.maxY - visible.minY
+            if model.isPreviewing {
+                height = min(height, visible.height, max(200, available))
+                if height > available { frame.origin.y += height - available }
+            } else if panel.isVisible {
+                height = min(height, max(1, available))
+            }
         }
         guard abs(frame.height - height) > 0.5 else { return }
         frame.origin.y += frame.height - height
@@ -328,8 +336,9 @@ final class FileSearchController {
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let width = min(FileSearchPanel.width, visible.width)
         let top = visible.maxY - visible.height * 0.22
-        panel.setFrame(NSRect(x: visible.midX - width / 2, y: top - panel.frame.height,
-                              width: width, height: panel.frame.height), display: false)
+        let height = min(preferredHeight, top - visible.minY)
+        panel.setFrame(NSRect(x: visible.midX - width / 2, y: top - height,
+                              width: width, height: height), display: false)
     }
 }
 
@@ -441,11 +450,15 @@ final class FileSearchModel: ObservableObject {
         let path: String?
         let query: String
         let scope: FileSearchScope
-        let selection: String
+        let selection: LauncherRow.ID
     }
     private var returnPoints: [ReturnPoint] = []
     private var changingFolder = false
-    private var restoreFolderSelection: String?
+    private var restoreFolderSelection: LauncherRow.ID?
+    var returnsToProjects: Bool {
+        if case .project? = returnPoints.last?.selection { return true }
+        return false
+    }
 
     @Published private(set) var inFileDialog = false
     private var primaryAction: FileAction { inFileDialog ? .goToFolder : .open }
@@ -501,6 +514,7 @@ final class FileSearchModel: ObservableObject {
 
     let index: FileIndex
     let contentIndex: ContentIndex
+    private var pins: PinnedSearchFolders
     /// 打开过的文件排在前面
     var history: OpenHistory?
     var onAction: (FileSearchResult, FileAction) -> Void = { _, _ in }
@@ -527,9 +541,10 @@ final class FileSearchModel: ObservableObject {
     /// 有内容结果时，文件名结果最多显示几条，免得内容结果被挤到很下面
     static let maxNameResultsWithContent = 6
 
-    init(index: FileIndex, contentIndex: ContentIndex) {
+    init(index: FileIndex, contentIndex: ContentIndex, pinDefaults: UserDefaults? = nil) {
         self.index = index
         self.contentIndex = contentIndex
+        pins = PinnedSearchFolders(defaults: pinDefaults)
         // 索引建好、文件有变化时，按现在的关键词重新搜一次。扫描外接硬盘时一秒会有好几次，选中的那条不动
         index.$fileCount
             // 改名和移动常常不改变数量，也要刷新当前搜索。
@@ -561,6 +576,11 @@ final class FileSearchModel: ObservableObject {
 
     /// 内容结果从第几条开始（在这里显示“文件内容”的小标题）；没有内容结果、或者只看内容时为 nil
     var contentStart: Int? { effectiveScope == .all ? rows.firstIndex { $0.file?.snippet != nil } : nil }
+
+    var showsPinnedFolders: Bool {
+        folder == nil && !inFileDialog && searchesNames && !pins.folders.isEmpty
+            && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     /// 只看内容时，打的字太少还不会搜
     var needsLongerQuery: Bool {
@@ -595,23 +615,23 @@ final class FileSearchModel: ObservableObject {
     func prepareForShow(inFileDialog: Bool = false) {
         self.inFileDialog = inFileDialog
         returnPoints.removeAll()
-        folder = nil
-        query = ""
-        nameResults = []
-        contentResults = []
-        rows = []
-        selection = 0
-        scope = .files
-        searchingContent = false
         hoveredPath = nil
-        cancelDelete()
-        focusToken += 1
+        navigate(to: nil, query: "", scope: .files, selecting: nil)
     }
 
     func searchInside(_ result: FileSearchResult) {
-        guard result.canSearchInside, result.path != folder?.path, rows.contains(where: { $0.id == .file(result.path) }) else { return }
-        returnPoints.append(ReturnPoint(path: folder?.path, query: query, scope: effectiveScope, selection: result.path))
-        navigate(to: result.path, query: "", scope: effectiveScope, selecting: nil)
+        guard result.canSearchInside else { return }
+        enterFolder(result.path, returningTo: .file(result.path))
+    }
+
+    func openProject(_ project: PinnedSearchFolder) {
+        enterFolder(project.path, returningTo: .project(project.path))
+    }
+
+    private func enterFolder(_ path: String, returningTo id: LauncherRow.ID) {
+        guard path != folder?.path, rows.contains(where: { $0.id == id }) else { return }
+        returnPoints.append(ReturnPoint(path: folder?.path, query: query, scope: effectiveScope, selection: id))
+        navigate(to: path, query: "", scope: effectiveScope, selecting: nil)
     }
 
     func leaveFolder() {
@@ -625,7 +645,7 @@ final class FileSearchModel: ObservableObject {
         else { onClose() }
     }
 
-    private func navigate(to path: String?, query text: String, scope requested: FileSearchScope, selecting: String?) {
+    private func navigate(to path: String?, query text: String, scope requested: FileSearchScope, selecting: LauncherRow.ID?) {
         changingFolder = true
         folder = path.map(FileSearchFolder.init(path:))
         scope = availableScopes.contains(requested) ? requested : .files
@@ -636,7 +656,11 @@ final class FileSearchModel: ObservableObject {
         contentResults = []
         contentResultsQuery = nil
         query = text
-        restoreFolderSelection = selecting
+        if let selecting, let position = rows.firstIndex(where: { $0.id == selecting }) {
+            selection = position
+        } else {
+            restoreFolderSelection = selecting
+        }
         focusToken += 1
     }
 
@@ -655,9 +679,9 @@ final class FileSearchModel: ObservableObject {
             self.nameResults = page.results
             self.nameResultsQuery = self.query
             self.merge(resetSelection: resetSelection)
-            if let path = self.restoreFolderSelection {
+            if let id = self.restoreFolderSelection {
                 self.restoreFolderSelection = nil
-                if let i = self.rows.firstIndex(where: { $0.id == .file(path) }) { self.selection = i }
+                if let i = self.rows.firstIndex(where: { $0.id == id }) { self.selection = i }
             }
             self.finishSelectionAction()
             // 扫盘时同一个查询可连续收到多批更新。先显示已找到的结果，再补一次最新的。
@@ -714,6 +738,10 @@ final class FileSearchModel: ObservableObject {
             let kept = selectedID.flatMap { id in rows.firstIndex { $0.id == id } }
             selection = kept ?? 0
             if kept == nil { closeQuickLook() }
+        }
+        if showsPinnedFolders {
+            rows = pins.folders.map(LauncherRow.project)
+            return
         }
         let namesFound = nameResultsQuery == query ? nameResults : []
         let contentsFound = searchesTextForQuery && contentResultsQuery == query ? contentResults : []
@@ -854,6 +882,11 @@ final class FileSearchModel: ObservableObject {
             if case .open = action { onFeature(feature) }
             return
         }
+        if case .project(let project) = selectedRow {
+            pendingSelectionAction = nil
+            if case .open = action { openProject(project) }
+            return
+        }
         guard !waitingForNames else { return }
         if searchingContent && contentResultsQuery != query && (selectedResult?.snippet != nil || selectedResult == nil) { return }
         pendingSelectionAction = nil
@@ -869,10 +902,36 @@ final class FileSearchModel: ObservableObject {
     func contextMenu(for result: FileSearchResult) -> NSMenu? {
         guard let position = rows.firstIndex(where: { $0.id == .file(result.path) }) else { return nil }
         selection = position
-        return FileContextMenu.make(for: result, inFileDialog: inFileDialog, searchInside: { [weak self] in self?.searchInside(result) },
+        let pinItem: NSMenuItem?
+        if result.canSearchInside && !inFileDialog {
+            if pins.contains(result.path) {
+                pinItem = ActionMenuItem(L("取消固定"), symbol: "pin.slash") { [weak self] in self?.unpinProject(result.path) }
+            } else {
+                pinItem = ActionMenuItem(L("固定到常用项目夹"), symbol: "pin") { [weak self] in
+                    self?.pins.pin(.init(path: result.path, name: result.name))
+                }
+            }
+        } else {
+            pinItem = nil
+        }
+        return FileContextMenu.make(for: result, inFileDialog: inFileDialog, pinItem: pinItem, searchInside: { [weak self] in self?.searchInside(result) },
                                     preview: { [weak self] in self?.showQuickLook(result) }) { [weak self] action in
             self?.onAction(result, action)
         }
+    }
+
+    func contextMenu(for project: PinnedSearchFolder) -> NSMenu? {
+        guard let position = rows.firstIndex(where: { $0.id == .project(project.path) }) else { return nil }
+        selection = position
+        let menu = NSMenu()
+        menu.addItem(ActionMenuItem(L("在此文件夹中搜索"), symbol: "magnifyingglass") { [weak self] in self?.openProject(project) })
+        menu.addItem(ActionMenuItem(L("取消固定"), symbol: "pin.slash") { [weak self] in self?.unpinProject(project.path) })
+        return menu
+    }
+
+    func unpinProject(_ path: String) {
+        pins.unpin(path)
+        merge(resetSelection: false)
     }
 
     /// 结果右边的按钮。定位、复制做完关掉搜索框（和右键菜单一样）；删除要点两下
@@ -949,12 +1008,12 @@ struct FileSearchView: View {
     private static let statusHeight: CGFloat = 56
     static let sectionHeaderHeight: CGFloat = 26
 
-    static func height(resultCount: Int, hasContentSection: Bool, showsStatus: Bool, previewing: Bool = false, inFolder: Bool = false) -> CGFloat {
+    static func height(resultCount: Int, hasSectionHeader: Bool, showsStatus: Bool, previewing: Bool = false, inFolder: Bool = false) -> CGFloat {
         var h = capsuleHeight + margin * 2 + (inFolder ? folderBarHeight : 0)
         if previewing { return h + gap + 386 }
         if resultCount > 0 {
             h += gap + CGFloat(min(resultCount, maxVisibleRows)) * rowHeight + 12 + footerHeight
-            if hasContentSection { h += sectionHeaderHeight }
+            if hasSectionHeader { h += sectionHeaderHeight }
         } else if showsStatus {
             h += gap + statusHeight
         }
@@ -988,7 +1047,8 @@ struct FileSearchView: View {
                         Text((folder.path as NSString).abbreviatingWithTildeInPath)
                             .lineLimit(1).truncationMode(.head).help(folder.path)
                         Spacer(minLength: 8)
-                        searchButton(L("返回上次搜索"), key: model.isPreviewing ? nil : "Esc", symbol: "arrow.uturn.backward") {
+                        searchButton(model.returnsToProjects ? L("返回常用项目夹") : L("返回上次搜索"),
+                                     key: model.isPreviewing ? nil : "Esc", symbol: "arrow.uturn.backward") {
                             model.leaveFolder()
                         }
                     }
@@ -1041,6 +1101,7 @@ struct FileSearchView: View {
     }
 
     private var placeholder: String {
+        if model.showsPinnedFolders { return L("输入关键词") }
         if model.folder != nil {
             return model.effectiveScope == .contents ? L("搜索此文件夹里的正文") : L("搜索此文件夹及子文件夹")
         }
@@ -1060,8 +1121,9 @@ struct FileSearchView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        if model.showsPinnedFolders { sectionHeader(L("常用项目夹")) }
                         ForEach(Array(model.rows.enumerated()), id: \.element.id) { position, row in
-                            if position == model.contentStart { sectionHeader }
+                            if position == model.contentStart { sectionHeader(L("文件内容")) }
                             switch row {
                             case .feature(let feature):
                                 SystemFeatureRow(feature: feature, selected: position == model.selection) {
@@ -1069,6 +1131,12 @@ struct FileSearchView: View {
                                     model.openSelected(reveal: false)
                                 }
                                 .id(row.id)
+                            case .project(let project):
+                                PinnedFolderRow(project: project, selected: position == model.selection) {
+                                    model.openProject(project)
+                                }
+                                .id(row.id)
+                                .overlay(ContextMenuArea { model.contextMenu(for: project) })
                             case .file(let result):
                                 FileResultRow(model: model, result: result, isSelected: position == model.selection, compact: compact)
                                     .id(row.id)
@@ -1110,9 +1178,11 @@ struct FileSearchView: View {
                     searchButton(L("在此搜索"), key: "⌘F", symbol: "magnifyingglass", showKey: detailed) { model.searchInside(result) }
                 }
                 searchButton(L("快速查看"), key: "⌘Y", symbol: "eye", showKey: detailed) { model.toggleQuickLook() }
+            } else if case .project(let project) = model.selectedRow {
+                searchButton(L("取消固定"), key: nil, symbol: "pin.slash") { model.unpinProject(project.path) }
             }
             Spacer(minLength: 0)
-            KeyHint(key: "Enter", action: model.inFileDialog ? L("前往文件夹") : L("打开"))
+            KeyHint(key: "Enter", action: model.showsPinnedFolders ? L("在此搜索") : model.inFileDialog ? L("前往文件夹") : L("打开"))
             if detailed, let result = model.selectedResult, !result.canSearchInside {
                 KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
             }
@@ -1141,9 +1211,9 @@ struct FileSearchView: View {
         .help(key.map { "\(title)  \($0)" } ?? title)
     }
 
-    private var sectionHeader: some View {
+    private func sectionHeader(_ title: String) -> some View {
         HStack(spacing: 6) {
-            Text(L("文件内容"))
+            Text(title)
             Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 0.5)
         }
         .font(.system(size: 11, weight: .medium))
@@ -1341,7 +1411,8 @@ private struct RowButtonFrames: PreferenceKey {
 
 /// 结果的右键菜单：打开、打开方式、在访达中显示、复制、复制路径、移到废纸篓。
 enum FileContextMenu {
-    static func make(for result: FileSearchResult, inFileDialog: Bool = false, searchInside: @escaping () -> Void, preview: @escaping () -> Void, perform: @escaping (FileAction) -> Void) -> NSMenu {
+    static func make(for result: FileSearchResult, inFileDialog: Bool = false, pinItem: NSMenuItem? = nil,
+                     searchInside: @escaping () -> Void, preview: @escaping () -> Void, perform: @escaping (FileAction) -> Void) -> NSMenu {
         let url = URL(fileURLWithPath: result.path)
         let menu = NSMenu()
         if inFileDialog {
@@ -1351,6 +1422,7 @@ enum FileContextMenu {
         }
         if result.canSearchInside {
             menu.addItem(ActionMenuItem(L("在此文件夹中搜索"), symbol: "folder", handler: searchInside))
+            if let pinItem { menu.addItem(pinItem) }
         }
         if let openWith = openWithItem(url, perform: perform) { menu.addItem(openWith) }
         menu.addItem(ActionMenuItem(L("快速查看"), symbol: "eye", handler: preview))

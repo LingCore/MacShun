@@ -153,4 +153,71 @@ struct FolderScopeTests {
         model.prepareForShow()
         #expect(model.folder == nil && model.query.isEmpty && model.rows.isEmpty)
     }
+
+    @Test @MainActor func pinnedFoldersPersistAndEnterScopedSearchFromHome() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let suite = "MacShunTests.ProjectFolders.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let index = FileIndex(mainRoots: [])
+        let content = ContentIndex(directory: fixture.base.appendingPathComponent("db"))
+        func makeModel() -> FileSearchModel {
+            let model = FileSearchModel(index: index, contentIndex: content, pinDefaults: defaults)
+            model.prepareForShow()
+            model.isShown = true
+            return model
+        }
+
+        let initial = makeModel()
+        #expect(initial.rows.isEmpty)
+        initial.query = fixture.base.path + "/"
+        try await waitFor { initial.results.count == 2 }
+        for folder in [fixture.sibling, fixture.project] {
+            let result = try #require(initial.results.first { $0.path == folder.path })
+            let menu = try #require(initial.contextMenu(for: result))
+            let pin = menu.indexOfItem(withTitle: L("固定到常用项目夹"))
+            try #require(pin >= 0)
+            menu.performActionForItem(at: pin)
+            let updated = try #require(initial.contextMenu(for: result))
+            #expect(updated.indexOfItem(withTitle: L("取消固定")) >= 0)
+        }
+        #expect(initial.rows.map(\.id) == [.file(fixture.project.path), .file(fixture.sibling.path)])
+
+        let reopened = makeModel()
+        let home = [LauncherRow.ID.project(fixture.sibling.path), .project(fixture.project.path)]
+        #expect(reopened.rows.map(\.id) == home)
+        reopened.scope = .system
+        #expect(!reopened.rows.map(\.id).contains(home[0]))
+        reopened.prepareForShow(inFileDialog: true)
+        #expect(reopened.rows.isEmpty)
+        reopened.prepareForShow()
+        #expect(reopened.rows.map(\.id) == home)
+
+        reopened.move(1)
+        reopened.openSelected(reveal: false)
+        #expect(reopened.folder?.path == fixture.project.path)
+        reopened.query = "报价 *.md !草稿"
+        try await waitFor { reopened.results.map(\.path) == [fixture.note.path] }
+        reopened.cancelSearch()
+        #expect(reopened.folder == nil && reopened.query.isEmpty)
+        #expect(reopened.rows.map(\.id) == home && reopened.selectedRow?.id == home[1])
+
+        // 路径暂时不可用时仍然能从首页取消固定。
+        try FileManager.default.removeItem(at: fixture.sibling)
+        reopened.move(-1)
+        reopened.openSelected(reveal: false)
+        try await waitFor { reopened.directoryStatus == .unavailable }
+        reopened.cancelSearch()
+        guard case .project(let project) = reopened.selectedRow else {
+            Issue.record("返回首页时应选中原来的项目")
+            return
+        }
+        let projectMenu = try #require(reopened.contextMenu(for: project))
+        let unpin = projectMenu.indexOfItem(withTitle: L("取消固定"))
+        try #require(unpin >= 0)
+        #expect(projectMenu.indexOfItem(withTitle: L("移到废纸篓")) == -1)
+        projectMenu.performActionForItem(at: unpin)
+        #expect(makeModel().rows.map(\.id) == [home[1]])
+    }
 }
