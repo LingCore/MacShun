@@ -7,7 +7,9 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     let photo: CaptureImage
     let mode: CaptureMode
     let windowRects: [CGRect]
-    private(set) var selection: CGRect?
+    private(set) var selection: CGRect? {
+        didSet { if oldValue != selection { stopRedaction() } }
+    }
     private(set) var annotations: CaptureAnnotations
     var marks: [CaptureMark] { annotations.marks }
     let isDocument: Bool
@@ -22,6 +24,11 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     let toolbar: CaptureToolbar
     private let hint = NSView()
     private var tracking: NSTrackingArea?
+    private enum Redaction {
+        case scanning(UUID), ready([CGRect]), failed
+    }
+    private var redaction: Redaction?
+    private var redactionScan: DispatchWorkItem?
 
     /// 坐标是各边相对选区的位置（0、0.5 或 1）。
     private static let handles = [
@@ -88,6 +95,8 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit { redactionScan?.cancel() }
+
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -110,13 +119,27 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     private func refresh() {
         hint.isHidden = selection != nil || drag != nil
         toolbar.isHidden = !isDocument && (mode == .text || selection == nil || drag != nil)
+        toolbar.update(tool: tool, canUndo: annotations.canUndo, canRedo: annotations.canRedo,
+                       canScroll: canScroll, hasMarks: !marks.isEmpty, redactionStatus: redactionStatus)
         if !isDocument, let rect = selection {
             toolbar.fit(within: bounds.width - 12)
             let size = toolbar.frame.size, gap: CGFloat = 10
             let x = max(6, min(rect.maxX - size.width, bounds.maxX - size.width - 6))
             var y = rect.minY - size.height - gap
             if y < 6 { y = min(rect.maxY + gap, bounds.maxY - size.height - 6) }
-            toolbar.setFrameOrigin(CGPoint(x: x.rounded(), y: y.rounded()))
+            var origin = CGPoint(x: x.rounded(), y: y.rounded())
+            if case .ready(let boxes) = redaction,
+               boxes.contains(where: { $0.intersects(CGRect(origin: origin, size: size)) }) {
+                let left = max(6, min(rect.minX, bounds.maxX - size.width - 6)).rounded()
+                let bottom = max(6, rect.minY - size.height - gap).rounded()
+                let top = min(rect.maxY + gap, bounds.maxY - size.height - 6).rounded()
+                let alternatives = [CGPoint(x: left, y: y.rounded()), CGPoint(x: origin.x, y: bottom),
+                                    CGPoint(x: left, y: bottom), CGPoint(x: origin.x, y: top), CGPoint(x: left, y: top)]
+                if let free = alternatives.first(where: { p in !boxes.contains { $0.intersects(CGRect(origin: p, size: size)) } }) {
+                    origin = free
+                }
+            }
+            toolbar.setFrameOrigin(origin)
             let px = photo.pixelRect(rect)
             dimensions.stringValue = "\(Int(px.width)) × \(Int(px.height)) px"
             dimensions.sizeToFit()
@@ -127,9 +150,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             }
             dimensions.frame = CGRect(x: min(max(4, rect.minX), bounds.maxX - w - 4), y: labelY, width: w, height: h).integral
         }
-        dimensions.isHidden = isDocument || selection == nil || mode == .text || isEditingText
-        toolbar.update(tool: tool, canUndo: annotations.canUndo, canRedo: annotations.canRedo,
-                       canScroll: canScroll, hasMarks: !marks.isEmpty)
+        dimensions.isHidden = isDocument || selection == nil || mode == .text || isEditingText || redaction != nil
         needsDisplay = true
     }
 
@@ -160,12 +181,23 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             ctx.setLineDash(phase: 0, lengths: [4, 3])
             ctx.stroke(marks[i].bounds.insetBy(dx: -3, dy: -3))
         }
+        if redaction != nil {
+            for box in redactionCandidates where box.intersects(dirtyRect) {
+                let border = box.insetBy(dx: 0.75, dy: 0.75)
+                ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.8))
+                ctx.setLineWidth(3)
+                ctx.stroke(border)
+                ctx.setStrokeColor(NSColor.systemOrange.cgColor)
+                ctx.setLineWidth(1.5)
+                ctx.stroke(border)
+            }
+        }
         ctx.restoreGState()
         if isDocument { return }
         ctx.setStrokeColor(NSColor.systemBlue.cgColor)
         ctx.setLineWidth(2)
         ctx.stroke(area.insetBy(dx: 1, dy: 1))
-        if selection != nil, tool == nil, drag == nil, mode == .image {
+        if selection != nil, tool == nil, redaction == nil, drag == nil, mode == .image {
             for h in Self.handles {
                 let p = anchor(h, in: area)
                 let box = CGRect(x: p.x - 3, y: p.y - 3, width: 6, height: 6)
@@ -244,6 +276,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         }
         if !isDocument, !toolbar.isHidden, toolbar.frame.contains(p) { return .arrow }
         guard let selection else { return .crosshair }
+        if redaction != nil { return redactionCandidate(at: p) == nil ? .arrow : .pointingHand }
         if let h = handle(at: p, in: selection) { return resizeCursor(h) }
         guard selection.contains(p) else { return .crosshair }
         if tool == .text || textInput?.frame.contains(p) == true { return .iBeam }
@@ -257,6 +290,16 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         window?.makeKey()
         window?.makeFirstResponder(self)
         start = point(event)
+        if redaction != nil {
+            if let box = redactionCandidate(at: start) {
+                annotations.change {
+                    $0.append(CaptureMark(kind: .cover, start: box.origin, end: CGPoint(x: box.maxX, y: box.maxY)))
+                }
+                refresh()
+                cursor(at: start).set()
+            }
+            return
+        }
         let hit = marks.indices.reversed().first { marks[$0].hit(start) }
         if let selection, selection.contains(start), let hit, marks[hit].kind == .text,
            event.clickCount == 2 || tool == .text {
@@ -448,11 +491,76 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             && r.height <= CGFloat(ScrollStitcher.heightLimit) && r.width * r.height <= CGFloat(ScrollStitcher.pixelLimit)
     }
 
+    private var redactionCandidates: [CGRect] {
+        guard case .ready(let boxes) = redaction else { return [] }
+        let covers = marks.filter { $0.kind == .cover }.map(\.bounds)
+        return boxes.filter { box in !covers.contains { $0.contains(box) } }
+    }
+
+    private var redactionStatus: String? {
+        switch redaction {
+        case nil: return nil
+        case .scanning: return L("正在查找手机号和邮箱…")
+        case .failed: return L("识别失败 · 可手动遮挡")
+        case .ready(let boxes):
+            if boxes.isEmpty { return L("未发现可能的手机号或邮箱") }
+            let remaining = redactionCandidates.count
+            return remaining == 0 ? L("已处理所有提示") : L("点橙框遮挡 · %ld 处待确认", remaining)
+        }
+    }
+
+    private func redactionCandidate(at point: CGPoint) -> CGRect? {
+        redactionCandidates.first { $0.contains(point) }
+    }
+
+    private func stopRedaction() {
+        redactionScan?.cancel()
+        redactionScan = nil
+        redaction = nil
+    }
+
+    private func toggleRedaction() {
+        if redaction != nil {
+            stopRedaction()
+            return
+        }
+        guard !isDocument, mode == .image, drag == nil, let selection else { return }
+        tool = nil
+        selectedMark = nil
+        let pixels = photo.pixelRect(selection)
+        guard !pixels.isEmpty, let image = photo.image.cropping(to: pixels) else {
+            redaction = .failed
+            return
+        }
+        // 裁切会外扩到整数像素，按实际裁切范围换算识别框。
+        let crop = photo.pointRect(pixels)
+        let transform = CGAffineTransform(translationX: crop.minX, y: crop.minY)
+            .scaledBy(x: crop.width / CGFloat(image.width), y: crop.height / CGFloat(image.height))
+        let token = UUID()
+        redaction = .scanning(token)
+        let scan = DispatchWorkItem { [weak self] in
+            let boxes = try? CaptureRedaction.recognize(in: image).map { $0.applying(transform) }
+            DispatchQueue.main.async { [weak self] in
+                self?.finishRedaction(boxes, token: token)
+            }
+        }
+        redactionScan = scan
+        CaptureRedaction.queue.async(execute: scan)
+    }
+
+    private func finishRedaction(_ boxes: [CGRect]?, token: UUID) {
+        guard case .scanning(let activeToken) = redaction, activeToken == token else { return }
+        redactionScan = nil
+        redaction = boxes.map(Redaction.ready) ?? .failed
+        refresh()
+    }
+
     private func perform(_ action: CaptureToolbar.Action) {
         finishText(commit: true)
         switch action {
-        case .select: tool = nil
-        case .tool(let kind): tool = tool == kind ? nil : kind
+        case .select: stopRedaction(); tool = nil
+        case .tool(let kind): stopRedaction(); tool = tool == kind ? nil : kind
+        case .redact: toggleRedaction()
         case .undo: annotations.undo(); selectedMark = nil
         case .redo: annotations.redo(); selectedMark = nil
         case .copy: onCopy?(); return

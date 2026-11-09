@@ -390,6 +390,13 @@
 "箭头" = "Arrow";
 "矩形" = "Rectangle";
 "实心遮挡" = "Solid redaction";
+"辅助打码" = "Redaction Assist";
+"退出辅助打码" = "Exit Redaction Assist";
+"正在查找手机号和邮箱…" = "Looking for phone numbers and emails…";
+"识别失败 · 可手动遮挡" = "Scan failed · Use solid redaction";
+"未发现可能的手机号或邮箱" = "No possible phone numbers or emails found";
+"已处理所有提示" = "All suggestions handled";
+"点橙框遮挡 · %ld 处待确认" = "Click orange boxes to cover · %ld left";
 "撤销标注" = "Undo annotation";
 "保存 PNG…" = "Save PNG…";
 "取消（Esc）" = "Cancel (Esc)";

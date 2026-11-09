@@ -53,6 +53,74 @@ struct CaptureAnnotationTests {
         try #require(ready())
     }
 
+    @Test func redactionMatchesCommonContactsWithoutTakingPartOfAnIdentifier() {
+        let line = "邮箱：a.b+tag@example.test，电话：+86 199-0000-0000；19900000000@example.test A19900000000 919900000000"
+        #expect(CaptureRedaction.contactRanges(in: line).map { String(line[$0]) } ==
+                ["a.b+tag@example.test", "+86 199-0000-0000", "19900000000@example.test"])
+        let spaced = "demo @example. test and other@example.test. Next"
+        #expect(CaptureRedaction.contactRanges(in: spaced).map { String(spaced[$0]) } ==
+                ["demo @example. test", "other@example.test"])
+    }
+
+    @Test func redactionAssistCoversOnlyConfirmedTextAtRetinaScale() async throws {
+        _ = NSApplication.shared
+        let ctx = try #require(CGContext(data: nil, width: 1280, height: 800, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: ctx.width, height: ctx.height))
+        let email = "demo@example.test"
+        let phone = "+86 199 0000 0000"
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 36, weight: .regular),
+                                                          .foregroundColor: NSColor.black]
+        (email as NSString).draw(at: CGPoint(x: 240, y: 480), withAttributes: attributes)
+        (phone as NSString).draw(at: CGPoint(x: 240, y: 310), withAttributes: attributes)
+        ("outside@example.test" as NSString).draw(at: CGPoint(x: 240, y: 700), withAttributes: attributes)
+        NSGraphicsContext.restoreGraphicsState()
+        let photo = CaptureImage(image: try #require(ctx.makeImage()), size: CGSize(width: 640, height: 400))
+        let selection = CGRect(x: 91.25, y: 111.75, width: 486.5, height: 207)
+        let canvas = CaptureCanvas(photo: photo, mode: .image, windowRects: [])
+        let panel = NSPanel(contentRect: photo.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.contentView = canvas
+        canvas.restoreRegion(selection)
+        let assist = try #require(canvas.toolbar.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == L("辅助打码") })
+        let status = try #require(canvas.toolbar.subviews.compactMap { $0 as? NSTextField }.first)
+        assist.performClick(nil)
+        #expect(status.stringValue == L("正在查找手机号和邮箱…"))
+        // 重选之后，后台回来的旧结果不能覆盖新选区的状态。
+        canvas.restoreRegion(selection.offsetBy(dx: 0, dy: -10))
+        #expect(status.isHidden)
+        canvas.restoreRegion(selection)
+        assist.performClick(nil)
+        try await wait { status.stringValue != L("正在查找手机号和邮箱…") }
+        #expect(status.stringValue == L("点橙框遮挡 · %ld 处待确认", 2))
+        #expect(canvas.marks.isEmpty)
+
+        let emailPoint = CGPoint(x: 200, y: 250)
+        try gesture(canvas, from: emailPoint)
+        let cover = try #require(canvas.marks.first)
+        #expect(canvas.marks.count == 1 && cover.kind == .cover && cover.bounds.contains(emailPoint))
+        #expect(status.stringValue == L("点橙框遮挡 · %ld 处待确认", 1))
+        canvas.toolbar.perform?(.undo)
+        #expect(canvas.marks.isEmpty && status.stringValue == L("点橙框遮挡 · %ld 处待确认", 2))
+        canvas.toolbar.perform?(.redo)
+        #expect(canvas.marks == [cover])
+
+        let partial = try #require(photo.render(selection, marks: canvas.marks))
+        let visible = ContentExtractor.recognizeText(in: partial)
+        #expect(visible.filter(\.isNumber) == "8619900000000")
+        #expect(!visible.contains("@"))
+        // 点在号码最后一组数字上也能确认整段号码。
+        try gesture(canvas, from: CGPoint(x: 288, y: 165))
+        #expect(canvas.marks.count == 2 && status.stringValue == L("已处理所有提示"))
+        let covered = try #require(photo.render(selection, marks: canvas.marks))
+        #expect(ContentExtractor.recognizeText(in: covered).isEmpty)
+        assist.performClick(nil)
+        #expect(status.isHidden && canvas.marks.count == 2)
+    }
+
     @Test func retinaNudgesAreExactlyOneExportedPixel() throws {
         let cg = try page()
         let photo = CaptureImage(image: cg, size: CGSize(width: 420, height: 700))

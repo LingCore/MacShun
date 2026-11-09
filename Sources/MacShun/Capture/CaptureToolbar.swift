@@ -15,11 +15,13 @@ private enum ToolbarMetrics {
 /// 普通截图和长图编辑共用的浮动工具条。宽度不足时整组换行。
 @MainActor
 final class CaptureToolbar: NSView {
-    enum Action { case select, tool(CaptureMark.Kind), undo, redo, scroll, pin, save, cancel, copy }
+    enum Action { case select, tool(CaptureMark.Kind), redact, undo, redo, scroll, pin, save, cancel, copy }
 
     private var groups: [[CaptureToolButton]] = []
     private var dividers: [NSBox] = []
     private var availableWidth: CGFloat?
+    private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private var redactionStatus: String?
     var perform: ((Action) -> Void)?
 
     init(document: Bool = false) {
@@ -40,7 +42,14 @@ final class CaptureToolbar: NSView {
             return button
         }
         let select = button(.select, document ? L("选择标注") : L("选择标注或调整选区"), "cursorarrow")
-        groups.append([select] + CaptureMark.Kind.allCases.map { button(.tool($0), $0.title, $0.symbol) })
+        var tools = [select]
+        for kind in CaptureMark.Kind.allCases {
+            tools.append(button(.tool(kind), kind.title, kind.symbol))
+            if kind == .cover, !document {
+                tools.append(button(.redact, L("辅助打码"), "text.viewfinder"))
+            }
+        }
+        groups.append(tools)
         groups.append([button(.undo, L("撤销标注"), "arrow.uturn.backward", keys: "⌘Z"),
                        button(.redo, L("重做标注"), "arrow.uturn.forward", keys: "⇧⌘Z")])
         if !document {
@@ -56,6 +65,11 @@ final class CaptureToolbar: NSView {
             addSubview(divider)
             dividers.append(divider)
         }
+        statusLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.alignment = .center
+        statusLabel.isHidden = true
+        addSubview(statusLabel)
         fit(within: .greatestFiniteMagnitude)
         update(tool: nil, canUndo: false, canRedo: false, canScroll: false, hasMarks: false)
     }
@@ -116,14 +130,37 @@ final class CaptureToolbar: NSView {
                 widest = max(widest, x)
             }
         }
-        setFrameSize(CGSize(width: widest + inset, height: y + side + inset))
+        let toolbarWidth = widest + inset
+        var height = y + side + inset
+        if !statusLabel.isHidden {
+            let textWidth = toolbarWidth - 4 * inset
+            let textHeight = statusLabel.cell?.cellSize(forBounds:
+                CGRect(x: 0, y: 0, width: textWidth, height: 120)).height ?? 16
+            statusLabel.frame = CGRect(x: 2 * inset, y: height, width: textWidth, height: ceil(textHeight))
+            height = statusLabel.frame.maxY + inset
+        }
+        setFrameSize(CGSize(width: toolbarWidth, height: height))
     }
 
-    func update(tool: CaptureMark.Kind?, canUndo: Bool, canRedo: Bool, canScroll: Bool, hasMarks: Bool) {
+    func update(tool: CaptureMark.Kind?, canUndo: Bool, canRedo: Bool, canScroll: Bool, hasMarks: Bool,
+                redactionStatus: String? = nil) {
+        if self.redactionStatus != redactionStatus {
+            self.redactionStatus = redactionStatus
+            statusLabel.stringValue = redactionStatus ?? ""
+            statusLabel.isHidden = redactionStatus == nil
+            if let width = availableWidth {
+                availableWidth = nil
+                fit(within: width)
+            }
+        }
         for button in groups.joined() {
             switch button.command {
-            case .select: button.select(tool == nil)
+            case .select: button.select(tool == nil && redactionStatus == nil)
             case .tool(let kind): button.select(tool == kind)
+            case .redact:
+                button.select(redactionStatus != nil)
+                button.toolTip = redactionStatus == nil ? L("辅助打码") : L("退出辅助打码")
+                button.setAccessibilityLabel(button.toolTip)
             case .undo: button.isEnabled = canUndo
             case .redo: button.isEnabled = canRedo
             case .scroll:
@@ -179,7 +216,7 @@ private final class CaptureToolButton: CaptureHoverButton {
         if case .copy = action { primary = true } else { primary = false }
         super.init(frame: .zero)
         switch action {
-        case .select, .tool: setButtonType(.pushOnPushOff)
+        case .select, .tool, .redact: setButtonType(.pushOnPushOff)
         default: setButtonType(.momentaryPushIn)
         }
         isBordered = false

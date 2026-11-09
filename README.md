@@ -60,6 +60,7 @@
 #### 截图与识别屏幕文字
 
 - 从菜单栏点 **开始截图**，拖选区域或点选窗口。拖动选区或边框可调整范围，也可画箭头、矩形或实心遮挡。按 **Enter** 复制、**⌘S** 保存 PNG、**Esc** 取消。
+- **辅助打码**：选好截图范围后，点工具栏里实心遮挡旁的「辅助打码」。它在本机查找可能的中国大陆手机号和常见邮箱地址，点橙框即可实心遮挡。复制、保存和贴图只应用已确认的遮挡，发图前可以再检查一遍。
 - 只想复制文字时，选 **识别屏幕文字**，框选后松开鼠标即可。简体、繁体中文和英文在本机识别。
 - **写说明和标步骤**：选「文字标注」后点一下输入，Enter 完成文字，双击可再改。选「步骤序号」后连续点击即可放置 1、2、3。用选择工具点中标注可拖动，按 Delete 删除，⌘Z 撤销，⇧⌘Z 重做。
 - **对齐同一区域**：再次截图时按 R 恢复上一次成功输出的选框。方向键移动 1 个实际像素，Shift 加方向键调整宽高。选框旁显示导出尺寸。
@@ -259,6 +260,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 #### Screenshots and text capture
 
 - Choose **Take a Screenshot** from the menu bar. Drag an area or click a window, then move or resize the selection. Add arrows, rectangles or solid redactions. Press **Enter** to copy, **⌘S** to save a PNG, or **Esc** to cancel.
+- **Redaction Assist.** After selecting an area, click Redaction Assist beside Solid Redaction. It looks for likely mainland Chinese mobile numbers and common email addresses on your Mac. Click an orange box to cover it. Copying, saving and floating an image include the covers you applied.
 - Choose **Copy Text from Screen** and release the mouse to copy text. Simplified Chinese, Traditional Chinese and English are recognized on the Mac.
 - **Add notes and numbered steps.** Select Text and click to type. Enter commits the text, and double-clicking a label lets you edit it. Choose Step Number and click to place successive badges. Select a mark to move or delete it. ⌘Z undoes a change and ⇧⌘Z redoes it.
 - **Repeat a region.** Press R to recall the last successfully exported region on its display. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height. The size beside the selection is the exported pixel size.

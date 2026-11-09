@@ -111,7 +111,7 @@ struct CaptureTests {
             let toolbar = try #require(canvas.subviews.compactMap { $0 as? CaptureToolbar }.first)
             toolbar.layoutSubtreeIfNeeded()
             let buttons = toolbar.subviews.compactMap { $0 as? NSButton }
-            #expect(buttons.count == 13 && canvas.bounds.contains(toolbar.frame))
+            #expect(buttons.count == 14 && canvas.bounds.contains(toolbar.frame))
             for button in buttons { #expect(button.frame.width >= 26 && button.accessibilityLabel() != nil) }
             let redact = try #require(buttons.first { $0.toolTip == CaptureMark.Kind.cover.title })
             redact.performClick(nil)
