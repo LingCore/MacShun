@@ -20,6 +20,10 @@ DIST="$ROOT/dist"
 DMG="$DIST/MacShun-$VERSION.dmg"
 
 cd "$ROOT"
+if [[ "${1:-}" == "--publish" ]]; then
+    [[ -z "$(git status --porcelain)" ]] || { echo "错误：请先提交待发布的源代码和发布说明" >&2; exit 1; }
+    [[ -f "$ROOT/docs/release-notes/v$VERSION.md" ]] || { echo "错误：缺少发布说明 v$VERSION.md" >&2; exit 1; }
+fi
 scripts/test.sh
 UNIVERSAL=1 scripts/build-app.sh
 
@@ -47,5 +51,6 @@ if [[ "${1:-}" == "--publish" ]]; then
     TAG="v$VERSION"
     NOTES="$ROOT/docs/release-notes/$TAG.md"
     [[ -f "$NOTES" ]] || { echo "错误：缺少发布说明 $NOTES" >&2; exit 1; }
-    gh release create "$TAG" "$DMG" "$DMG.sha256" --title "$APP_NAME $VERSION" --notes-file "$NOTES"
+    # 明确绑定已提交并推送的源码，避免在默认分支的旧提交上自动创建标签。
+    gh release create "$TAG" "$DMG" "$DMG.sha256" --target "$(git rev-parse HEAD)" --title "$APP_NAME $VERSION" --notes-file "$NOTES"
 fi

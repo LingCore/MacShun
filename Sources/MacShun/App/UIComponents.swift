@@ -3,6 +3,12 @@
 import AppKit
 import SwiftUI
 
+extension Text {
+    func settingsFooter() -> some View {
+        font(.caption).foregroundStyle(.secondary)
+    }
+}
+
 /// 圆角方块里的白色图标，和“系统设置”侧边栏的图标一个样式。
 struct IconBadge: View {
     let symbol: String

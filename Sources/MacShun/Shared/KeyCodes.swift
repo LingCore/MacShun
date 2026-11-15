@@ -88,6 +88,13 @@ enum KeyCode {
     static let downArrow: CGKeyCode = 0x7D
     static let upArrow: CGKeyCode = 0x7E
 
+    static let letters: Set<CGKeyCode> = [
+        a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u, v, w, x, y, z,
+    ]
+    static let digits: Set<CGKeyCode> = [zero, one, two, three, four, five, six, seven, eight, nine]
+    static let symbols: Set<CGKeyCode> = [
+        minus, equal, leftBracket, rightBracket, backslash, semicolon, quote, comma, period, slash,
+    ]
     static let arrows: Set<CGKeyCode> = [leftArrow, rightArrow, downArrow, upArrow]
 
     /// 这些键在真实键盘事件里带有 fn 标志，模拟时也要带上，否则有的应用不认。

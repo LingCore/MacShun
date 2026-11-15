@@ -105,6 +105,7 @@ struct ScrollStitcher {
     private func alignment(_ frame: Frame, _ anchors: [Anchor]) -> (shift: Int, seam: Int)? {
         let h = frame.height, maxShift = h - max(16, h / 4)
         var candidates: [(shift: Int, quality: Double)] = []
+        var sparseShifts: [Int] = []
         for shift in -maxShift...maxShift where shift != 0 {
             var total = 0, matches = 0, agreement = 0, first = h, last = 0
             for a in anchors {
@@ -120,18 +121,28 @@ struct ScrollStitcher {
                     last = max(last, a.row)
                 }
             }
-            guard matches >= 4, matches * 5 >= total * 4, last - first >= min(28, h / 5) else { continue }
-            candidates.append((shift, Double(agreement) / Double(total * 64)))
+            if matches >= 4, matches * 5 >= total * 4, last - first >= min(28, h / 5) {
+                candidates.append((shift, Double(agreement) / Double(total * 64)))
+            } else if matches >= 2, matches == total, agreement >= matches * 56 {
+                // 大片留白的重叠区可能只剩一行字。保留特征一致的位移，交给像素复核。
+                sparseShifts.append(shift)
+            }
         }
-        guard let strongest = candidates.map(\.quality).max() else { return nil }
-        let plausible = candidates.filter { $0.quality > strongest - 0.12 }
-        guard !plausible.isEmpty, plausible.count < 100 else { return nil }
         let shift: Int
-        if plausible.count == 1 {
-            shift = plausible[0].shift
+        if let strongest = candidates.map(\.quality).max() {
+            let shifts = candidates.filter { $0.quality > strongest - 0.12 }.map(\.shift)
+            guard shifts.count < 100 else { return nil }
+            if shifts.count == 1 {
+                shift = shifts[0]
+            } else {
+                // 等高的文件行可能只有末尾几位数字不同。用原尺寸的变化像素区分候选位移。
+                guard let verified = verify(shifts, frame: frame, anchors: anchors) else { return nil }
+                shift = verified
+            }
         } else {
-            // 等高的文件行可能只有末尾几位数字不同。用原尺寸的变化像素区分候选位移。
-            guard let verified = verify(plausible.map(\.shift), frame: frame, anchors: anchors) else { return nil }
+            // 重复的短文本行可以在不同位置对齐，只接受唯一的稀疏候选。
+            guard sparseShifts.count == 1,
+                  let verified = verify(sparseShifts, frame: frame, anchors: anchors, sparse: true) else { return nil }
             shift = verified
         }
 
@@ -143,13 +154,20 @@ struct ScrollStitcher {
             return a.row
         }
         if shift < 0 { return (shift, 0) }
-        guard !matchingRows.isEmpty else { return nil }
-        return (shift, matchingRows[matchingRows.count / 2])
+        if !matchingRows.isEmpty { return (shift, matchingRows[matchingRows.count / 2]) }
+
+        // 已匹配的文字可能都在上一条接缝之上。重叠尾部完全一致时沿用旧接缝。
+        let seam = start - shift
+        let rowBytes = width * 4
+        guard seam >= 0,
+              previous.pixels[(start * rowBytes)...] ==
+                frame.pixels[(seam * rowBytes)..<((h - shift) * rowBytes)] else { return nil }
+        return (shift, seam)
     }
 
-    private func verify(_ shifts: [Int], frame: Frame, anchors: [Anchor]) -> Int? {
-        let first = max(0, anchors[0].row - frame.height / 48)
-        let last = min(frame.height, anchors[anchors.count - 1].row + frame.height / 48 + 1)
+    private func verify(_ shifts: [Int], frame: Frame, anchors: [Anchor], sparse: Bool = false) -> Int? {
+        let first = sparse ? 0 : max(0, anchors[0].row - frame.height / 48)
+        let last = sparse ? frame.height : min(frame.height, anchors[anchors.count - 1].row + frame.height / 48 + 1)
         return previous.pixels.withUnsafeBytes { oldRaw in
             frame.pixels.withUnsafeBytes { newRaw in
                 let old = oldRaw.bindMemory(to: UInt8.self), new = newRaw.bindMemory(to: UInt8.self)
@@ -168,17 +186,54 @@ struct ScrollStitcher {
                 var scores: [(shift: Int, error: Double)] = []
                 for shift in shifts {
                     let lower = max(first, first - shift) * rowBytes, upper = min(last, last - shift) * rowBytes
+                    let offset = shift * rowBytes
                     var count = 0, error = 0
                     for i in changed where i >= lower && i < upper {
-                        error += min(120, difference(i + shift * rowBytes, i))
+                        error += min(120, difference(i + offset, i))
                         count += 1
                     }
-                    if count >= 12 { scores.append((shift, Double(error) / Double(count))) }
+                    guard count >= 12 else { continue }
+                    if sparse {
+                        // 分别核对两帧重叠区里的变化像素，避免只对上某一侧的空白。
+                        var oldCount = 0
+                        for i in changed where i >= lower + offset && i < upper + offset {
+                            error += min(120, difference(i, i - offset))
+                            oldCount += 1
+                        }
+                        guard oldCount >= 12 else { continue }
+                        count += oldCount
+                    }
+                    scores.append((shift, Double(error) / Double(count)))
                 }
-                guard let best = scores.min(by: { $0.error < $1.error }), best.error <= 22,
+                guard let best = scores.min(by: { $0.error < $1.error }), best.error <= (sparse ? 12 : 22),
                       !scores.contains(where: { $0.shift != best.shift && $0.error <= best.error * 1.5 + 0.4 })
                 else { return nil }
                 return best.shift
+            }
+        }
+    }
+
+    /// 光标和滚动条的闪动只改变少量像素列。找不到位移时，检查其余内容是否留在原位。
+    private func hasOnlyNarrowChanges(_ frame: Frame) -> Bool {
+        let columnLimit = min(24, max(4, width / 50))
+        return previous.pixels.withUnsafeBytes { oldRaw in
+            frame.pixels.withUnsafeBytes { newRaw in
+                let old = oldRaw.bindMemory(to: UInt8.self), new = newRaw.bindMemory(to: UInt8.self)
+                var changedColumns = [Bool](repeating: false, count: width)
+                var changedCount = 0
+                for row in 0..<frame.height {
+                    let rowStart = row * width * 4
+                    for x in 0..<width where !changedColumns[x] {
+                        let i = rowStart + x * 4
+                        let difference = abs(Int(old[i]) - Int(new[i])) + abs(Int(old[i + 1]) - Int(new[i + 1]))
+                            + abs(Int(old[i + 2]) - Int(new[i + 2]))
+                        guard difference > 12 else { continue }
+                        changedColumns[x] = true
+                        changedCount += 1
+                        if changedCount > columnLimit { return false }
+                    }
+                }
+                return true
             }
         }
     }
@@ -187,7 +242,9 @@ struct ScrollStitcher {
         guard image.width == width, image.height == previous.height, let frame = Frame(image) else { return .noOverlap }
         if frame.rows == previous.rows { return .unchanged }
         let points = anchors(in: frame)
-        guard points.count >= 4, let match = alignment(frame, points) else { return .noOverlap }
+        guard points.count >= 2, let match = alignment(frame, points) else {
+            return hasOnlyNarrowChanges(frame) ? .unchanged : .noOverlap
+        }
         guard match.shift > 0 else { return .backtracked }
         guard height + match.shift <= maximumHeight else { return .limit }
         let cut = match.seam + match.shift, bytesPerRow = width * 4

@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenu = StatusMenu(
             configStore: configStore, state: state,
             openSettings: { [weak self] in self?.settingsWindow.show() },
+            openPerformance: { [weak self] in self?.settingsWindow.show(tab: .performance) },
             openClipboard: { [weak self] in self?.showClipboard() },
             capture: { [weak self] mode in self?.screenCapture.start(mode) }
         )
@@ -137,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        PerformanceMonitor.shared.stop()
         pointer.restore()
         cursor.restore()
         ContentIndex.shared.prepareForQuit()

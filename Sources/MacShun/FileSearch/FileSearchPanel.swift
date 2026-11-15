@@ -1026,7 +1026,9 @@ struct FileSearchView: View {
             if model.isPreviewing, let result = model.selectedResult {
                 FileQuickLook(model: model, result: result)
             } else if !model.rows.isEmpty {
-                GeometryReader { geometry in resultList(compact: geometry.size.width < 500) }
+                GeometryReader { geometry in
+                    resultList(compact: geometry.size.width < 500, viewportHeight: geometry.size.height)
+                }
             } else if model.showsStatus {
                 status
             }
@@ -1116,11 +1118,18 @@ struct FileSearchView: View {
 
     private var card: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
 
-    private func resultList(compact: Bool) -> some View {
+    private struct ScrollRequest: Equatable {
+        let selection: LauncherRow.ID?
+        let viewportHeight: CGFloat
+    }
+    private enum ListAnchor: Hashable { case top }
+
+    private func resultList(compact: Bool, viewportHeight: CGFloat) -> some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        Color.clear.frame(height: Self.listPadding).id(ListAnchor.top)
                         if model.showsPinnedFolders { sectionHeader(L("常用项目夹")) }
                         ForEach(Array(model.rows.enumerated()), id: \.element.id) { position, row in
                             if position == model.contentStart { sectionHeader(L("文件内容")) }
@@ -1148,14 +1157,17 @@ struct FileSearchView: View {
                             }
                         }
                     }
-                    .padding(Self.listPadding)
+                    .padding(.horizontal, Self.listPadding)
+                    .padding(.bottom, Self.listPadding)
                     .onPreferenceChange(RowButtonFrames.self) { model.buttonFrames = $0 }
                 }
                 .scrollIndicators(.never)
-                .onAppear { if let selected = model.selectedRow { proxy.scrollTo(selected.id) } }
-                .onChange(of: model.selection) { _, newValue in
-                    guard model.rows.indices.contains(newValue) else { return }
-                    proxy.scrollTo(model.rows[newValue].id)
+                .onChange(of: ScrollRequest(selection: model.selectedRow?.id, viewportHeight: viewportHeight), initial: true) { _, _ in
+                    // 结果先到、原生面板后变高。不能在折叠高度里滚动，否则首行会留在可视区上方。
+                    guard viewportHeight >= Self.rowHeight + Self.footerHeight else { return }
+                    guard let selected = model.selectedRow else { return }
+                    if model.selection == 0 { proxy.scrollTo(ListAnchor.top, anchor: .top) }
+                    else { proxy.scrollTo(selected.id) }
                 }
             }
             Divider().opacity(0.6)

@@ -10,7 +10,7 @@ final class LongCaptureEditor: NSView {
     private let onDone: (CaptureAnnotations) -> Void
     private let onBack: () -> Void
     private var rendering = false
-    private lazy var footer = NSHostingView(rootView: EditorFooter(rendering: false,
+    private lazy var footer = NSHostingView(rootView: EditorFooter(rendering: false, placingPolygon: false,
         done: { [weak self] in self?.applyMarks() }, back: { [weak self] in self?.goBack() }))
 
     init(photo: CaptureImage, annotations: CaptureAnnotations, frame: CGRect, position: CGFloat,
@@ -22,6 +22,10 @@ final class LongCaptureEditor: NSView {
         super.init(frame: frame)
         canvas.onCopy = { [weak self] in self?.applyMarks() }
         canvas.onCancel = { [weak self] in self?.goBack() }
+        canvas.onPolygonMarkPlacementChanged = { [weak self] placing in
+            self?.footer.rootView.placingPolygon = placing
+        }
+        canvas.toolbar.onLayoutChanged = { [weak self] in self?.needsLayout = true }
         addSubview(canvas.toolbar)
         addSubview(scroller)
         addSubview(footer)
@@ -43,7 +47,7 @@ final class LongCaptureEditor: NSView {
 
     private func goBack() { if !rendering { onBack() } }
     private func applyMarks() {
-        guard !rendering else { return }
+        guard !rendering, !canvas.isPlacingPolygonMark else { return }
         canvas.finishText(commit: true)
         onDone(canvas.annotations)
     }
@@ -59,6 +63,7 @@ final class LongCaptureEditor: NSView {
 
 private struct EditorFooter: View {
     var rendering: Bool
+    var placingPolygon: Bool
     let done: () -> Void
     let back: () -> Void
 
@@ -71,6 +76,7 @@ private struct EditorFooter: View {
                 CaptureActionButton(title: L("取消"), action: back)
                 CaptureActionButton(title: rendering ? L("正在应用标注…") : L("完成标注"), symbol: "checkmark",
                                     primary: true, action: done)
+                    .disabled(placingPolygon)
             }
             .disabled(rendering)
             .padding(.horizontal, 12)

@@ -11,6 +11,8 @@ struct AppIdentity: Equatable {
 /// 应用的类别，决定按键怎么改写。
 enum AppKind: Equatable {
     case normal
+    /// 终端保留 Ctrl 原生行为，用 Ctrl+Shift+C/V 复制粘贴（K5）。
+    case terminal
     case finder
     /// 远程桌面、虚拟机，以及用户排除的应用：不改写任何按键（K6）。
     case excluded
@@ -19,6 +21,27 @@ enum AppKind: Equatable {
 /// 各类应用的名单。
 enum AppCatalog {
     static let finder = "com.apple.finder"
+
+    static let terminals: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2",
+        "dev.warp.Warp-Stable", "dev.warp.Warp", "dev.warp.Warp-Preview",
+        "net.kovidgoyal.kitty", "org.alacritty", "io.alacritty", "com.alacritty",
+        "com.github.wez.wezterm", "co.zeit.hyper", "com.mitchellh.ghostty", "org.tabby",
+        "fun.tw93.kaku",
+    ]
+
+    /// 浏览器中无法确认文字焦点时，Home/End 保持原样，避免触发历史后退。
+    static let browsers: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview",
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+        "com.microsoft.edgemac", "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev",
+        "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+        "com.brave.Browser", "company.thebrowser.Browser", "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera", "org.chromium.Chromium", "com.kagi.kagimacOS",
+        "net.qihoo.360browser", "com.tencent.qqbrowserappmac", "com.tencent.QQBrowser",
+    ]
+
+    static let sogouInputSourcePrefix = "com.sogou.inputmethod"
 
     /// 远程桌面和虚拟机（K6）。
     static let remoteAndVM: Set<String> = [
@@ -116,7 +139,13 @@ enum AppCatalog {
         if isRemoteOrVM(app) { return .excluded }
         guard let id = app.bundleID else { return .normal }
         if id == finder { return .finder }
+        if terminals.contains(id) { return .terminal }
         return .normal
+    }
+
+    static func isBrowser(_ app: AppIdentity) -> Bool {
+        guard let id = app.bundleID else { return false }
+        return browsers.contains(id)
     }
 
     static func handlesSideButtonsNatively(_ app: AppIdentity) -> Bool {

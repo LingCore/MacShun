@@ -34,6 +34,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/MacShun" "$APP/Contents/MacOS/MacShun"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 if [[ -n "${MACSHUN_UPDATE_FEED_URL:-}" ]]; then
     # 写入签名保护的构建配置；只允许 HTTPS 或本机联调 HTTP。
     python3 - <<'PY'

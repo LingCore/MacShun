@@ -33,18 +33,20 @@ private final class CapturePanel: NSPanel {
     override func keyDown(with event: NSEvent) { _ = canvas.handleKey(event) }
 }
 
-/// 只记本次运行中上一次成功输出的屏幕和矩形。显示器移动后仍使用该屏内的位置。
+/// 只记本次运行中上一次成功输出的屏幕和选区。显示器移动后仍使用该屏内的位置。
 private struct CaptureRegionMemory {
     let display: CGDirectDisplayID
     let screenSize: CGSize
     let pixels: CGSize
     let rect: CGRect
+    let polygon: CapturePolygon?
 
-    init(display: CGDirectDisplayID, photo: CaptureImage, selection: CGRect) {
+    init(display: CGDirectDisplayID, photo: CaptureImage, selection: CGRect, polygon: CapturePolygon?) {
         self.display = display
         screenSize = photo.size
         pixels = CGSize(width: photo.image.width, height: photo.image.height)
         rect = photo.pixelRect(selection)
+        self.polygon = polygon
     }
 
     func matches(_ id: CGDirectDisplayID, _ photo: CaptureImage) -> Bool {
@@ -63,16 +65,17 @@ final class ScreenCaptureController: NSObject {
     private var notice: NSPanel?
     private var scrolling: ScrollingCapture?
 
-    private let pasteboard: NSPasteboard
-    private let makeScrollReader: ScrollCaptureSource.Factory
+    private let captureClipboard: CaptureClipboard
+    private var pasteboard: NSPasteboard { captureClipboard.pasteboard }
+    private let makeScrollSource: ScrollCaptureSource.Factory
     private let freeze: @MainActor () async throws -> [FrozenScreen]
 
-    init(pasteboard: NSPasteboard = .general,
-         makeScrollReader: @escaping ScrollCaptureSource.Factory = ScrollCaptureSource.reader,
+    init(clipboard: CaptureClipboard = .general,
+         makeScrollSource: @escaping ScrollCaptureSource.Factory = ScrollCaptureSource.stream,
          freeze: @escaping @MainActor () async throws -> [FrozenScreen] = { try await FrozenScreen.captureAll() }) {
-        self.pasteboard = pasteboard
+        self.captureClipboard = clipboard
         self.freeze = freeze
-        self.makeScrollReader = makeScrollReader
+        self.makeScrollSource = makeScrollSource
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(cancel), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancel), name: NSWorkspace.willSleepNotification, object: nil)
@@ -116,6 +119,15 @@ final class ScreenCaptureController: NSObject {
     private func addPanel(for screen: FrozenScreen, mode: CaptureMode, canRestore: Bool) {
         let canvas = CaptureCanvas(photo: screen.photo, mode: mode, windowRects: screen.windowRects, canRestore: canRestore)
         let panel = CapturePanel(frame: screen.frame, displayID: screen.displayID, canvas: canvas)
+        canvas.onChooseAnchorMode = { [weak self, weak panel] in
+            guard let self, let panel else { return }
+            let target = panel.canvas.selection == nil
+                ? self.panels.first { $0.frame.contains(NSEvent.mouseLocation) } ?? panel
+                : panel
+            self.panels.filter { $0 !== target }.forEach { $0.canvas.clearSelection() }
+            target.makeKeyAndOrderFront(nil)
+            target.canvas.beginAnchors()
+        }
         canvas.onRestoreRegion = { [weak self] in self?.restoreRegion() }
         canvas.onChooseDisplay = { [weak self, weak panel] in
             self?.panels.filter { $0 !== panel }.forEach { $0.canvas.clearSelection() }
@@ -134,18 +146,18 @@ final class ScreenCaptureController: NSObject {
         let display = screen.displayID
         canvas.onScrollCapture = { [weak self, weak canvas] in
             guard let self, let canvas, let selection = canvas.selection, let window = canvas.window,
-                  canvas.marks.isEmpty else { return }
+                  canvas.marks.isEmpty, canvas.polygon == nil else { return }
             let region = ScrollCaptureRegion(display: display, screen: window.frame, photo: canvas.photo, selection: selection)
             let remembered = regionMemory(canvas)
             hidePanels()
             panels.removeAll()
             let token = session
-            let capture = ScrollingCapture(region: region, pasteboard: pasteboard) { [weak self] in
+            let capture = ScrollingCapture(region: region, clipboard: captureClipboard) { [weak self] in
                 if self?.session == token { self?.cancel() }
             }
             capture.onExport = { [weak self] in self?.lastRegion = remembered }
             scrolling = capture
-            capture.start(makeReader: makeScrollReader)
+            capture.start(makeSource: makeScrollSource)
         }
         canvas.onSave = { [weak self, weak canvas] in
             if let canvas { self?.save(canvas) }
@@ -156,14 +168,14 @@ final class ScreenCaptureController: NSObject {
 
     private func regionMemory(_ canvas: CaptureCanvas) -> CaptureRegionMemory? {
         guard let panel = canvas.window as? CapturePanel, let selection = canvas.selection else { return nil }
-        return CaptureRegionMemory(display: panel.displayID, photo: canvas.photo, selection: selection)
+        return CaptureRegionMemory(display: panel.displayID, photo: canvas.photo, selection: selection, polygon: canvas.polygon)
     }
 
     private func restoreRegion() {
         guard let lastRegion, panels.allSatisfy({ $0.canvas.marks.isEmpty && !$0.canvas.isEditingText }),
               let target = panels.first(where: { lastRegion.matches($0.displayID, $0.canvas.photo) }) else { return }
         for panel in panels where panel !== target { panel.canvas.clearSelection() }
-        target.canvas.restoreRegion(target.canvas.photo.pointRect(lastRegion.rect))
+        target.canvas.restoreRegion(target.canvas.photo.pointRect(lastRegion.rect), polygon: lastRegion.polygon)
         target.makeKeyAndOrderFront(nil)
         target.makeFirstResponder(target.canvas)
     }
@@ -204,7 +216,7 @@ final class ScreenCaptureController: NSObject {
 
     private func output(_ canvas: CaptureCanvas) -> CGImage? {
         guard let selection = canvas.selection else { return nil }
-        let image = canvas.photo.render(selection, marks: canvas.marks)
+        let image = canvas.photo.render(selection, marks: canvas.marks, polygon: canvas.polygon)
         if image == nil { toast(L("无法生成图片，请重新选择区域。")) }
         return image
     }
@@ -232,9 +244,11 @@ final class ScreenCaptureController: NSObject {
         } else {
             cancel()
             guard let data = png(image) else { toast(L("无法生成图片，请重新选择区域。")); return }
-            let item = NSPasteboardItem()
-            item.setData(data, forType: .png)
-            if write(item) { lastRegion = remembered }
+            if captureClipboard.copy(data) {
+                lastRegion = remembered
+            } else {
+                toast(L("未能写入剪贴板"))
+            }
         }
     }
 

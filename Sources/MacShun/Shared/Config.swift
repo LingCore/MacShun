@@ -17,6 +17,10 @@ enum KeyboardLayoutKind: String, Codable, CaseIterable, Identifiable {
 struct KeyboardConfig: Codable, Equatable {
     var enabled = true
     var layout: KeyboardLayoutKind = .windows
+    /// K1：Ctrl 组合键按 Windows 习惯执行复制、粘贴等操作。
+    var ctrlAsCommand = true
+    /// K2：Home/End、Ctrl+方向键和 Ctrl+删除键。
+    var textNavigation = true
     /// K3：Alt+Tab、Alt+F4、Win+E/D/L/S
     var systemShortcuts = true
     /// K4：Finder 里的剪切移动、F2、Enter、Delete、Backspace
@@ -44,6 +48,8 @@ struct KeyboardConfig: Codable, Equatable {
         let d = KeyboardConfig()
         enabled = c.value(.enabled, default: d.enabled)
         layout = c.value(.layout, default: d.layout)
+        ctrlAsCommand = c.value(.ctrlAsCommand, default: d.ctrlAsCommand)
+        textNavigation = c.value(.textNavigation, default: d.textNavigation)
         systemShortcuts = c.value(.systemShortcuts, default: d.systemShortcuts)
         finderShortcuts = c.value(.finderShortcuts, default: d.finderShortcuts)
         captureShortcut = try? c.decodeIfPresent(WinShortcut.self, forKey: .captureShortcut)
@@ -221,6 +227,39 @@ struct UpdateConfig: Codable, Equatable {
     }
 }
 
+struct PerformanceConfig: Codable, Equatable {
+    var enabled = true
+    var cpu = true
+    var gpu = true
+    var memory = true
+    var temperature = true
+
+    var metrics: [PerformanceMetric] {
+        PerformanceMetric.allCases.filter { metric in
+            switch metric {
+            case .cpu: cpu
+            case .gpu: gpu
+            case .memory: memory
+            case .temperature: temperature
+            }
+        }
+    }
+
+    var isActive: Bool { enabled && !metrics.isEmpty }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = PerformanceConfig()
+        enabled = c.value(.enabled, default: d.enabled)
+        cpu = c.value(.cpu, default: d.cpu)
+        gpu = c.value(.gpu, default: d.gpu)
+        memory = c.value(.memory, default: d.memory)
+        temperature = c.value(.temperature, default: d.temperature)
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var keyboard = KeyboardConfig()
     var mouse = MouseConfig()
@@ -228,6 +267,7 @@ struct AppConfig: Codable, Equatable {
     var fileSearch = FileSearchConfig()
     var window = WindowConfig()
     var update = UpdateConfig()
+    var performance = PerformanceConfig()
 
     init() {}
 
@@ -239,6 +279,7 @@ struct AppConfig: Codable, Equatable {
         fileSearch = c.value(.fileSearch, default: FileSearchConfig())
         window = c.value(.window, default: WindowConfig())
         update = c.value(.update, default: UpdateConfig())
+        performance = c.value(.performance, default: PerformanceConfig())
     }
 }
 

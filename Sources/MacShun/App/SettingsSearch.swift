@@ -7,12 +7,13 @@ import SwiftUI
 /// 首字母和额外的关键词都能匹配，不管界面是哪种语言。
 struct SettingsItem: Identifiable {
     enum ID: String {
-        case keyboardEnabled, keyboardMode, systemShortcuts, finderShortcuts
-        case captureShortcuts, remoteDesktop, excludedApps
+        case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
+        case captureShortcuts, terminal, remoteDesktop, excludedApps
         case fileSearchEnabled, fileIndex, externalDrives, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
+        case performanceEnabled, cpuUsage, gpuUsage, memoryUsage, chipTemperature
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
@@ -56,12 +57,18 @@ extension SettingsItem {
               keywords: "keyboard 键盘 开关 shortcuts enable"),
         .init(id: .keyboardMode, tab: .keyboard, title: "键盘模式",
               keywords: "win mac 模式 布局 layout type"),
+        .init(id: .ctrlAsCommand, tab: .keyboard, title: "Ctrl 组合键",
+              keywords: "复制 粘贴 剪切 全选 撤销 重做 保存 查找 ctrl+c ctrl+v ctrl+x ctrl+a ctrl+z ctrl+y ctrl+s ctrl+f copy paste cut select all undo redo save find command"),
+        .init(id: .textNavigation, tab: .keyboard, title: "文字光标",
+              keywords: "home end 行首 行尾 按词 移动 删除 ctrl+backspace ctrl+delete navigation caret word selection"),
         .init(id: .systemShortcuts, tab: .keyboard, title: "系统快捷键",
               keywords: "alt+tab alt+f4 win+e win+d win+l win+s 切换程序 关闭窗口 显示桌面 锁屏 输入法 switch apps close lock desktop input source"),
         .init(id: .finderShortcuts, tab: .keyboard, title: "Finder",
               keywords: "访达 文件 剪切 移动 重命名 删除 f2 files rename move"),
         .init(id: .captureShortcuts, tab: .keyboard, title: "截图快捷键",
               keywords: "截图 截屏 识别屏幕文字 取字 screenshot capture screen text ocr"),
+        .init(id: .terminal, tab: .keyboard, title: "终端",
+              keywords: "terminal iterm shell ctrl+shift+c ctrl+shift+v 中断 interrupt"),
         .init(id: .remoteDesktop, tab: .keyboard, title: "远程桌面、虚拟机",
               keywords: "todesk 向日葵 parallels vmware rdp remote vm"),
         .init(id: .excludedApps, tab: .keyboard, title: "另外不改写按键的应用",
@@ -111,6 +118,17 @@ extension SettingsItem {
               keywords: "缩放 分辨率 文字大小 放大 屏幕 显示器 双屏 高分屏 scale scaling resolution text size monitor screen hidpi retina dpi"),
         .init(id: .refreshRate, tab: .display, title: "刷新率",
               keywords: "赫兹 hz 高刷 144 120 60 流畅 帧率 refresh rate fps monitor screen"),
+
+        .init(id: .performanceEnabled, tab: .performance, title: "性能监控",
+              keywords: "菜单栏 状态栏 系统 占用 performance monitor stats menu bar status"),
+        .init(id: .cpuUsage, tab: .performance, title: "CPU",
+              keywords: "处理器 占用 使用率 cpu processor usage load"),
+        .init(id: .gpuUsage, tab: .performance, title: "GPU",
+              keywords: "显卡 图形 占用 使用率 gpu graphics usage load"),
+        .init(id: .memoryUsage, tab: .performance, title: "内存",
+              keywords: "ram memory 占用 使用率"),
+        .init(id: .chipTemperature, tab: .performance, title: "芯片温度",
+              keywords: "电脑 发热 温度 传感器 cpu gpu temperature sensor heat"),
 
         .init(id: .clipboardEnabled, tab: .clipboard, title: "剪贴板历史",
               keywords: "win+v option+v ⌥v command+v cmd+v ⌘v clipboard history 历史 粘贴 复制记录"),

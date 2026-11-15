@@ -25,6 +25,11 @@ struct SettingsSearchTests {
     }
 
     @Test func keywords() {
+        #expect(finds("Ctrl+C", .ctrlAsCommand))
+        #expect(finds("Ctrl+V", .ctrlAsCommand))
+        #expect(finds("复制", .ctrlAsCommand))
+        #expect(finds("Home", .textNavigation))
+        #expect(finds("terminal", .terminal))
         #expect(finds("开机", .launchAtLogin))
         #expect(finds("Alt+Tab", .systemShortcuts))
         #expect(finds("F2", .finderShortcuts))
@@ -39,6 +44,15 @@ struct SettingsSearchTests {
     @Test func titlesComeFirst() {
         // 标题里有的排在只是关键词里有的前面
         #expect(first("剪贴板历史") == .clipboardEnabled)
+    }
+
+    @Test func performanceReadings() {
+        #expect(first("CPU") == .cpuUsage)
+        #expect(first("GPU") == .gpuUsage)
+        #expect(first("内存") == .memoryUsage)
+        #expect(finds("温度", .chipTemperature))
+        #expect(finds("ram", .memoryUsage))
+        #expect(finds("菜单栏", .performanceEnabled))
     }
 
     @Test func noMatch() {

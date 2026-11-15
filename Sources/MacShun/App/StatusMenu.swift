@@ -2,6 +2,7 @@
 
 import AppKit
 import Combine
+import SwiftUI
 
 /// 菜单栏图标和菜单。
 final class StatusMenu: NSObject, NSMenuDelegate {
@@ -9,15 +10,20 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let configStore: ConfigStore
     private let state: AppState
     private let openSettings: () -> Void
+    private let openPerformance: () -> Void
+    private let performance = PerformanceMonitor.shared
+    private var performanceConfig = PerformanceConfig()
     private let openClipboard: () -> Void
     private let capture: (CaptureMode) -> Void
     private var subscriptions: Set<AnyCancellable> = []
 
-    init(configStore: ConfigStore, state: AppState, openSettings: @escaping () -> Void, openClipboard: @escaping () -> Void,
+    init(configStore: ConfigStore, state: AppState, openSettings: @escaping () -> Void,
+         openPerformance: @escaping () -> Void, openClipboard: @escaping () -> Void,
          capture: @escaping (CaptureMode) -> Void) {
         self.configStore = configStore
         self.state = state
         self.openSettings = openSettings
+        self.openPerformance = openPerformance
         self.openClipboard = openClipboard
         self.capture = capture
         super.init()
@@ -26,7 +32,20 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
         item.menu = menu
-        updateIcon()
+
+        configStore.$config
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] config in
+                guard let self else { return }
+                self.performanceConfig = config.performance
+                self.performance.apply(config.performance)
+                self.updateIcon()
+            }
+            .store(in: &subscriptions)
+        performance.$snapshot
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }
+            .store(in: &subscriptions)
 
         state.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -35,13 +54,34 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     private func updateIcon() {
-        item.button?.image = BrandMark.menuBarImage(needsAttention: !state.allGood)
-        item.button?.toolTip = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
+        guard let button = item.button else { return }
+        let active = performanceConfig.isActive
+        item.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
+        button.imageScaling = .scaleNone
+        button.image = active ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, metrics: performanceConfig.metrics, needsAttention: !state.allGood)
+                              : BrandMark.menuBarImage(needsAttention: !state.allGood)
+        let name = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
+        let values = active ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" } : []
+        let description = ([name] + values).joined(separator: "\n")
+        button.toolTip = description
+        button.setAccessibilityLabel(name)
+        button.setAccessibilityValue(values.joined(separator: ", "))
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let cfg = configStore.config
+
+        if cfg.performance.isActive {
+            menu.addItem(.sectionHeader(title: L("性能监控")))
+            let overview = NSMenuItem()
+            let host = NSHostingView(rootView: PerformanceMenuOverview(monitor: performance, metrics: cfg.performance.metrics))
+            host.frame = NSRect(x: 0, y: 0, width: 270, height: CGFloat(cfg.performance.metrics.count) * 25 + 16)
+            overview.view = host
+            menu.addItem(overview)
+        }
+        menu.addItem(action(L("性能监控设置…"), #selector(showPerformance), symbol: "gauge.with.dots.needle.50percent"))
+        menu.addItem(.separator())
 
         let updater = Updater.shared
         if let release = updater.available, !updater.isSkipped(release) {
@@ -102,6 +142,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func readText() { capture(.text) }
     @objc private func showClipboard() { openClipboard() }
     @objc private func showSettings() { openSettings() }
+    @objc private func showPerformance() { openPerformance() }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func showUpdate() { UpdateWindowController.shared.show(activate: true) }
 

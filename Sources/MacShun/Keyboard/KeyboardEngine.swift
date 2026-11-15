@@ -151,8 +151,11 @@ final class KeyboardEngine {
                 let app = environment.current.get()
                 context = KeyContext(
                     appKind: AppCatalog.kind(of: app, userExcluded: cfg.excludedApps),
+                    isBrowser: AppCatalog.isBrowser(app),
                     clipboardEnabled: config.get().clipboard.enabled,
+                    inputSourceID: environment.inputSourceID.get(),
                     windowShortcuts: config.get().window.enabled,
+                    hasCopiedScreenshot: { CaptureClipboard.general.containsScreenshot },
                     focus: { [focusInspector] in focusInspector.focusKind() }
                 )
             }

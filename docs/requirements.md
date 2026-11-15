@@ -6,8 +6,11 @@
 
 | 编号 | 要求 |
 |---|---|
+| K1 | 默认保留 Windows 的 Ctrl 组合键：复制、粘贴、剪切、全选、撤销、重做、保存、查找；Ctrl+Shift 保留 Shift，不改写 Ctrl+Alt、Ctrl+Win |
+| K2 | Home/End 到行首行尾，Ctrl+Home/End 到文首文末，Ctrl+←/→ 按词移动，Ctrl+Backspace/Delete 按词删除，Shift 选择文字；浏览器未知焦点时不误触后退 |
 | K3 | Alt+Tab 切换程序，Alt+F4 退出当前应用，Win+E 打开 Finder，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索 |
 | K4 | Finder 里：Ctrl+X 加 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级；光标在输入框里时不改写 |
+| K5 | 终端保留 Ctrl+C 中断等原生控制键，用 Ctrl+Shift+C/V 复制粘贴 |
 | K6 | 在远程桌面和虚拟机里不改写任何按键，包括国产远程工具（UU远程、ToDesk、向日葵） |
 | K7 | Win+V 呼出剪贴板历史（见 C1） |
 | K8 | 提供“Windows 键盘 / Mac 键盘”两种布局选项，两种键盘上 Ctrl、Option、Command 的位置不同 |

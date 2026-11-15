@@ -96,18 +96,138 @@ struct ScrollStitcherTests {
         #expect(stitch.result()?.dataProvider?.data as Data? == expected.dataProvider?.data as Data?)
     }
 
+    @MainActor
+    private func sparseTextPage(repeated: Bool = false, retina: Bool = false) throws -> CGImage {
+        let width = retina ? 1032 : 1000, height = 1500
+        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                             bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        let labels = ["Maple", "Cedar", "Aspen", "Birch", "Spruce", "Willow"]
+        let spacing = repeated ? 180 : 250
+        let font = retina ? NSFont.systemFont(ofSize: 38, weight: .medium) : NSFont.systemFont(ofSize: 20)
+        let left = retina ? 24 : 12
+        let firstBaseline = retina ? 55 : 26
+        for (index, label) in labels.enumerated() {
+            let row = retina ? String(format: "ROW %03d", index + 1) : "Row \(index + 1)"
+            let value = (index + 7) * 2419
+            let text = repeated ? "Repeated row" : "\(row)  \(label)\(retina ? "  " : "   ")\(value)"
+            (text as NSString).draw(at: CGPoint(x: left, y: height - firstBaseline - index * spacing),
+                                    withAttributes: [.font: font, .foregroundColor: NSColor.black])
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return try #require(context.makeImage())
+    }
+
+    @MainActor @Test(arguments: [[270], [330], [420], [270, 600, 850]])
+    func sparseTextStitchesAcrossBlankSpace(offsets: [Int]) throws {
+        let viewport = 630
+        let source = try sparseTextPage()
+        func crop(at y: Int, height: Int = viewport) throws -> CGImage {
+            try #require(source.cropping(to: CGRect(x: 0, y: y, width: source.width, height: height)))
+        }
+        var stitch = try #require(ScrollStitcher(try crop(at: 0)))
+        for offset in offsets {
+            try #require(stitch.append(crop(at: offset)) == .appended)
+            #expect(stitch.height == viewport + offset)
+        }
+        let lastOffset = try #require(offsets.last)
+        let expected = try #require(ScrollStitcher(try crop(at: 0, height: viewport + lastOffset))?.result())
+        #expect(stitch.result()?.dataProvider?.data as Data? == expected.dataProvider?.data as Data?)
+    }
+
+    @MainActor @Test func sparseRepeatedTextCannotBridgeMissingOverlap() throws {
+        let source = try sparseTextPage(repeated: true)
+        func crop(at y: Int) throws -> CGImage {
+            try #require(source.cropping(to: CGRect(x: 0, y: y, width: source.width, height: 630)))
+        }
+        var stitch = try #require(ScrollStitcher(try crop(at: 0)))
+        #expect(try stitch.append(crop(at: 750)) == .noOverlap)
+        #expect(stitch.height == 630)
+    }
+
+    @MainActor @Test(arguments: [10, 45])
+    func smallScrollStepsKeepTheSeamAcrossBlankSpace(step: Int) throws {
+        let source = try sparseTextPage(retina: true)
+        let viewport = 640, end = 800
+        func crop(at offset: Int, height: Int = viewport) throws -> CGImage {
+            try #require(source.cropping(to: CGRect(x: 0, y: offset, width: source.width, height: height)))
+        }
+        var stitch = try #require(ScrollStitcher(try crop(at: 0)))
+        let offsets = Array(stride(from: step, to: end, by: step)) + [end]
+        for offset in offsets {
+            _ = try stitch.append(crop(at: offset))
+        }
+        #expect(stitch.height == viewport + end)
+        let expected = try #require(ScrollStitcher(try crop(at: 0, height: viewport + end))?.result())
+        #expect(stitch.result()?.dataProvider?.data as Data? == expected.dataProvider?.data as Data?)
+    }
+
+    @MainActor @Test func blinkingCaretAndScrollbarKeepTheFirstFrame() throws {
+        let source = try sparseTextPage()
+        let viewport = CGRect(x: 0, y: 0, width: source.width, height: 630)
+        let first = try #require(source.cropping(to: viewport))
+        let context = try #require(CGContext(data: nil, width: first.width, height: first.height, bitsPerComponent: 8,
+                                             bytesPerRow: first.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setBlendMode(.copy)
+        context.draw(first, in: viewport)
+        context.setFillColor(CGColor(gray: 0.4, alpha: 1))
+        context.fill(CGRect(x: 57, y: 517, width: 3, height: 24))
+        context.fill(CGRect(x: 986, y: 289, width: 12, height: 200))
+
+        let changed = try #require(context.makeImage())
+        var stitch = try #require(ScrollStitcher(first))
+        let baseline = try #require(stitch.result())
+        #expect(stitch.append(changed) == .unchanged)
+        #expect(stitch.result()?.dataProvider?.data as Data? == baseline.dataProvider?.data as Data?)
+
+        let scrolled = try #require(source.cropping(to: viewport.offsetBy(dx: 0, dy: 270)))
+        #expect(stitch.append(scrolled) == .appended)
+        #expect(stitch.height == 900)
+    }
+
+    @Test func warnsAfterThreeMissesAndClearsWhenOverlapReturns() {
+        var overlap = ScrollCaptureOverlap()
+        overlap.recordFrame(.noOverlap)
+        #expect(!overlap.needsBacktrack)
+        overlap.recordFrame(.noOverlap)
+        #expect(!overlap.needsBacktrack)
+        overlap.recordFrame(.noOverlap)
+        #expect(overlap.needsBacktrack)
+        overlap.recordFrame(.appended)
+        #expect(!overlap.needsBacktrack)
+        overlap.recordFrame(.noOverlap)
+        #expect(!overlap.needsBacktrack)
+    }
+
     /// 从选区的快捷键进入、完成和取消，都使用独立剪贴板与合成画面。
     @MainActor @Test func captureEntryPreviewAndCancellation() async throws {
         _ = NSApplication.shared
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
         let first = try image(top: 0, height: 160)
-        let next = try image(top: 30, height: 160)
+        let middle = try image(top: 100, height: 160)
+        let last = try image(top: 200, height: 160)
+        var withoutMiddle = try #require(ScrollStitcher(first))
+        #expect(withoutMiddle.append(last) == .noOverlap)
         let rect = CGRect(x: -18000, y: -17000, width: first.width, height: first.height)
         let photo = CaptureImage(image: first, size: rect.size)
-        let reads = Locked(0)
-        let controller = ScreenCaptureController(pasteboard: board, makeScrollReader: { _, _ in
-            { reads.update { $0 += 1; return $0 == 1 ? first : next } }
+        var producer: ScrollCaptureSource.Frames.Continuation?
+        var stopped = 0
+        let clipboard = CaptureClipboard(pasteboard: board)
+        let controller = ScreenCaptureController(clipboard: clipboard, makeScrollSource: { region, _ in
+            let buffer = ScrollCaptureSource.buffer(width: region.width, height: region.height)
+            producer = buffer.continuation
+            buffer.continuation.yield(first)
+            return ScrollCaptureSource(frames: buffer.stream) {
+                stopped += 1
+                if stopped == 2 { buffer.continuation.yield(last) }
+                buffer.continuation.finish()
+            }
         }, freeze: { [FrozenScreen(frame: rect, photo: photo, windowRects: [photo.bounds])] })
         defer { controller.cancel() }
 
@@ -119,7 +239,7 @@ struct ScrollStitcherTests {
             try #require(ready())
         }
         func start() async throws {
-            reads.set(0)
+            producer = nil
             controller.start(.image)
             func window() -> NSWindow? { NSApp.windows.first(where: { $0.isVisible && $0.frame == rect && $0.contentView is CaptureCanvas }) }
             try await waitUntil { window() != nil }
@@ -135,15 +255,21 @@ struct ScrollStitcherTests {
                 timestamp: 1, windowNumber: panel.windowNumber, context: nil, characters: "l", charactersIgnoringModifiers: "l",
                 isARepeat: false, keyCode: KeyCode.l))
             #expect(canvas.handleKey(e))
-            try await waitUntil { reads.get() >= 2 }
+            try await waitUntil { producer != nil }
         }
         board.setString("original", forType: .string)
         let count = board.changeCount
         try await start()
         controller.cancelScrolling()
         #expect(!FrontAppTracker.shared.scrollingCaptureActive.get() && board.changeCount == count)
+        #expect(stopped == 1)
         try await start()
-        controller.finishScrolling()
+        producer?.yield(middle)
+        // 模拟点击完成后最后一张画面才抵达，缓冲区应先排空再打开预览。
+        try await waitUntil {
+            controller.finishScrolling()
+            return stopped == 2
+        }
         func preview() -> ScrollCapturePreview? {
             NSApp.windows.compactMap { w in
                 w.isVisible ? (w.contentView as? NSHostingView<ScrollCapturePreview>)?.rootView : nil
@@ -151,10 +277,14 @@ struct ScrollStitcherTests {
         }
         try await waitUntil { preview() != nil }
         let result = try #require(preview())
-        #expect(result.image.height == 190 && result.message == nil && board.changeCount == count)
+        let expected = try image(top: 0, height: 360)
+        #expect(result.image.height == 360 && result.message == nil && board.changeCount == count)
+        #expect(result.image.dataProvider?.data as Data? == expected.dataProvider?.data as Data?)
+        #expect(stopped == 2)
         result.copy()
         let data = try #require(board.data(forType: .png))
-        #expect(NSBitmapImageRep(data: data)?.pixelsHigh == 190 && preview() == nil)
+        #expect(NSBitmapImageRep(data: data)?.pixelsHigh == 360 && preview() == nil)
+        #expect(clipboard.containsScreenshot)
     }
 
     @Test func regionUsesDisplayLocalPointsForScreenCaptureKit() throws {

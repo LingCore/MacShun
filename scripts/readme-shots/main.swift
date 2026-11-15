@@ -198,7 +198,7 @@ func render<V: View>(_ view: V, size: NSSize, wait: Double = 0.8) -> NSBitmapIma
 
 // MARK: - 设置窗口
 
-if wants("keyboard") { save(settingsWindow(.keyboard, size: NSSize(width: 720, height: en ? 648 : 622)), "keyboard-\(suffix).png", radius: 16) }
+if wants("keyboard") { save(settingsWindow(.keyboard, size: NSSize(width: 720, height: en ? 808 : 782)), "keyboard-\(suffix).png", radius: 16) }
 // 底边落在“光标”和下一节之间的空白里
 if wants("mouse") { save(settingsWindow(.mouse, size: NSSize(width: 720, height: 590)), "mouse-\(suffix).png", radius: 16) }
 if wants("display") {

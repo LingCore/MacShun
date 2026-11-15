@@ -160,6 +160,22 @@ struct ConfigTests {
         #expect(config.clipboard == ClipboardConfig())
     }
 
+    @Test func windowsEditingDefaultsSurviveMissingOrInvalidSettings() throws {
+        for json in [#"{"keyboard":{}}"#, #"{"keyboard":{"ctrlAsCommand":"on","textNavigation":null}}"#] {
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            #expect(config.keyboard.ctrlAsCommand)
+            #expect(config.keyboard.textNavigation)
+        }
+    }
+
+    @Test func explicitEditingPreferencesArePreserved() throws {
+        let json = #"{"keyboard":{"ctrlAsCommand":false,"textNavigation":false}}"#
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        #expect(!config.keyboard.ctrlAsCommand)
+        #expect(!config.keyboard.textNavigation)
+        #expect(try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config)) == config)
+    }
+
     @Test func roundTrip() throws {
         var config = AppConfig()
         config.mouse.devices["1:2:鼠标"] = MouseDeviceSettings()

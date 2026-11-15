@@ -11,7 +11,7 @@ import ApplicationServices
 @MainActor
 final class SelfTest {
     nonisolated static var isRequested: Bool {
-        CommandLine.arguments.contains("--self-test") || onlyWindow || onlySearch || onlySystemSearch || onlyGleaning || onlyFileDialog
+        CommandLine.arguments.contains("--self-test") || onlyWindow || onlySearch || onlySystemSearch || onlyGleaning || onlyFileDialog || onlyKeyboard || onlyTerminal || onlyComposition
     }
     /// 只测分屏：scripts/selftest.sh window
     nonisolated static var onlyWindow: Bool { CommandLine.arguments.contains("--self-test-window") }
@@ -22,6 +22,11 @@ final class SelfTest {
     nonisolated static var onlyGleaning: Bool { CommandLine.arguments.contains("--self-test-gleaning") }
 
     nonisolated static var onlyFileDialog: Bool { CommandLine.arguments.contains("--self-test-file-dialog") }
+
+    nonisolated static var onlyKeyboard: Bool { CommandLine.arguments.contains("--self-test-keyboard") }
+
+    nonisolated static var onlyTerminal: Bool { CommandLine.arguments.contains("--self-test-terminal") }
+    nonisolated static var onlyComposition: Bool { CommandLine.arguments.contains("--self-test-composition") }
 
     private enum Mod { case ctrl, command, alt, win, shift }
 
@@ -64,6 +69,14 @@ final class SelfTest {
     // MARK: - 流程
 
     func run() async {
+        if Self.onlyComposition {
+            await compositionTest()
+            return finish()
+        }
+        if Self.onlyTerminal {
+            await terminalPasteTest()
+            return finish()
+        }
         say("Mac顺 自测开始。键盘类型：\(config.keyboard.layout == .windows ? "Windows 键盘" : "Mac 键盘")")
         guard Permissions.accessibility else {
             fail("权限", "没有辅助功能权限")
@@ -103,9 +116,31 @@ final class SelfTest {
             try? FileManager.default.removeItem(at: clipboard.store.directory)
             return finish()
         }
+        if Self.onlyKeyboard {
+            // 保留所有剪贴板格式，包括图片和文件；键盘自测结束后原样恢复。
+            let pasteboard = NSPasteboard.general
+            let saved = (pasteboard.pasteboardItems ?? []).map { item in
+                item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+            }
+            setUpWindow()
+            if await ensureFocus() { await textTests() }
+            else { fail("测试窗口", "无法聚焦，未发送测试按键") }
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            window.orderOut(nil)
+            pasteboard.clearContents()
+            let items = saved.map { types in
+                let item = NSPasteboardItem()
+                for (type, data) in types { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+            try? FileManager.default.removeItem(at: clipboard.store.directory)
+            return finish()
+        }
         let savedClipboard = NSPasteboard.general.string(forType: .string)
         setUpWindow()
         if await ensureFocus() {
+            await textTests()
             await clipboardPanelTest()
             await fileSearchTest()
             _ = await ensureFocus()
@@ -134,6 +169,147 @@ final class SelfTest {
         }
         try? FileManager.default.removeItem(at: clipboard.store.directory)
         finish()
+    }
+
+    /// 使用当前架构的正式搜索面板走组字、刷新、上屏流程，可在 Rosetta 下复核 Intel 分支。
+    private func compositionTest() async {
+        say("— 搜索面板中文组字（\(UpdateFeed.runtimeArch)）")
+        guard let fileSearch else { return fail("中文组字", "未初始化文件搜索") }
+        defer {
+            fileSearch.hide()
+            clipboard.hide()
+            try? FileManager.default.removeItem(at: clipboard.store.directory)
+        }
+        for history in [false, true] {
+            let name = history ? "剪贴板搜索" : "文件搜索"
+            if history { clipboard.show() } else { fileSearch.show() }
+            guard await waitUntil(timeout: 4, {
+                NSApp.keyWindow?.firstResponder is NSTextView
+                    && (history ? self.clipboard.isVisible : fileSearch.isVisible)
+            }), let panel = NSApp.keyWindow, let editor = panel.firstResponder as? NSTextView else {
+                fail(name, "未取得搜索输入框")
+                continue
+            }
+            let insertion = NSRange(location: NSNotFound, length: 0)
+            editor.insertText("a", replacementRange: insertion)
+            editor.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0), replacementRange: insertion)
+            let frame = panel.frame
+            panel.setContentSize(NSSize(width: frame.width - 1, height: frame.height))
+            if history {
+                clipboard.store.add(ClipboardCapture(kind: .text, text: "a sample", fingerprint: UUID().uuidString), maxItems: 20)
+            }
+            await pause(200)
+            let query = history ? clipboard.query : fileSearch.currentQuery
+            check("\(name)：刷新期间保留组字和焦点", panel.firstResponder === editor
+                  && editor.hasMarkedText() && editor.string == "azhong" && query == "a")
+            editor.insertText("中", replacementRange: editor.markedRange())
+            await pause(100)
+            let committed = history ? clipboard.query : fileSearch.currentQuery
+            check("\(name)：确认汉字后按已上屏内容搜索", !editor.hasMarkedText() && committed == "a中")
+            panel.setFrame(frame, display: false)
+            if history { clipboard.hide() } else { fileSearch.hide() }
+        }
+    }
+
+    /// 在真实 Terminal 中读取原始 PTY 字节，不把待测文字当作命令执行。
+    private func terminalPasteTest() async {
+        say("— 终端粘贴原始字节")
+        guard Permissions.accessibility else { return fail("终端粘贴", "缺少辅助功能权限") }
+        let pasteboard = NSPasteboard.general
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("macshun-terminal-\(UUID().uuidString)")
+        let bytes = directory.appendingPathComponent("bytes")
+        let ready = directory.appendingPathComponent("ready")
+        let stop = directory.appendingPathComponent("stop")
+        defer {
+            try? Data().write(to: stop)
+            pasteboard.clearContents()
+            let items = saved.map { types in
+                let item = NSPasteboardItem()
+                for (type, data) in types { item.setData(data, forType: type) }
+                return item
+            }
+            if !items.isEmpty { pasteboard.writeObjects(items) }
+            try? FileManager.default.removeItem(at: clipboard.store.directory)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let reader = #"""
+            import os, pathlib, select, sys, termios, tty
+            root = pathlib.Path(sys.argv[1])
+            old = termios.tcgetattr(0)
+            try:
+                tty.setraw(0)
+                os.write(1, b'\x1b[?2004hMacShun paste test: text is recorded, never executed.\r\n')
+                with open(root / 'bytes', 'wb', buffering=0) as output:
+                    (root / 'ready').touch()
+                    while not (root / 'stop').exists():
+                        if select.select([0], [], [], 0.05)[0]:
+                            data = os.read(0, 65536)
+                            if not data: break
+                            output.write(data)
+            finally:
+                os.write(1, b'\x1b[?2004l\r\nMacShun paste test complete.\r\n')
+                termios.tcsetattr(0, termios.TCSANOW, old)
+            """#
+            try reader.write(to: directory.appendingPathComponent("reader.py"), atomically: true, encoding: .utf8)
+            let command = directory.appendingPathComponent("Paste test.command")
+            try "#!/bin/sh\nexec /usr/bin/python3 '\(directory.path)/reader.py' '\(directory.path)'\n"
+                .write(to: command, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: command.path)
+            guard NSWorkspace.shared.open(command), await waitUntil(timeout: 8, {
+                FileManager.default.fileExists(atPath: ready.path)
+                    && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal"
+            }) else { return fail("终端测试窗口", "未进入原始字节读取器") }
+
+            let terminalWindow = WindowElement.focused()
+            let samples = ["ls -l", "第一行中文\nPY\n", "printf '%s' \"a~b\"\n"]
+            for payload in (0..<3).flatMap({ _ in samples }) {
+                for mode in 0..<3 {
+                    let before = (try? Data(contentsOf: bytes).count) ?? 0
+                    pasteboard.clearContents()
+                    pasteboard.setString(payload, forType: .string)
+                    switch mode {
+                    case 0:
+                        Synthetic.tap(KeyStroke(KeyCode.v, .maskCommand))
+                    case 1:
+                        await press(KeyCode.v, [.ctrl, .shift])
+                    default:
+                        clipboard.store.add(ClipboardCapture(kind: .text, text: payload,
+                                            fingerprint: UUID().uuidString, sourceApp: "com.apple.Terminal"), maxItems: 200)
+                        clipboard.show()
+                        guard await waitUntil(timeout: 3, {
+                            self.clipboard.visibleResults.first?.text == payload
+                                && NSApp.keyWindow?.isKeyWindow == true
+                                && NSApp.keyWindow?.firstResponder is NSTextView
+                        }) else {
+                            fail("历史面板就绪", "未取得文字输入焦点或待粘贴结果尚未显示")
+                            continue
+                        }
+                        await pause(80)
+                        await press(KeyCode.returnKey)
+                    }
+                    let expected = Data(("\u{1b}[200~" + payload.replacingOccurrences(of: "\n", with: "\r") + "\u{1b}[201~").utf8)
+                    _ = await waitUntil(timeout: 3) { ((try? Data(contentsOf: bytes).count) ?? 0) >= before + expected.count }
+                    await pause(100)
+                    let received = (try? Data(contentsOf: bytes).dropFirst(before)) ?? Data().dropFirst(0)
+                    let name = ["原生粘贴", "Ctrl+Shift+V", "历史回车粘贴"][mode]
+                    check("\(name)：\(payload.debugDescription)", Data(received) == expected,
+                          "收到 \(String(decoding: received, as: UTF8.self).debugDescription)；历史面板仍显示：\(clipboard.isVisible)；前台：\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "无")")
+                }
+            }
+            try Data().write(to: stop)
+            await pause(200)
+            // 只关闭本轮创建的窗口。终端若已自动关窗，不能再对用户原有窗口发送 ⌘W。
+            if let close: AXUIElement = terminalWindow?.element.value(kAXCloseButtonAttribute) {
+                AXUIElementPerformAction(close, kAXPressAction as CFString)
+            }
+            try? FileManager.default.removeItem(at: directory)
+        } catch {
+            fail("终端测试", error.localizedDescription)
+        }
     }
 
     private func fileDialogTest() async {
@@ -174,6 +350,79 @@ final class SelfTest {
 
     private func finish() {
         say("自测结束：通过 \(passed) 项，失败 \(failed) 项")
+    }
+
+    // MARK: - K1、K2：文字编辑
+
+    private func textTests() async {
+        say("— 键盘：文字编辑（K1、K2）")
+        let text = "hello world foo\nsecond line here"
+
+        await setText(text, caret: 3)
+        await press(KeyCode.a, [.ctrl])
+        expectKey("Ctrl+A → ⌘A", KeyCode.a, .command)
+        check("Ctrl+A 全选", textView.selectedRange() == NSRange(location: 0, length: (text as NSString).length))
+
+        NSPasteboard.general.clearContents()
+        await press(KeyCode.c, [.ctrl])
+        expectKey("Ctrl+C → ⌘C", KeyCode.c, .command)
+        check("Ctrl+C 复制", NSPasteboard.general.string(forType: .string) == text,
+              "剪贴板：\(NSPasteboard.general.string(forType: .string) ?? "空")")
+
+        await setText("", caret: 0)
+        await press(KeyCode.v, [.ctrl])
+        expectKey("Ctrl+V → ⌘V", KeyCode.v, .command)
+        check("Ctrl+V 粘贴", textView.string == text, "内容：\(textView.string.debugDescription)")
+        await press(KeyCode.a, [.ctrl])
+        await press(KeyCode.x, [.ctrl])
+        expectKey("Ctrl+X → ⌘X", KeyCode.x, .command)
+        check("Ctrl+X 剪切", textView.string.isEmpty && NSPasteboard.general.string(forType: .string) == text)
+        await press(KeyCode.v, [.ctrl])
+        check("剪切后 Ctrl+V 恢复文字", textView.string == text)
+
+        await setText(text, caret: 7)
+        await press(KeyCode.end)
+        expectKey("End → ⌘→", KeyCode.rightArrow, .command)
+        check("End 到行尾", caret == 15, "光标在 \(caret)")
+
+        await press(KeyCode.home)
+        expectKey("Home → ⌘←", KeyCode.leftArrow, .command)
+        check("Home 到行首", caret == 0, "光标在 \(caret)")
+
+        await setText(text, caret: 7)
+        await press(KeyCode.end, [.shift])
+        check("Shift+End 选到行尾", textView.selectedRange() == NSRange(location: 7, length: 8),
+              "选区 \(textView.selectedRange())")
+
+        await setText(text, caret: 7)
+        await press(KeyCode.end, [.ctrl])
+        expectKey("Ctrl+End → ⌘↓", KeyCode.downArrow, .command)
+        check("Ctrl+End 到文末", caret == (text as NSString).length, "光标在 \(caret)")
+        await press(KeyCode.home, [.ctrl])
+        check("Ctrl+Home 到文首", caret == 0, "光标在 \(caret)")
+
+        await setText(text, caret: 0)
+        await press(KeyCode.rightArrow, [.ctrl])
+        expectKey("Ctrl+→ → ⌥→", KeyCode.rightArrow, .option)
+        check("Ctrl+→ 按词移动", caret == 5, "光标在 \(caret)")
+
+        await setText(text, caret: 11)
+        await press(KeyCode.backspace, [.ctrl])
+        expectKey("Ctrl+Backspace → ⌥⌫", KeyCode.backspace, .option)
+        let afterDelete = "hello  foo\nsecond line here"
+        check("Ctrl+Backspace 删除一个词", textView.string == afterDelete, "内容：\(textView.string.debugDescription)")
+
+        await press(KeyCode.z, [.ctrl])
+        expectKey("Ctrl+Z → ⌘Z", KeyCode.z, .command)
+        check("Ctrl+Z 撤销", textView.string == text, "内容：\(textView.string.debugDescription)")
+
+        await press(KeyCode.y, [.ctrl])
+        expectKey("Ctrl+Y → ⌘⇧Z", KeyCode.z, [.command, .shift])
+        check("Ctrl+Y 重做", textView.string == afterDelete, "内容：\(textView.string.debugDescription)")
+
+        await setText("abc", caret: 3)
+        await press(KeyCode.h, [.ctrl])
+        expectKey("Ctrl+H 保持原样", KeyCode.h, .control)
     }
 
     // MARK: - C1、C2：剪贴板历史
@@ -1303,6 +1552,8 @@ final class SelfTest {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier == ownBundleID
             && NSApp.isActive && window.isKeyWindow && window.firstResponder === textView
     }
+
+    private var caret: Int { textView.selectedRange().location }
 
     private func setText(_ text: String, caret: Int) async {
         _ = await ensureFocus()

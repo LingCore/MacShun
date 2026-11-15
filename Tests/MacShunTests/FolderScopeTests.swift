@@ -97,6 +97,7 @@ struct FolderScopeTests {
     }
 
     @Test @MainActor func menuKeyboardAndEscapeRestoreEachVisitAndDiscardOldResults() async throws {
+        _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let content = ContentIndex(directory: fixture.base.appendingPathComponent("db"))
@@ -155,6 +156,7 @@ struct FolderScopeTests {
     }
 
     @Test @MainActor func pinnedFoldersPersistAndEnterScopedSearchFromHome() async throws {
+        _ = NSApplication.shared
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let suite = "MacShunTests.ProjectFolders.\(UUID())"

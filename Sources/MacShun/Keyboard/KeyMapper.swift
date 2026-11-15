@@ -49,10 +49,13 @@ enum KeyAction: Equatable {
 /// 判断按键时需要的环境信息。
 struct KeyContext {
     var appKind: AppKind
+    var isBrowser = false
     var clipboardEnabled: Bool
+    var inputSourceID: String? = nil
     var searchPanelActive = false
     /// Win+方向键分屏是否打开
     var windowShortcuts = false
+    var hasCopiedScreenshot: () -> Bool = { false }
     /// 查询键盘焦点。代价较高，只在规则需要时才调用。
     var focus: () -> FocusKind
 }
@@ -65,6 +68,10 @@ struct KeyMapper {
     var ctrlFlag: CGEventFlags { .maskControl }
     var altFlag: CGEventFlags { config.layout == .windows ? .maskAlternate : .maskCommand }
     var winFlag: CGEventFlags { config.layout == .windows ? .maskCommand : .maskAlternate }
+
+    /// 不把 Ctrl+H/M/Q 换成隐藏、最小化或退出应用；Ctrl+` 留给应用自身。
+    static let ctrlAsCommandKeys = KeyCode.letters.subtracting([KeyCode.h, KeyCode.m, KeyCode.q])
+        .union(KeyCode.digits).union(KeyCode.symbols)
 
     func modifiers(of flags: CGEventFlags) -> WinModifiers {
         var m: WinModifiers = []
@@ -101,11 +108,50 @@ struct KeyMapper {
             return action
         }
 
-        // K4：只改写 Finder 文件列表上的按键，保留搜索框和重命名的原生行为。
-        if context.appKind == .finder, config.finderShortcuts {
-            return finderShortcut(keyCode: keyCode, mods: mods, focus: context.focus) ?? .pass
+        // K5：终端保留 Ctrl+C 中断等原生操作，用 Ctrl+Shift+C/V 复制粘贴。
+        if context.appKind == .terminal {
+            if config.ctrlAsCommand, mods == [.ctrl, .shift], [KeyCode.c, KeyCode.v].contains(keyCode) {
+                return .send(KeyStroke(keyCode, .maskCommand))
+            }
+            return .pass
         }
 
+        // 查询焦点是跨进程调用，同一次按键最多查一次。
+        var cachedFocus: FocusKind?
+        func focus() -> FocusKind {
+            if let cachedFocus { return cachedFocus }
+            let result = context.focus()
+            cachedFocus = result
+            return result
+        }
+
+        // K4：文件操作优先于普通编辑；重命名和搜索框继续走文字编辑规则。
+        if context.appKind == .finder, config.finderShortcuts,
+           let action = finderShortcut(keyCode: keyCode, mods: mods, focus: focus) {
+            return action
+        }
+
+        let shift: CGEventFlags = mods.contains(.shift) ? .maskShift : []
+        if config.textNavigation,
+           let action = textNavigation(keyCode: keyCode, mods: mods, shift: shift, context: context, focus: focus) {
+            return action
+        }
+
+        // K1：保留 Shift，仅把单独的 Ctrl 换成 ⌘；Ctrl+Alt、Ctrl+Win 不改写。
+        if config.ctrlAsCommand, mods.subtracting(.shift) == [.ctrl], Self.ctrlAsCommandKeys.contains(keyCode) {
+            // 输入法自身的 Windows 标点切换键继续交给输入法。
+            if keyCode == KeyCode.period, context.inputSourceID?.hasPrefix(AppCatalog.sogouInputSourcePrefix) == true {
+                return .pass
+            }
+            if keyCode == KeyCode.y, shift.isEmpty {
+                return .send(KeyStroke(KeyCode.z, [.maskCommand, .maskShift]))
+            }
+            return .send(KeyStroke(keyCode, CGEventFlags.maskCommand.union(shift)))
+        }
+
+        if keyCode == KeyCode.v, mods == [.ctrl], context.hasCopiedScreenshot() {
+            return .send(KeyStroke(KeyCode.v, .maskCommand))
+        }
         return .pass
     }
 
@@ -177,6 +223,36 @@ struct KeyMapper {
             return .send(KeyStroke(KeyCode.downArrow, .maskCommand))                       // 打开
         case KeyCode.forwardDelete: return .send(KeyStroke(KeyCode.backspace, .maskCommand)) // 移到废纸篓
         case KeyCode.backspace: return .send(KeyStroke(KeyCode.upArrow, .maskCommand))       // 上一级
+        default: return nil
+        }
+    }
+
+    private func textNavigation(
+        keyCode: CGKeyCode, mods: WinModifiers, shift: CGEventFlags,
+        context: KeyContext, focus: () -> FocusKind
+    ) -> KeyAction? {
+        func inText() -> Bool {
+            switch focus() {
+            case .text: return true
+            // 浏览器的 ⌘← 是后退，只有确认在编辑文字时才能改写。
+            case .unknown: return !context.isBrowser
+            case .browsing, .other: return false
+            }
+        }
+        switch (keyCode, mods.subtracting(.shift)) {
+        case (KeyCode.home, []), (KeyCode.end, []):
+            guard inText() else { return nil }
+            return .send(KeyStroke(keyCode == KeyCode.home ? KeyCode.leftArrow : KeyCode.rightArrow,
+                                   CGEventFlags.maskCommand.union(shift)))
+        case (KeyCode.home, [.ctrl]), (KeyCode.end, [.ctrl]):
+            if inText() {
+                return .send(KeyStroke(keyCode == KeyCode.home ? KeyCode.upArrow : KeyCode.downArrow,
+                                       CGEventFlags.maskCommand.union(shift)))
+            }
+            return .send(KeyStroke(keyCode, shift))
+        case (KeyCode.leftArrow, [.ctrl]), (KeyCode.rightArrow, [.ctrl]),
+             (KeyCode.backspace, [.ctrl]), (KeyCode.forwardDelete, [.ctrl]):
+            return .send(KeyStroke(keyCode, CGEventFlags.maskAlternate.union(shift)))
         default: return nil
         }
     }

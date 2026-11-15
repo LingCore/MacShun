@@ -110,8 +110,8 @@ struct CaptureTests {
             #expect(canvas.selection?.width == 340 && canvas.selection?.height == 230)
             let toolbar = try #require(canvas.subviews.compactMap { $0 as? CaptureToolbar }.first)
             toolbar.layoutSubtreeIfNeeded()
-            let buttons = toolbar.subviews.compactMap { $0 as? NSButton }
-            #expect(buttons.count == 14 && canvas.bounds.contains(toolbar.frame))
+            let buttons = toolbar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
+            #expect(buttons.count == 16 && canvas.bounds.contains(toolbar.frame))
             for button in buttons { #expect(button.frame.width >= 26 && button.accessibilityLabel() != nil) }
             let redact = try #require(buttons.first { $0.toolTip == CaptureMark.Kind.cover.title })
             redact.performClick(nil)
@@ -126,13 +126,35 @@ struct CaptureTests {
             #expect(copies == 1)
         }
     }
+    @Test func polygonExportsTransparentCornersAndClipsMarksAtRetinaScale() throws {
+        let photo = try photo(width: 80, height: 60, points: CGSize(width: 40, height: 30))
+        let polygon = try #require(CapturePolygon([
+            CGPoint(x: 10, y: 5), CGPoint(x: 30, y: 8), CGPoint(x: 20, y: 25)
+        ]))
+        let mark = CaptureMark(kind: .cover, start: CGPoint(x: 9, y: 18), end: CGPoint(x: 22, y: 23))
+        let image = try #require(photo.render(polygon.bounds, marks: [mark], polygon: polygon))
+        let data = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        let png = try #require(NSBitmapImageRep(data: data))
+        #expect(png.pixelsWide == 40 && png.pixelsHigh == 40)
+        func color(_ x: Int, _ y: Int) throws -> NSColor {
+            try #require(png.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+        }
+        #expect(try color(2, 8).alphaComponent == 0)
+        #expect(try color(21, 8).alphaComponent == 1)
+        #expect(try color(21, 8).blueComponent < 0.01)
+        #expect(try color(20, 17).blueComponent > 0.99)
+        #expect(try color(20, 30).redComponent > 0.99)
+        let edge = try (0..<png.pixelsWide).map { try color($0, 17).alphaComponent }
+        #expect(edge.contains { $0 > 0 && $0 < 1 })
+    }
+
     @MainActor @Test func toolbarFeedbackAndCompactLayout() throws {
         _ = NSApplication.shared
         let panel = NSPanel(contentRect: CGRect(x: -16000, y: -16000, width: 640, height: 160),
                             styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         let toolbar = CaptureToolbar()
         panel.contentView?.addSubview(toolbar)
-        let buttons = toolbar.subviews.compactMap { $0 as? NSButton }
+        let buttons = toolbar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
         let singleRow = toolbar.frame.size
         toolbar.fit(within: 308)
         #expect(toolbar.frame.width <= 308 && toolbar.frame.height > singleRow.height)
@@ -192,7 +214,8 @@ struct CaptureTests {
         let photo = CaptureImage(image: try #require(ctx.makeImage()), size: size)
         let pb = NSPasteboard.withUniqueName()
         defer { pb.releaseGlobally() }
-        let controller = ScreenCaptureController(pasteboard: pb, freeze: {
+        let clipboard = CaptureClipboard(pasteboard: pb)
+        let controller = ScreenCaptureController(clipboard: clipboard, freeze: {
             [FrozenScreen(frame: frame, photo: photo, windowRects: [target])]
         })
         defer { controller.cancel() }
@@ -206,8 +229,8 @@ struct CaptureTests {
             }
             throw CocoaError(.coderValueNotFound)
         }
-        func clickWindow(_ panel: NSWindow) throws {
-            let point = CGPoint(x: target.midX, y: target.midY)
+        func clickWindow(_ panel: NSWindow, at point: CGPoint? = nil) throws {
+            let point = point ?? CGPoint(x: target.midX, y: target.midY)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                                                             timestamp: 1, windowNumber: panel.windowNumber,
@@ -231,10 +254,25 @@ struct CaptureTests {
 
         panel = try await begin(.image)
         try clickWindow(panel)
-        try press(KeyCode.returnKey, "\r", in: panel)
+        let canvas = try #require(panel.contentView as? CaptureCanvas)
+        let toolbar = try #require(canvas.subviews.compactMap { $0 as? CaptureToolbar }.first)
+        let checkmark = try #require(toolbar.subviews.compactMap { $0 as? NSButton }.first {
+            $0.toolTip == L("复制图片（Enter）")
+        })
+        checkmark.performClick(nil)
         let data = try #require(pb.data(forType: .png))
         let rep = try #require(NSBitmapImageRep(data: data))
         #expect(!panel.isVisible && rep.pixelsWide == 490 && rep.pixelsHigh == 90)
+        let mapper = KeyMapper(config: KeyboardConfig())
+        var screenshotOnlyConfig = KeyboardConfig()
+        screenshotOnlyConfig.ctrlAsCommand = false
+        let screenshotOnlyMapper = KeyMapper(config: screenshotOnlyConfig)
+        let pasteContext = KeyContext(appKind: .normal, clipboardEnabled: true,
+                                      hasCopiedScreenshot: { clipboard.containsScreenshot }, focus: { .text })
+        #expect(mapper.action(keyCode: KeyCode.v, flags: .maskControl, context: pasteContext) ==
+            .send(KeyStroke(KeyCode.v, .maskCommand)))
+        #expect(screenshotOnlyMapper.action(keyCode: KeyCode.v, flags: .maskControl, context: pasteContext) ==
+            .send(KeyStroke(KeyCode.v, .maskCommand)))
         #expect(ClipboardWatcher.capture(from: pb, recordImages: false) == nil)
         #expect(ClipboardWatcher.capture(from: pb, recordImages: true)?.kind == .image)
 
@@ -261,6 +299,9 @@ struct CaptureTests {
         #expect(floating.naturalSize == target.size && pb.changeCount == beforePin)
         floating.copyPicture()
         #expect(pb.data(forType: .png) == data)
+        #expect(mapper.action(keyCode: KeyCode.v, flags: .maskControl, context: pasteContext) ==
+            .send(KeyStroke(KeyCode.v, .maskCommand)))
+        #expect(screenshotOnlyMapper.action(keyCode: KeyCode.v, flags: .maskControl, context: pasteContext) == .pass)
         try press(KeyCode.escape, "\u{1b}", in: floating)
         #expect(!floating.isVisible)
 
@@ -272,6 +313,40 @@ struct CaptureTests {
         }
         #expect(pb.string(forType: .string)?.lowercased().contains("capture example") == true)
         #expect(pb.data(forType: .png) == nil)
+
+        panel = try await begin(.image)
+        let polygonCanvas = try #require(panel.contentView as? CaptureCanvas)
+        let vertices = [CGPoint(x: 90, y: 30), CGPoint(x: 350, y: 40), CGPoint(x: 210, y: 140)]
+        try clickWindow(panel)
+        let anchors = try #require(polygonCanvas.toolbar.subviews.compactMap { $0 as? NSButton }.first {
+            $0.accessibilityLabel() == L("锚点选区")
+        })
+        anchors.performClick(nil)
+        try clickWindow(panel, at: vertices[0])
+        try press(KeyCode.escape, "\u{1b}", in: panel)
+        #expect(panel.isVisible && polygonCanvas.selection == target && polygonCanvas.polygon == nil)
+        try press(KeyCode.p, "p", in: panel)
+        for point in vertices { try clickWindow(panel, at: point) }
+        try clickWindow(panel, at: CGPoint(x: 270, y: 100))
+        try press(KeyCode.backspace, "\u{7f}", in: panel)
+        try clickWindow(panel, at: vertices[0])
+        #expect(polygonCanvas.polygon?.vertices == vertices)
+        let scrollButton = try #require(polygonCanvas.toolbar.subviews.compactMap { $0 as? NSButton }.first {
+            $0.toolTip == L("长截图需要矩形选区")
+        })
+        #expect(!scrollButton.isEnabled)
+        polygonCanvas.toolbar.perform?(.tool(.polygon))
+        for point in [CGPoint(x: 170, y: 70), CGPoint(x: 240, y: 70), CGPoint(x: 214, y: 108)] {
+            try clickWindow(panel, at: point)
+        }
+        try press(KeyCode.returnKey, "\r", in: panel)
+        #expect(panel.isVisible && polygonCanvas.marks.first?.kind == .polygon)
+        try press(KeyCode.returnKey, "\r", in: panel)
+        let cutoutData = try #require(pb.data(forType: .png))
+        let cutout = try #require(NSBitmapImageRep(data: cutoutData))
+        #expect(!panel.isVisible && cutout.pixelsWide == 260 && cutout.pixelsHigh == 110 && cutout.hasAlpha)
+        let stroke = try #require(cutout.colorAt(x: 110, y: 70)?.usingColorSpace(.sRGB))
+        #expect(stroke.redComponent > 0.95 && stroke.greenComponent < 0.35)
     }
 
 }

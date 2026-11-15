@@ -64,6 +64,7 @@
 - **辅助打码**：选好截图范围后，点工具栏里实心遮挡旁的「辅助打码」。它在本机查找可能的中国大陆手机号和常见邮箱地址，点橙框即可实心遮挡。复制、保存和贴图只应用已确认的遮挡，发图前可以再检查一遍。
 - 只想复制文字时，选 **识别屏幕文字**，框选后松开鼠标即可。简体、繁体中文和英文在本机识别。
 - **写说明和标步骤**：选「文字标注」后点一下输入，Enter 完成文字，双击可再改。选「步骤序号」后连续点击即可放置 1、2、3。用选择工具点中标注可拖动，按 Delete 删除，⌘Z 撤销，⇧⌘Z 重做。
+- **多边形与标注样式**：用多边形标注圈出不规则区域；「锚点选区」可以沿物体轮廓逐点选取，导出的范围外透明。通过「标注样式」选择颜色、线宽或文字大小。
 - **对齐同一区域**：再次截图时按 R 恢复上一次成功输出的选框。方向键移动 1 个实际像素，Shift 加方向键调整宽高。选框旁显示导出尺寸。
 - **长截图**：框住网页、文档或聊天记录里需要滚动的内容，点「长截图」或按 **⌘L / Ctrl+L**。等蓝框旁提示可以滚动后，用鼠标或触控板慢慢向下滚，点「完成」预览。要在长图上写说明或遮住一行，点「标注」，滚动到对应位置编辑，点「完成标注」后再复制、保存 PNG 或贴到屏幕。允许辅助功能后也可用 Enter 完成、Esc 取消。选区尽量只框正文，避开固定侧栏；如果画面中有大面积视频，先暂停播放。如果提示找不到重叠内容，往回滚一些再继续。
 - **贴图**：选好截图后按 **F3** 或点「贴到屏幕」，含标注的图片会留在原处。也可从菜单栏「贴出剪贴板图片」，或在历史图片上右键贴出。拖动移动、拖角或滚轮缩放、双击恢复原始大小，Ctrl 加滚轮调透明度。右键可复制、保存和关闭；点中贴图后按 Esc 也能关闭。
@@ -133,10 +134,19 @@
   </picture>
 </p>
 
+#### 📊 性能监控
+
+- 菜单栏显示 **CPU、GPU、内存占用和芯片温度**，每 2 秒更新；在 **设置 › 性能监控** 分别选择需要的项目，关闭后停止采集。
+- 内存显示应用、联动和压缩内存占用，不包含可回收的文件缓存；多块 GPU 时显示占用最高的一块。
+- 温度取已识别的 CPU/GPU 传感器最高读数，不代表机身温度。部分机型可能无法读取 GPU 或温度，此时显示“暂不可用”。全程在本机读取，不需要管理员权限。
+
 #### ⌨️ 快捷键像 Windows
 
+- **Ctrl 组合键**：Ctrl+C/V/X 复制、粘贴、剪切，Ctrl+A 全选，Ctrl+Z 撤销，Ctrl+Y 重做，Ctrl+S 保存，Ctrl+F 查找。
+- **文字编辑**：Home/End 到行首行尾，Ctrl+←/→ 按词移动，Ctrl+Backspace/Delete 按词删除；配合 Shift 选择文字。
 - **系统快捷键**：Alt+Tab 切换程序，Alt+F4 退出当前应用，Win+E 打开访达，Win+D 显示桌面，Win+L 锁屏，Win+S 搜索，Win+Space 切换输入法。
 - **访达（Finder）**：Ctrl+X 再 Ctrl+V 剪切移动文件，F2 重命名，Enter 打开，Delete 移到废纸篓，Backspace 返回上一级。
+- **终端**：Ctrl+C 等控制键保留原样，用 Ctrl+Shift+C/V 复制、粘贴。
 - **远程桌面和虚拟机**：保留原生按键行为，包括 ToDesk、向日葵和 UU 远程。
 - **两种键盘都能用**：Windows 键盘和 Mac 键盘上 Ctrl、Option、⌘ 的位置不同，Mac顺 自动识别，不用设置。
 
@@ -265,6 +275,7 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **Redaction Assist.** After selecting an area, click Redaction Assist beside Solid Redaction. It looks for likely mainland Chinese mobile numbers and common email addresses on your Mac. Click an orange box to cover it. Copying, saving and floating an image include the covers you applied.
 - Choose **Copy Text from Screen** and release the mouse to copy text. Simplified Chinese, Traditional Chinese and English are recognized on the Mac.
 - **Add notes and numbered steps.** Select Text and click to type. Enter commits the text, and double-clicking a label lets you edit it. Choose Step Number and click to place successive badges. Select a mark to move or delete it. ⌘Z undoes a change and ⇧⌘Z redoes it.
+- **Polygons and annotation styles.** Outline an irregular area with a polygon, or use Anchor Selection to select a shape with a transparent exterior. Annotation Style offers color, stroke width and text size controls.
 - **Repeat a region.** Press R to recall the last successfully exported region on its display. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height. The size beside the selection is the exported pixel size.
 - **Scrolling screenshots**: select the scrollable content of a page, document or chat and press **⌘L / Ctrl+L**. When the controls are ready, scroll slowly down inside the blue frame. Click **Finish** to review. Choose **Annotate** to mark any part of the long image, then **Done** to return to the preview and copy, save a PNG or float it. With Accessibility access, Enter finishes and Esc cancels. Select the scrolling body to avoid repeating a fixed sidebar, and pause large videos before capturing. If an overlap is lost, scroll back slightly and continue.
 - **Float an image** with F3 or the Float on Screen button after making a selection. You can also float a clipboard image from the menu bar or an image entry in history. Drag to move, drag a corner or scroll to zoom, double-click for actual size, and Control-scroll for opacity. Right-click to copy, save or close.
@@ -334,10 +345,19 @@ The interface is available in **English** and **Simplified Chinese**. It follows
   </picture>
 </p>
 
+#### 📊 Performance monitor
+
+- See **CPU, GPU, memory usage and chip temperature** in the menu bar, updated every 2 seconds. Pick readings in **Settings › Performance Monitor**; disabled readings are no longer collected.
+- Memory includes app, wired and compressed memory, excluding reclaimable file caches. With multiple GPUs, the busiest GPU is shown.
+- Temperature is the highest reading from recognized CPU/GPU sensors, rather than the enclosure temperature. Unsupported GPU or temperature readings show “Unavailable.” All readings stay on the Mac and require no administrator access.
+
 #### ⌨️ Windows keyboard shortcuts on Mac
 
+- **Ctrl shortcuts**: Ctrl+C/V/X copies, pastes and cuts, Ctrl+A selects all, Ctrl+Z undoes, Ctrl+Y redoes, Ctrl+S saves and Ctrl+F finds.
+- **Text editing**: Home/End goes to the start/end of a line, Ctrl+←/→ moves by word, and Ctrl+Backspace/Delete deletes a word. Hold Shift to select text.
 - **System shortcuts**: Alt+Tab switches apps, Alt+F4 quits the current app, Win+E opens Finder, Win+D shows the desktop, Win+L locks the screen, Win+S searches, Win+Space switches input method.
 - **Finder**: Ctrl+X then Ctrl+V cuts and moves files, F2 renames, Enter opens, Delete moves to Trash, Backspace goes up a folder.
+- **Terminals**: Ctrl+C and other control keys stay native; use Ctrl+Shift+C/V to copy and paste.
 - **Remote desktops and virtual machines** receive their original keyboard input.
 - **Works with both keyboard types**: Windows and Mac keyboards put Ctrl, Option and ⌘ in different places — MacShun detects which one you are typing on.
 

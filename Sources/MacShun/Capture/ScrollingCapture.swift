@@ -32,11 +32,21 @@ private actor ScrollAssembly {
     }
 }
 
+struct ScrollCaptureOverlap {
+    private var missedFrames = 0
+
+    var needsBacktrack: Bool { missedFrames >= 3 }
+
+    mutating func recordFrame(_ progress: ScrollStitcher.Progress) {
+        missedFrames = progress == .noOverlap ? min(missedFrames + 1, 3) : 0
+    }
+}
+
 @MainActor
 final class ScrollingCapture: NSObject, NSWindowDelegate {
     private let region: ScrollCaptureRegion
     private let status: ScrollCaptureStatus
-    private let pasteboard: NSPasteboard
+    private let clipboard: CaptureClipboard
     private let onClose: () -> Void
     private let hud: NSPanel
     private let outline: NSPanel
@@ -49,12 +59,13 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
     private weak var viewport: CaptureImageViewport?
     var onExport: (() -> Void)?
     private var sampling: Task<Void, Never>?
-    private var finishRequested = false
+    private var source: ScrollCaptureSource?
+    private var finishDelay: Task<Void, Never>?
     private var originalApp: NSRunningApplication?
 
-    init(region: ScrollCaptureRegion, pasteboard: NSPasteboard, onClose: @escaping () -> Void) {
+    init(region: ScrollCaptureRegion, clipboard: CaptureClipboard, onClose: @escaping () -> Void) {
         self.region = region
-        self.pasteboard = pasteboard
+        self.clipboard = clipboard
         self.onClose = onClose
         status = ScrollCaptureStatus(height: region.height)
         hud = Self.overlay()
@@ -103,64 +114,61 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
         return panel
     }
 
-    func start(makeReader: @escaping ScrollCaptureSource.Factory) {
+    func start(makeSource: @escaping ScrollCaptureSource.Factory) {
         FrontAppTracker.shared.scrollingCaptureActive.set(true)
         outline.orderFrontRegardless()
         hud.orderFrontRegardless()
         let excluded = Set([CGWindowID(hud.windowNumber), CGWindowID(outline.windowNumber)])
         sampling = Task {
-            let read: ScrollCaptureSource.Reader
-            let assembly: ScrollAssembly
-            do {
-                read = try await makeReader(region, excluded)
-                try Task.checkCancellation()
-                // 从同一个实时选区取第一张和后续帧，初始冻结画面的色彩转换不会被误当成滚动。
-                let first = try await read()
-                guard let buffer = await Task.detached(priority: .userInitiated, operation: { ScrollAssembly(first) }).value else {
-                    throw ScrollCaptureError.noImage
-                }
-                assembly = buffer
-            } catch {
-                if !Task.isCancelled { fail(error) }
-                return
-            }
+            var assembly: ScrollAssembly?
+            var overlap = ScrollCaptureOverlap()
             var notice: String?
             do {
-                try Task.checkCancellation()
-                status.message = L("在蓝框内向下滚动，结束后点“完成”。")
-                status.canFinish = true
-                while !Task.isCancelled {
-                    // 点完成时再取最后一帧：包括刚刚滚动、尚未轮到采样的最后几行。
-                    let finalSample = finishRequested
-                    let frame = try await read()
+                let startedSource = try await makeSource(region, excluded)
+                if Task.isCancelled { startedSource.stop(); return }
+                source = startedSource
+                for try await frame in startedSource.frames {
                     try Task.checkCancellation()
-                    let (progress, height) = await assembly.accept(frame)
+                    guard let current = assembly else {
+                        assembly = await Task.detached(priority: .userInitiated) { ScrollAssembly(frame) }.value
+                        try Task.checkCancellation()
+                        guard assembly != nil else { throw ScrollCaptureError.noImage }
+                        status.message = L("在蓝框内向下滚动，结束后点“完成”。")
+                        status.canFinish = true
+                        continue
+                    }
+                    let (progress, height) = await current.accept(frame)
                     try Task.checkCancellation()
-                    status.height = height
-                    status.needsBacktrack = progress == .noOverlap
+                    overlap.recordFrame(progress)
+                    if status.height != height { status.height = height }
+                    if status.needsBacktrack != overlap.needsBacktrack { status.needsBacktrack = overlap.needsBacktrack }
+                    let message: String
                     switch progress {
                     case .unchanged, .appended:
                         notice = nil
-                        status.message = L("在蓝框内向下滚动，结束后点“完成”。")
+                        message = L("在蓝框内向下滚动，结束后点“完成”。")
                     case .backtracked:
                         notice = nil
-                        status.message = L("已保留截过的内容，往下滚可继续。")
+                        message = L("已保留截过的内容，往下滚可继续。")
                     case .noOverlap:
                         notice = L("预览中只包含已成功拼接的部分。")
-                        status.message = L("未找到重叠内容，请往回滚一些，再慢慢向下。")
+                        message = overlap.needsBacktrack
+                            ? L("未找到重叠内容，请往回滚一些，再慢慢向下。") : status.message
                     case .limit:
                         notice = L("已达到长图尺寸上限，以下是已拼接的内容。")
+                        message = status.message
                     }
-                    if progress == .limit || finalSample { break }
-                    if !finishRequested {
-                        try await Task.sleep(for: .milliseconds(progress == .unchanged ? 220 : 75))
-                    }
+                    if status.message != message { status.message = message }
+                    if progress == .limit { break }
                 }
             } catch {
                 guard !Task.isCancelled else { return }
+                if assembly == nil { fail(error); return }
                 notice = L("取屏已停止：%@", error.localizedDescription)
             }
             guard !Task.isCancelled else { return }
+            stopSource()
+            guard let assembly else { fail(ScrollCaptureError.noImage); return }
             status.canFinish = false
             status.needsBacktrack = false
             status.message = L("正在生成长图预览…")
@@ -173,8 +181,19 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
 
     func requestFinish() {
         guard status.canFinish else { return }
-        finishRequested = true
         status.canFinish = false
+        // 保留点击完成时仍在输出的帧。停止供帧后，消费循环会处理完已缓存的帧。
+        finishDelay = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            self?.stopSource()
+        }
+    }
+
+    private func stopSource() {
+        finishDelay?.cancel()
+        finishDelay = nil
+        source?.stop()
+        source = nil
     }
 
     private func present(_ image: CGImage, png: Data, notice: String?) {
@@ -212,15 +231,12 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
             position: position, attach: { [weak self] in self?.viewport = $0 },
             edit: { [weak self] in self?.edit() }, copy: { [weak self] in
                 guard let self, let data = self.output?.png else { return }
-                let item = NSPasteboardItem()
-                guard item.setData(data, forType: .png) else { NSSound.beep(); return }
-                pasteboard.clearContents()
-                if pasteboard.writeObjects([item]) { onExport?(); onClose() } else { NSSound.beep() }
+                if clipboard.copy(data) { onExport?(); onClose() } else { NSSound.beep() }
             }, save: { [weak self] in
                 if let self, let data = self.output?.png { save(data) }
             }, pin: { [weak self] in
                 guard let self, let data = self.output?.png, let picture = PinPicture(png: data) else { return }
-                if ScreenPins.shared.show(picture, pasteboard: pasteboard) != nil { onExport?(); onClose() }
+                if ScreenPins.shared.show(picture, pasteboard: clipboard.pasteboard) != nil { onExport?(); onClose() }
             }))
     }
 
@@ -294,6 +310,7 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
         FrontAppTracker.shared.scrollingCaptureActive.set(false)
         sampling?.cancel()
         sampling = nil
+        stopSource()
         let save = savePanel
         savePanel = nil
         save?.cancel(nil)
