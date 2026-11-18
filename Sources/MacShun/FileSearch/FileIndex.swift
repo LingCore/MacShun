@@ -130,7 +130,7 @@ struct FolderEntries: Equatable {
     }
 
     /// 和查询匹配的文件，回调位置和得分。
-    func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, folderTerms: [Bool] = [], filters: FileSearchFilters = .init(),
+    func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, folderTerms: [Bool] = [], filters: FileSearchFilters = .init(), allowEmpty: Bool = false,
                       isCancelled: () -> Bool = { false }, _ body: (Int, Double) -> Void) {
         // 单独输入点号时只列点号开头的名字，避免把所有带扩展名的文件都列出来。
         let dotNamesOnly = terms.count == 1 && terms[0].bytes == [0x2E]
@@ -154,8 +154,8 @@ struct FolderEntries: Equatable {
                         return UnsafeBufferPointer(rebasing: buffer[start ..< start + Int(value.lowerLength)])
                     }
                     guard filters.accepts(lower(item), display: display.map(lower), isDirectory: isDirectory(at: index)) else { continue }
-                    if terms.isEmpty { body(index, 1); continue }
                 }
+                if terms.isEmpty && (allowEmpty || !filters.isEmpty) { body(index, 1); continue }
                 let score = FileMatcher.score(query: terms, item: item, display: display, in: buffer, depth: depth,
                                               folderTerms: folderTerms, matchedExtension: !filters.suffixes.isEmpty)
                 if score > 0 { body(index, score) }
@@ -224,6 +224,8 @@ struct FileSearchResult: Identifiable, Equatable {
 
     var nameRank: NameRank = .partial
     var canSearchInside = false
+    var metadata: FileSearchMetadata? = nil
+    var isHomophone = false
 
     var id: String { path }
 }
@@ -239,7 +241,14 @@ enum FileMatcher {
             if position == 0 { return term.bytes.count == stemLength ? 95 : 80 }
             return isWordStart(lower, at: position) ? 60 : 40
         }
-        if term.isASCII, !pinyin.isEmpty, PinyinIndex.syllableMatch(term.bytes, encoded: pinyin) {
+        if let pronunciation = term.pronunciation, !pinyin.isEmpty {
+            var offset = 0
+            while offset <= pinyin.count - pronunciation.count {
+                let end = offset + pronunciation.count
+                if (end == pinyin.count || pinyin[end] == 0), pinyin[offset..<end].elementsEqual(pronunciation) { return 28 }
+                repeat { offset += 1 } while offset < pinyin.count && pinyin[offset - 1] != 0
+            }
+        } else if term.isASCII, !pinyin.isEmpty, PinyinIndex.syllableMatch(term.bytes, encoded: pinyin) {
             return 30
         }
         return 0
@@ -300,11 +309,13 @@ enum FileMatcher {
         let text: String
         let bytes: [UInt8]
         let isASCII: Bool
+        let pronunciation: [UInt8]?
 
-        init(_ text: String) {
+        init(_ text: String, pronunciation: [UInt8]? = nil) {
             self.text = FolderEntries.matchForm(text, isASCII: text.utf8.allSatisfy { $0 < 0x80 })
             bytes = Array(self.text.utf8)
             isASCII = bytes.allSatisfy { $0 < 0x80 }
+            self.pronunciation = pronunciation
         }
     }
 
@@ -327,6 +338,7 @@ enum FileMatcher {
         let contentText: String
         let fullName: Term
         let isPlainName: Bool
+        private let isLiteral: Bool
         let directoryInput: DirectoryInput?
         let terms: [Term]
         /// 路径里的文件夹，一段一段（比较用的形式），每段是能对上的写法（本来的、对应的真名）
@@ -347,6 +359,7 @@ enum FileMatcher {
                 literal = true
             }
             isPlainName = !text.contains("/") && !text.contains("\\")
+            isLiteral = literal
             if isPlainName {
                 let parsed = FileSearchFilters.parse(text, literal: literal)
                 filters = parsed.filters
@@ -404,6 +417,31 @@ enum FileMatcher {
                 let form = FolderEntries.matchForm(part, isASCII: part.utf8.allSatisfy { $0 < 0x80 })
                 return Set([form] + (FileMatcher.folderAliases[form].map { [$0] } ?? []))
             }
+        }
+
+        func withHomophones() -> Self? {
+            guard isPlainName, !isLiteral, terms.flatMap({ $0.text.filter(Pinyin.isHan) }).count >= 2 else { return nil }
+            let spoken = terms.map { term -> Term in
+                guard term.text.contains(where: Pinyin.isHan) else { return term }
+                let encoded = FolderEntries.encodePinyin(term.text)
+                guard !encoded.isEmpty, !encoded.contains(0xFF) else { return term }
+                return Term(term.text, pronunciation: encoded)
+            }
+            guard spoken.contains(where: { $0.pronunciation != nil }) else { return nil }
+            return Self(copying: self, terms: spoken)
+        }
+
+        private init(copying query: Self, terms: [Term]) {
+            filters = query.filters
+            contentText = query.contentText
+            fullName = query.fullName
+            isPlainName = query.isPlainName
+            isLiteral = query.isLiteral
+            directoryInput = query.directoryInput
+            self.terms = terms
+            folders = query.folders
+            absolutePath = query.absolutePath
+            nameTerms = query.nameTerms
         }
 
         /// 按文件所在的文件夹加的分：写的那几段连着对上，正好是这个文件夹 40、在它下面更深的地方 30；
@@ -478,6 +516,7 @@ final class FileIndex: ObservableObject {
     @Published private(set) var lastIndexed: Date?
     /// 没有权限读的文件夹（例如用户在系统询问时点了“不允许”的“桌面”）
     @Published private(set) var deniedFolders: [String] = []
+    @Published private(set) var locationStatuses: [UUID: FileSearchLocationStatus] = [:]
 
     /// 是否包括外接硬盘。改了之后要重新建立索引才生效。只在主线程上改。
     var includeExternalDrives = true
@@ -490,10 +529,15 @@ final class FileIndex: ObservableObject {
     private let queue = DispatchQueue(label: "MacShun.FileIndex", qos: .utility)
     private let scanQueue = DispatchQueue(label: "MacShun.FileIndex.scan", qos: .utility)
     private let driveQueue = DispatchQueue(label: "MacShun.FileIndex.drives", qos: .background)
+    private let networkQueue = DispatchQueue(label: "MacShun.FileIndex.network", qos: .utility, attributes: .concurrent)
+    private let temporaryNetworkSearchQueue = DispatchQueue(label: "MacShun.FileIndex.networkSearch", qos: .utility)
 
     /// 以下只在 queue 上读写
     /// 文件夹路径 → 里面的文件
     private var folders: [String: FolderEntries] = [:]
+    private var networkSnapshots: [UUID: NetworkSearchSnapshot] = [:]
+    private var networkRoutes: [(location: FileSearchLocation, mounted: String?)] = []
+    private var failedNetworkRoots: Set<UUID> = []
     /// 这次扫描的位置（判断 FSEvents 的变化在不在范围里时用）
     private var scannedRoots: [String] = []
     /// 第几次建立索引。重新建立后，上一次还没扫完的结果作废
@@ -511,11 +555,17 @@ final class FileIndex: ObservableObject {
     private var volumeObservers: [NSObjectProtocol] = []
     /// 这次扫描的外接硬盘
     private var currentDrives: [String] = []
+    private var indexedLocations: [FileSearchLocation] = []
+    private var networkPaths: [UUID: String] = [:]
+    private var networkJobs: [UUID: Locked<Bool>] = [:]
+    private var networkPoll: Timer?
 
     private let mainRoots: [String]
+    private let mountedVolumes: () -> [SearchVolume]
 
-    init(mainRoots: [String] = FileIndex.defaultRoots) {
+    init(mainRoots: [String] = FileIndex.defaultRoots, mountedVolumes: @escaping () -> [SearchVolume] = SearchVolume.mounted) {
         self.mainRoots = mainRoots
+        self.mountedVolumes = mountedVolumes
     }
 
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -528,14 +578,28 @@ final class FileIndex: ObservableObject {
     /// 外接硬盘（本地的、在访达里能看到的，不含系统盘）
     private static func driveRoots() -> [String] {
         let keys: [URLResourceKey] = [.volumeIsRootFileSystemKey, .volumeIsLocalKey, .volumeIsBrowsableKey]
-        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
+        let local = Set(SearchVolume.mounted().lazy.filter(\.isLocal).map(\.path))
         return volumes.compactMap { volume in
-            guard let values = try? volume.resourceValues(forKeys: Set(keys)),
+            guard local.contains(volume.path), let values = try? volume.resourceValues(forKeys: Set(keys)),
                   values.volumeIsRootFileSystem != true, values.volumeIsLocal == true, values.volumeIsBrowsable == true,
                   volume.path.hasPrefix("/Volumes/")
             else { return nil }
             return volume.path
-        }
+        }.sorted()
+    }
+
+    func setIndexedLocations(_ locations: [FileSearchLocation]) {
+        guard indexedLocations != locations else { return }
+        let localsChanged = indexedLocations.filter { $0.share == nil } != locations.filter { $0.share == nil }
+        indexedLocations = locations
+        guard started else { return }
+        if localsChanged { rebuild() }
+        pollNetworkLocations()
+    }
+
+    func makeLocation(for path: String) -> FileSearchLocation? {
+        FileSearchLocation(path: path, mounts: mountedVolumes())
     }
 
     /// 开始建立索引并跟踪变化。已经开始过就不再重复。只在主线程上调用。
@@ -543,13 +607,15 @@ final class FileIndex: ObservableObject {
         guard !started else { return }
         started = true
         rebuild()
+        pollNetworkLocations()
         // 接上或拔掉外接硬盘后，扫描位置变了，重新来一遍
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
             volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 // 只有外接硬盘真的变了才重新扫描（例如系统挂载了不显示的卷时不用）
-                guard let self, self.started, self.includeExternalDrives, Self.driveRoots() != self.currentDrives else { return }
-                self.rebuild()
+                guard let self, self.started else { return }
+                self.pollNetworkLocations()
+                if self.includeExternalDrives, Self.driveRoots() != self.currentDrives { self.rebuild() }
             })
         }
     }
@@ -563,12 +629,21 @@ final class FileIndex: ObservableObject {
         stopWatching()
         volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         volumeObservers = []
+        networkPoll?.invalidate()
+        networkPoll = nil
+        networkJobs.values.forEach { $0.set(true) }
+        networkPaths = [:]
+        locationStatuses = [:]
         queue.async {
             self.activeGeneration = gen
             self.folders = [:]
             self.scannedRoots = []
             self.pendingRoots = []
             self.deferredChanges = [:]
+            self.networkSnapshots = [:]
+            self.networkRoutes = []
+            self.failedNetworkRoots = []
+            self.plannedRoots = []
         }
         fileCount = 0
         isIndexing = false
@@ -581,18 +656,26 @@ final class FileIndex: ObservableObject {
     func rebuild() {
         generation += 1
         let gen = generation
-        let mainRoots = self.mainRoots
+        let locals = indexedLocations.filter { $0.share == nil }
+        let mainRoots = Self.uniquePaths(self.mainRoots + locals.map(\.path))
         let drives = includeExternalDrives ? Self.driveRoots() : []
         currentDrives = drives
+        updateLocalStatuses(locals, result: nil)
         isIndexing = true
         isScanningDrives = !drives.isEmpty
         let keepDrives = includeExternalDrives
         queue.async {
             self.activeGeneration = gen
-            self.plannedRoots = mainRoots + drives
-            self.pendingRoots = mainRoots + drives
+            let roots = mainRoots + drives
+            let retired = self.plannedRoots.filter { old in !roots.contains { SearchVolume.contains(old, under: $0) } }
+            self.plannedRoots = roots
+            self.pendingRoots = roots
             self.deferredChanges = [:]
-            self.contentIndex?.setSearchRoots(mainRoots + drives)
+            self.contentIndex?.setSearchRoots(roots)
+            if !retired.isEmpty {
+                self.folders = self.folders.filter { folder, _ in roots.contains { SearchVolume.contains(folder, under: $0) } }
+                self.publishCount()
+            }
             // 关掉了“包括外接硬盘”时，内容索引里外接硬盘上的文件也去掉；只是拔掉了的留着，插回来不用重新读
             self.contentIndex?.prune(keeping: mainRoots + (keepDrives ? ["/Volumes"] : []))
         }
@@ -602,7 +685,7 @@ final class FileIndex: ObservableObject {
             let begin = Date()
             var result: [String: FolderEntries] = [:]
             var denied: [String] = []
-            for root in mainRoots { Self.scanTree(root, into: &result, denied: &denied) }
+            for root in mainRoots where result[root] == nil { Self.scanTree(root, into: &result, denied: &denied) }
             Log.app.notice("文件索引：第一轮 \(result.values.reduce(0) { $0 + $1.count }, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 2), privacy: .public) 秒")
             self.queue.async {
                 guard gen == self.activeGeneration else { return }
@@ -612,15 +695,113 @@ final class FileIndex: ObservableObject {
                 self.finishedScanning(mainRoots)
                 malloc_zone_pressure_relief(nil, 0)
                 self.publishCount { count in
+                    guard self.generation == gen else { return }
                     self.isIndexing = false
                     self.lastIndexed = Date()
                     self.deniedFolders = denied
+                    self.updateLocalStatuses(locals, result: result)
                     _ = count
                 }
                 guard !drives.isEmpty else { return }
                 self.driveQueue.async { self.scanDrives(drives, generation: gen) }
             }
         }
+    }
+
+    private static func uniquePaths(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0).inserted }
+    }
+
+    private func updateLocalStatuses(_ locals: [FileSearchLocation], result: [String: FolderEntries]?) {
+        var statuses = locationStatuses.filter { id, _ in indexedLocations.contains { $0.id == id } }
+        for location in locals {
+            statuses[location.id] = result.map { $0[location.path] == nil ? .unavailable : .ready } ?? .indexing
+        }
+        if locationStatuses != statuses { locationStatuses = statuses }
+    }
+
+    /// SMB changes are reconciled off the local scan queue. A stalled share keeps at most one scan in flight.
+    func pollNetworkLocations() {
+        guard started else { return }
+        let locations = indexedLocations.filter { $0.share != nil }
+        if locations.isEmpty {
+            networkPoll?.invalidate()
+            networkPoll = nil
+        } else if networkPoll == nil {
+            networkPoll = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+                self?.pollNetworkLocations()
+            }
+        }
+        let mounts = locations.isEmpty ? [] : mountedVolumes()
+        let routes = locations.map { (location: $0, mounted: $0.mountedPath(in: mounts)) }
+        let paths = Dictionary(routes.compactMap { route in route.mounted.map { (route.location.id, $0) } },
+                               uniquingKeysWith: { first, _ in first })
+        for id in networkJobs.keys where networkPaths[id] != paths[id] { networkJobs[id]?.set(true) }
+        var statuses = locationStatuses.filter { id, _ in indexedLocations.contains { $0.id == id } }
+        for location in locations {
+            let id = location.id
+            if paths[id] == nil { statuses[id] = .offline }
+            else if paths[id] != networkPaths[id] { statuses[id] = .indexing }
+        }
+        networkPaths = paths
+        if statuses != locationStatuses { locationStatuses = statuses }
+        queue.async {
+            self.networkRoutes = routes
+            let stale = self.networkSnapshots.keys.filter { self.networkSnapshots[$0]?.root != paths[$0] }
+            for id in stale { self.networkSnapshots[id] = nil }
+            self.failedNetworkRoots.formIntersection(Set(paths.keys))
+            if !stale.isEmpty { self.publishCount() }
+        }
+        for route in routes {
+            guard let path = route.mounted, networkJobs[route.location.id] == nil else { continue }
+            startNetworkScan(id: route.location.id, path: path)
+        }
+    }
+
+    private func startNetworkScan(id: UUID, path: String) {
+        let cancelled = Locked(false)
+        networkJobs[id] = cancelled
+        if locationStatuses[id] != .ready { locationStatuses[id] = .indexing }
+        networkQueue.async {
+            let snapshot = NetworkSearchSnapshot.read(path, cancelled: cancelled.get)
+            DispatchQueue.main.async {
+                self.networkJobs[id] = nil
+                guard self.started else { return }
+                guard !cancelled.get(), self.networkPaths[id] == path else {
+                    if let replacement = self.networkPaths[id] { self.startNetworkScan(id: id, path: replacement) }
+                    return
+                }
+                self.locationStatuses[id] = snapshot == nil ? .offline : .ready
+                self.queue.async {
+                    self.networkSnapshots[id] = snapshot
+                    if snapshot == nil { self.failedNetworkRoots.insert(id) }
+                    else { self.failedNetworkRoots.remove(id) }
+                    self.publishCount()
+                }
+            }
+        }
+    }
+
+    func isFolderIndexed(_ path: String, completion: @escaping (Bool) -> Void) {
+        queue.async {
+            let indexed = self.folders[path] != nil || self.networkSnapshots.values.contains { $0.folders[path] != nil }
+                || self.networkRoutes.contains { route in
+                    SearchVolume.contains(path, under: route.location.path)
+                        || route.mounted.map { SearchVolume.contains(path, under: $0) } == true
+                }
+            DispatchQueue.main.async { completion(indexed) }
+        }
+    }
+
+    func activePath(for location: FileSearchLocation) -> String {
+        networkPaths[location.id] ?? location.path
+    }
+
+    func resolvedLocationPath(_ path: String) -> String {
+        guard let location = indexedLocations.filter({ networkPaths[$0.id] != nil && SearchVolume.contains(path, under: $0.path) })
+            .max(by: { $0.path.count < $1.path.count }) else { return path }
+        return activePath(for: location) + path.dropFirst(location.path.count)
     }
 
     /// 第二轮：几块外接硬盘一起扫。边扫边并进索引、交给内容索引去读，不用等全部扫完。
@@ -704,7 +885,11 @@ final class FileIndex: ObservableObject {
 
     /// 在 queue 上数一下总数，回到主线程更新界面。
     private func publishCount(then: @escaping (Int) -> Void = { _ in }) {
-        let count = folders.values.reduce(0) { $0 + $1.count }
+        var networkFolders = Set<String>()
+        let networkCount = networkSnapshots.values.reduce(0) { total, snapshot in
+            total + snapshot.folders.reduce(0) { $0 + (networkFolders.insert($1.key).inserted ? $1.value.count : 0) }
+        }
+        let count = folders.values.reduce(networkCount) { $0 + $1.count }
         DispatchQueue.main.async {
             self.fileCount = count
             then(count)
@@ -720,17 +905,44 @@ final class FileIndex: ObservableObject {
     }
 
     func searchPage(_ query: FileMatcher.Query, limit: Int = 60, boosts: [String: Double] = [:],
-                    preferredFolder: String? = nil, within: FileSearchFolder? = nil, isCancelled: @escaping () -> Bool = { false },
+                    preferredFolder: String? = nil, within: FileSearchFolder? = nil, options: FileSearchOptions = .init(),
+                    isCancelled: @escaping () -> Bool = { false },
                     completion: @escaping (FileNameSearch.Page) -> Void) {
-        guard limit > 0, !query.terms.isEmpty || !query.filters.isEmpty || query.directoryInput != nil || within != nil else {
+        guard limit > 0, !query.terms.isEmpty || !query.filters.isEmpty || query.directoryInput != nil || within != nil || options.hasFilters else {
             completion(.init(results: []))
             return
         }
         queue.async {
             guard !isCancelled() else { return }
             let folders = self.folders
-            self.searchQueue.async {
-                let search = FileNameSearch(query: query, limit: limit, boosts: boosts, preferredFolder: preferredFolder, within: within)
+            let network = Array(self.networkSnapshots.values)
+            let requested = within?.path ?? query.directoryInput?.folder
+            let route = requested.flatMap { path in
+                self.networkRoutes.filter { route in
+                    SearchVolume.contains(path, under: route.location.path) ||
+                        route.mounted.map { SearchVolume.contains(path, under: $0) } == true
+                }.max { $0.location.path.count < $1.location.path.count }
+            }
+            var effectiveFolder = within
+            if let route {
+                guard let mounted = route.mounted, self.networkSnapshots[route.location.id] != nil else {
+                    let status: FileNameSearch.DirectoryStatus = route.mounted == nil || self.failedNetworkRoots.contains(route.location.id)
+                        ? .offline : .indexing
+                    DispatchQueue.main.async { if !isCancelled() { completion(.init(results: [], directory: status)) } }
+                    return
+                }
+                if let within, mounted != route.location.path, SearchVolume.contains(within.path, under: route.location.path) {
+                    effectiveFolder = FileSearchFolder(path: mounted + within.path.dropFirst(route.location.path.count))
+                }
+            }
+            let folder = effectiveFolder
+            let isTemporaryNetworkSearch = route == nil && requested.map { path in
+                self.mountedVolumes().contains { !$0.isLocal && $0.contains(path) }
+            } == true
+            let worker = isTemporaryNetworkSearch ? self.temporaryNetworkSearchQueue : self.searchQueue
+            worker.async {
+                let search = FileNameSearch(query: query, limit: limit, boosts: boosts, preferredFolder: preferredFolder,
+                                            within: folder, options: options, network: network)
                 guard let page = search.run(in: folders, isCancelled: isCancelled) else { return }
                 DispatchQueue.main.async { completion(page) }
             }

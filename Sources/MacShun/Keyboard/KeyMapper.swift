@@ -53,6 +53,7 @@ struct KeyContext {
     var clipboardEnabled: Bool
     var inputSourceID: String? = nil
     var searchPanelActive = false
+    var fileSearchPanelActive = false
     /// Win+方向键分屏是否打开
     var windowShortcuts = false
     var hasCopiedScreenshot: () -> Bool = { false }
@@ -102,6 +103,8 @@ struct KeyMapper {
         if context.searchPanelActive, keyCode == KeyCode.v, mods == [.ctrl] {
             return .send(KeyStroke(KeyCode.v, .maskCommand))
         }
+        // 文件搜索窗口自己处理 Ctrl+E。改成 ⌘E 会绕过它的展开快捷键。
+        if context.fileSearchPanelActive, keyCode == KeyCode.e, mods == [.ctrl] { return .pass }
 
         // K3、K7：所有应用里都生效，终端也一样。
         if let action = systemShortcut(keyCode: keyCode, flags: flags, mods: mods, context: context) {

@@ -137,13 +137,16 @@ final class KeyboardEngine {
             action = .command(keyCode == KeyCode.escape ? .cancelScrollingCapture : .finishScrollingCapture)
         } else {
             let context: KeyContext
-            let searchPanelActive = environment.clipboardPanelActive.get() || environment.fileSearchPanelActive.get()
+            let clipboardPanelActive = environment.clipboardPanelActive.get()
+            let fileSearchPanelActive = environment.fileSearchPanelActive.get()
+            let searchPanelActive = clipboardPanelActive || fileSearchPanelActive
             if searchPanelActive || environment.snapAssistActive.get() {
                 // 剪贴板面板、文件搜索框或贴靠助手开着时，按键在本程序的面板里，不按后面那个应用的规则处理。
                 context = KeyContext(
                     appKind: .normal,
                     clipboardEnabled: config.get().clipboard.enabled,
                     searchPanelActive: searchPanelActive,
+                    fileSearchPanelActive: fileSearchPanelActive && !clipboardPanelActive,
                     windowShortcuts: config.get().window.enabled,
                     focus: { .text }
                 )

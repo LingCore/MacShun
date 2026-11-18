@@ -50,6 +50,20 @@ struct FileNameSearchTests {
         #expect(try search("James'", in: ["/a": entries]).results.first?.name == "James'")
     }
 
+    @Test func homophonesUseWholeSyllablesAndOnlyFollowAnEmptyLiteralSearch() throws {
+        let folders = ["/project": entries(["年度报告.pdf", "年度报高.txt", "年度报稿.pdf", "年都报搞.png"])]
+        let exact = try search("年度报高", in: folders).results
+        #expect(exact.map(\.name) == ["年度报高.txt"])
+        #expect(exact.allSatisfy { !$0.isHomophone })
+        let filtered = try search("年度报高 ext:pdf !稿", in: folders).results
+        #expect(filtered.map(\.name) == ["年度报告.pdf"])
+        #expect(filtered.allSatisfy { $0.isHomophone })
+        #expect(try search("\"年度抱糕\"", in: folders).results.isEmpty)
+        #expect(try search("年都报", in: folders).results.map(\.name) == ["年都报搞.png"])
+        #expect(try search("年度报卡", in: folders).results.isEmpty)
+        #expect(try search("报告", in: ["/project": entries(["报稿.pdf"])]).results.first?.isHomophone == true)
+    }
+
     @Test @MainActor func immediateReturnUsesTheNewQueryAndClosingCancelsIt() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -91,6 +105,144 @@ struct FileNameSearchTests {
             for row in candidates { best.add(row) }
             #expect(best.sorted() == Array(sorted.prefix(limit)))
         }
+    }
+
+    @Test @MainActor func expandedSearchFiltersAndSortsBothSourcesBeforeLoadingPages() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let project = root.appendingPathComponent("project")
+        let nested = project.appendingPathComponent("subfolder")
+        let neighbor = root.appendingPathComponent("project-other")
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        try fm.createDirectory(at: neighbor, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let now = Date()
+        func write(_ url: URL, text: String, modified: Date) throws -> String {
+            try Data(text.utf8).write(to: url)
+            try fm.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+            return url.path
+        }
+        let paths = try (0..<75).map { number in
+            let name = number % 3 == 1 ? "item" : "marker"
+            let folder = number.isMultiple(of: 2) ? nested : project
+            return try write(folder.appendingPathComponent("\(name)-\(number).txt"),
+                             text: number.isMultiple(of: 3) ? "neutral document" : "marker in body",
+                             modified: now.addingTimeInterval(Double(-number - 100) * 60))
+        }
+        let otherPaths = try [
+            write(neighbor.appendingPathComponent("marker-neighbor.txt"), text: "marker in body", modified: now),
+            write(project.appendingPathComponent("marker-old.txt"), text: "marker in body", modified: now.addingTimeInterval(-1_000_000)),
+            write(project.appendingPathComponent("marker-large.txt"), text: String(repeating: "marker ", count: 160_000), modified: now),
+            write(project.appendingPathComponent("marker-code.swift"), text: "marker in body", modified: now),
+        ]
+        let content = ContentIndex(directory: root.appendingPathComponent("index"))
+        content.start()
+        content.sync(files: paths + otherPaths, scopes: [.init(folder: root.path, recursive: true)])
+        content.waitUntilIdle()
+        defer { content.stop(deleteData: true); content.waitUntilIdle() }
+
+        let model = FileSearchModel(index: FileIndex(mainRoots: []), contentIndex: content)
+        model.prepareForShow()
+        model.isShown = true
+        model.searchesContent = true
+        model.scope = .all
+        model.query = "marker"
+        model.toggleExpanded()
+        model.setFilterFolder(project.path)
+        model.panelOptions = FileSearchOptions(kind: .documents, modified: .week, size: .underMB, order: .newest)
+
+        func waitForResults(_ count: Int) async throws {
+            let deadline = ContinuousClock.now + .seconds(5)
+            while (model.isLoadingResults || model.results.count != count), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            try #require(model.results.count == count)
+            #expect(!model.isLoadingResults)
+        }
+
+        try await waitForResults(60)
+        #expect(model.results.map(\.path) == Array(paths.prefix(60)))
+        #expect(model.hasMoreResults)
+        #expect(model.results[1].snippet?.contains("marker") == true)
+        model.selection = 45
+        model.loadMoreResults()
+        try await waitForResults(75)
+        #expect(model.results.map(\.path) == paths)
+        #expect(!model.hasMoreResults)
+        #expect(model.selectedResult?.path == paths[45])
+
+        model.selection = 71
+        model.toggleExpanded()
+        #expect(!model.isExpanded)
+        #expect(model.query == "marker")
+        #expect(model.selectedResult?.path == paths[71])
+        model.toggleExpanded()
+        #expect(model.isExpanded)
+        #expect(model.selectedResult?.path == paths[71])
+        model.toggleQuickLook()
+        #expect(model.isPreviewing)
+        model.cancelSearch()
+        #expect(model.isExpanded && !model.isPreviewing)
+        #expect(model.selectedResult?.path == paths[71])
+    }
+
+    @Test func typedMetadataFiltersWorkInNamesAndContents() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let paths = try (0..<3).map { index in
+            let url = root.appendingPathComponent("report-\(index).txt")
+            let count = index == 0 ? 1 : 250
+            try Data(String(repeating: "report ", count: count).utf8).write(to: url)
+            if index == 2 {
+                try fm.setAttributes([.modificationDate: Date().addingTimeInterval(-800_000)], ofItemAtPath: url.path)
+            }
+            return url.path
+        }
+        let listing = try #require(FileSearchDirectory.read(root.path))
+        let query = "report ext:txt size:>1kb dm:7d"
+        #expect(try search(query, in: [root.path: listing.entries], limit: 1).results.map(\.path) == [paths[1]])
+
+        let content = ContentIndex(directory: root.appendingPathComponent("index"))
+        content.start()
+        content.sync(files: paths, scopes: [.init(folder: root.path, recursive: true)])
+        content.waitUntilIdle()
+        defer { content.stop(deleteData: true); content.waitUntilIdle() }
+        #expect(content.searchNow(query, limit: 1).map(\.path) == [paths[1]])
+        #expect(content.searchNow("report size:>=1750b").count == 2)
+        #expect(content.searchNow("report size:<0b").isEmpty)
+    }
+
+    @Test func sidebarKindsUnionWhileCustomBoundsNarrowTheResults() throws {
+        let old = try JSONDecoder().decode(FileSearchOptions.self, from: Data(#"{"kind":"pdf","modified":"any","size":"any","order":"relevance"}"#.utf8))
+        #expect(old.selects(.pdf))
+        var options = old
+        options.toggle(.images)
+        #expect(options.acceptsKind("/Project/sample.pdf", isFolder: false))
+        #expect(options.acceptsKind("/Project/sample.jpg", isFolder: false))
+        #expect(!options.acceptsKind("/Project/sample.txt", isFolder: false))
+        #expect(!options.acceptsKind("/Project", isFolder: true))
+        options.size = .custom
+        options.sizeBounds = try #require(FileSearchRangeKind.size.parse(lower: "1.5", upper: "2"))
+        options.modified = .custom
+        let day = try #require(FileSearchRangeKind.date.parse(lower: "2026-01-05", upper: "2026-01-05"))
+        options.dateBounds = day
+        let lower = try #require(day.lower)
+        let upper = try #require(day.upper)
+        #expect(options.accepts(.init(modified: lower, size: 1_572_864), since: nil))
+        #expect(options.accepts(.init(modified: upper, size: 2_097_152), since: nil))
+        let acceptsFollowingDay = options.accepts(.init(modified: upper.nextUp, size: 2_097_152), since: nil)
+        let acceptsUndersizedFile = options.accepts(.init(modified: lower, size: 1_572_863), since: nil)
+        #expect(acceptsFollowingDay == false)
+        #expect(acceptsUndersizedFile == false)
+        #expect(FileSearchRangeKind.date.parse(lower: "2026-02-30", upper: "") == nil)
+        #expect(FileSearchRangeKind.size.parse(lower: "2", upper: "1") == nil)
+        #expect(try JSONDecoder().decode(FileSearchOptions.self, from: JSONEncoder().encode(options)) == options)
+        options.toggle(.folders)
+        #expect(options.foldersOnly && !options.selects(.images) && !options.selects(.pdf))
+        options.toggle(.folders)
+        #expect(options.selects(.any))
     }
 
     @Test @MainActor func returnInAllWaitsForCurrentContentInsteadOfOpeningAnOldHit() async throws {

@@ -9,7 +9,8 @@ struct FileQuickLook: View {
     let result: FileSearchResult
 
     var body: some View {
-        VStack(spacing: 0) {
+        let card = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(result.name).font(.system(size: 14, weight: .semibold)).lineLimit(1).truncationMode(.middle)
@@ -27,9 +28,13 @@ struct FileQuickLook: View {
             FileQuickLookView(url: URL(fileURLWithPath: result.path))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(VisualEffectBackground())
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5))
+        .background {
+            if !model.isExpanded { VisualEffectBackground().clipShape(card) }
+        }
+        .clipShape(model.isExpanded ? AnyShape(Rectangle()) : AnyShape(card))
+        .overlay {
+            if !model.isExpanded { card.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5).allowsHitTesting(false) }
+        }
     }
 
     private func control(_ symbol: String, _ title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {

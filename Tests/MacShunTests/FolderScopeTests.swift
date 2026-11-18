@@ -96,6 +96,118 @@ struct FolderScopeTests {
         try #require(condition(), sourceLocation: sourceLocation)
     }
 
+    @Test @MainActor func chosenLocalFolderJoinsNameAndContentIndexesUntilRemoved() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let index = FileIndex(mainRoots: [])
+        index.includeExternalDrives = false
+        let content = ContentIndex(directory: fixture.base.appendingPathComponent("db"))
+        content.start()
+        index.setContentIndex(content)
+        index.start()
+        defer { index.stop(); content.stop(deleteData: true); content.waitUntilIdle() }
+        let model = FileSearchModel(index: index, contentIndex: content)
+        model.isShown = true
+        model.query = "报价"
+        model.setFilterFolder(fixture.project.path)
+        try await waitFor { model.results.contains { $0.path == fixture.note.path } && model.selectedFolderIsIndexed == false }
+        model.setFilterFolder(nil)
+        try await waitFor { model.results.isEmpty && !model.isLoadingResults }
+
+        let saved = try #require(index.makeLocation(for: fixture.project.path))
+        index.setIndexedLocations([saved])
+        try await waitFor { index.locationStatuses[saved.id] == .ready && model.results.contains { $0.path == fixture.note.path } }
+        try await waitFor { content.documentCount >= 2 }
+        #expect(content.searchNow("quietneedle").contains { $0.path == fixture.note.path })
+        #expect(!content.searchNow("quietneedle").contains { $0.path.hasPrefix(fixture.sibling.path + "/") })
+        index.setIndexedLocations([])
+        try await waitFor { index.locationStatuses[saved.id] == nil && model.results.isEmpty && !model.isLoadingResults }
+        try await waitFor { content.documentCount == 0 }
+    }
+
+    @Test @MainActor func smbLocationIsScopedAndRecoversAtANewMountPoint() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let initialMount = SearchVolume(path: fixture.project.path, isLocal: false, smbSource: "//account@HOST/Team")
+        let mounts = Locked([initialMount])
+        let index = FileIndex(mainRoots: [], mountedVolumes: mounts.get)
+        index.includeExternalDrives = false
+        let location = try #require(index.makeLocation(for: fixture.sub.path))
+        #expect(location.share?.server == "host")
+        #expect(!String(decoding: try JSONEncoder().encode(location), as: UTF8.self).contains("account"))
+        index.setIndexedLocations([location])
+        index.start()
+        defer { index.stop() }
+        let content = ContentIndex(directory: fixture.base.appendingPathComponent("db"))
+        content.start()
+        index.setContentIndex(content)
+        defer { content.stop(deleteData: true); content.waitUntilIdle() }
+        let model = FileSearchModel(index: index, contentIndex: content)
+        model.isShown = true
+        model.query = "报价"
+        model.toggleExpanded()
+        model.panelOptions.order = .largest
+        try await waitFor { index.locationStatuses[location.id] == .ready && model.results.count == 2 }
+        #expect(model.results.allSatisfy { $0.path.hasPrefix(fixture.sub.path + "/") })
+        #expect(model.results.allSatisfy { $0.metadata?.size != nil })
+        #expect(content.searchNow("quietneedle").isEmpty)
+
+        model.setFilterFolder(location.path)
+        mounts.set([])
+        index.pollNetworkLocations()
+        try await waitFor { index.locationStatuses[location.id] == .offline && model.directoryStatus == .offline && model.results.isEmpty }
+        let replacement = fixture.base.appendingPathComponent("Mounted Again")
+        try FileManager.default.moveItem(at: fixture.project, to: replacement)
+        let otherServer = SearchVolume(path: fixture.project.path, isLocal: false, smbSource: "//different/Team")
+        let remounted = SearchVolume(path: replacement.path, isLocal: false, smbSource: "//other-account@host/team")
+        mounts.set([otherServer, remounted])
+        index.pollNetworkLocations()
+        try await waitFor { index.locationStatuses[location.id] == .ready && model.results.count == 2 }
+        #expect(model.results.allSatisfy { $0.path.hasPrefix(replacement.path + "/") })
+        #expect(model.filterFolder?.path == location.path)
+
+        let note = replacement.appendingPathComponent("Specs/客户/报价.md")
+        try FileManager.default.moveItem(at: note, to: note.deletingLastPathComponent().appendingPathComponent("合同.md"))
+        index.pollNetworkLocations()
+        try await waitFor { model.results.count == 1 }
+        #expect(model.results.map(\.name) == ["报价草稿.md"])
+        model.setFilterFolder(nil)
+        index.setIndexedLocations([])
+        try await waitFor { index.locationStatuses[location.id] == nil && model.results.isEmpty }
+    }
+
+    @Test @MainActor func savedFiltersRestoreProjectAndOptionsWithoutReplacingQuery() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let suite = "MacShunTests.SavedFilters.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let content = ContentIndex(directory: fixture.base.appendingPathComponent("db"))
+        let index = FileIndex(mainRoots: [])
+        func model() -> FileSearchModel {
+            let model = FileSearchModel(index: index, contentIndex: content, pinDefaults: defaults)
+            model.isShown = true
+            return model
+        }
+        let first = model()
+        first.toggleExpanded()
+        first.setFilterFolder(fixture.project.path)
+        first.panelOptions = FileSearchOptions(kind: .documents, modified: .week, size: .underMB, order: .newest)
+        #expect(first.saveFilters(named: "  Recent Project  "))
+        #expect(!first.saveFilters(named: "recent project"))
+        let reopened = model()
+        reopened.toggleExpanded()
+        reopened.query = "报价 ext:md !草稿"
+        let saved = try #require(reopened.savedSearches.items.first)
+        #expect(saved.name == "Recent Project")
+        reopened.applySavedFilters(saved)
+        try await waitFor { reopened.results.map(\.path) == [fixture.note.path] }
+        #expect(reopened.query == "报价 ext:md !草稿")
+        #expect(reopened.panelOptions == first.panelOptions)
+        reopened.removeSavedFilters(saved.id)
+        #expect(model().savedSearches.items.isEmpty)
+    }
+
     @Test @MainActor func menuKeyboardAndEscapeRestoreEachVisitAndDiscardOldResults() async throws {
         _ = NSApplication.shared
         let fixture = try Fixture()

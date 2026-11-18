@@ -9,7 +9,7 @@ struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
         case captureShortcuts, terminal, remoteDesktop, excludedApps
-        case fileSearchEnabled, fileIndex, externalDrives, fileContents, imageText
+        case fileSearchEnabled, fileIndex, externalDrives, indexedLocations, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
@@ -106,6 +106,8 @@ extension SettingsItem {
               keywords: "图片 截图 照片 识别 文字识别 ocr 扫描 扫描件 image screenshot photo scan"),
         .init(id: .externalDrives, tab: .fileSearch, title: "包括外接硬盘",
               keywords: "硬盘 移动硬盘 u盘 外接 ntfs drive volume external usb"),
+        .init(id: .indexedLocations, tab: .fileSearch, title: "添加搜索目录…",
+              keywords: "搜索范围 文件夹 共享 网络 NAS SMB search folder location network share"),
 
         .init(id: .windowSnap, tab: .window, title: "分屏",
               keywords: "窗口 贴靠 半屏 左右 最大化 最小化 win+方向键 win+arrow rectangle snap split tile window"),

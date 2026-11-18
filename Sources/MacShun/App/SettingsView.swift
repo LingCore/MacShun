@@ -910,7 +910,7 @@ private struct FileSearchSettings: View {
                 }
                 HStack {
                     Spacer()
-                    Button(L("重新建立索引")) { index.rebuild() }
+                    Button(L("重新建立索引")) { index.rebuild(); index.pollNetworkLocations() }
                         .nativeButtonHover()
                         .disabled(index.isIndexing || !config.activated)
                 }
@@ -962,11 +962,64 @@ private struct FileSearchSettings: View {
                     Text(L("在后台慢慢扫描，不影响搜索。不收录 Windows 的系统文件夹。"))
                 }
                 .settingsAnchor(.externalDrives)
+                ForEach(config.indexedLocations) { location in
+                    locationRow(location)
+                }
+                HStack {
+                    Button(L("添加搜索目录…"), action: addLocation).nativeButtonHover()
+                    Spacer()
+                }
+                .settingsAnchor(.indexedLocations)
             } header: {
                 Text(L("搜索范围"))
+            } footer: {
+                Text(L("共享请先在访达连接。添加后可按文件名搜索，断开时会标记为离线。"))
+                    .settingsFooter()
             }
             .disabled(!config.enabled)
         }
+    }
+
+    private func locationRow(_ location: FileSearchLocation) -> some View {
+        let path = index.activePath(for: location)
+        return HStack(spacing: 10) {
+            Image(systemName: location.share == nil ? "folder" : "network")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(location.name).lineLimit(1)
+                Text((path as NSString).abbreviatingWithTildeInPath)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+            }
+            .help(path)
+            Spacer(minLength: 8)
+            Text(index.locationStatuses[location.id]?.title ?? L("等待收录"))
+                .font(.caption).foregroundStyle(.secondary)
+            Button {
+                config.indexedLocations.removeAll { $0.id == location.id }
+            } label: {
+                Image(systemName: "minus.circle").frame(width: 24, height: 22)
+            }
+            .buttonStyle(.chip())
+            .accessibilityLabel(L("从搜索范围移除“%@”", location.name))
+            .help(L("从搜索范围移除“%@”", location.name))
+        }
+    }
+
+    private func addLocation() {
+        let picker = NSOpenPanel()
+        picker.canChooseDirectories = true
+        picker.canChooseFiles = false
+        picker.canCreateDirectories = false
+        picker.prompt = L("选择文件夹")
+        guard picker.runModal() == .OK, let url = picker.url else { return }
+        guard let location = index.makeLocation(for: url.path) else {
+            let alert = NSAlert()
+            alert.messageText = L("请选择本机文件夹或已挂载的 SMB 共享")
+            alert.addButton(withTitle: L("好"))
+            alert.runModal()
+            return
+        }
+        config.addIndexedLocation(location)
     }
 
     private var indexSummary: String {

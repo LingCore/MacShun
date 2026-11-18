@@ -289,7 +289,8 @@ if wants("panel") { MainActor.assumeIsolated { renderClipboardPanel() } }
     pump(0.3)   // 等初始化时的那次空搜索回来
     model.showPreview(query: query, results: results, icons: icons)
     pump(0.3)
-    let height = FileSearchView.height(resultCount: results.count, hasSectionHeader: model.contentStart != nil, showsStatus: false)
+    let height = FileSearchView.height(resultCount: results.count, hasSectionHeader: model.contentStart != nil,
+                                       showsStatus: false, typeAreaHeight: model.compactLayout.visible.fileTypes)
     let size = NSSize(width: FileSearchPanel.width + 80, height: height + 56)
     let view = ZStack(alignment: .top) {
         desktop

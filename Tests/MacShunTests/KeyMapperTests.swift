@@ -53,6 +53,10 @@ struct CtrlAsCommandTests {
         let disabled = mapper { $0.ctrlAsCommand = false }
         #expect(disabled.action(keyCode: KeyCode.v, flags: ctrl, context: search) == send(KeyCode.v, cmd))
         #expect(disabled.action(keyCode: KeyCode.a, flags: ctrl, context: search) == .pass)
+        #expect(m.action(keyCode: KeyCode.e, flags: ctrl, context: search) == send(KeyCode.e, cmd))
+        search.fileSearchPanelActive = true
+        #expect(m.action(keyCode: KeyCode.e, flags: ctrl, context: search) == .pass)
+        #expect(m.action(keyCode: KeyCode.e, flags: [ctrl, shift], context: search) == send(KeyCode.e, [cmd, shift]))
     }
 
     @Test func nativeShortcutsAndUnrelatedModifiersPassThrough() {

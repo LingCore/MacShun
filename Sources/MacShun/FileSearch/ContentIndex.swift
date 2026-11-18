@@ -73,6 +73,7 @@ final class ContentIndex: ObservableObject {
         let path: String
         /// 匹配处附近的一段文字，一行
         let snippet: String
+        var metadata: FileSearchMetadata? = nil
     }
 
     private let directory: URL
@@ -573,7 +574,8 @@ final class ContentIndex: ObservableObject {
     // MARK: - 搜索
 
     /// 按内容搜，结果在主线程上回调。查询太短（一个汉字、两个字母）时直接返回空，免得一个“的”字搜出整个硬盘。
-    func search(_ query: String, limit: Int = 30, within folder: String? = nil, cancelled: Locked<Bool> = Locked(false), completion: @escaping ([Hit]) -> Void) {
+    func search(_ query: String, limit: Int = 30, within folder: String? = nil, options: FileSearchOptions = .init(),
+                cancelled: Locked<Bool> = Locked(false), completion: @escaping ([Hit]) -> Void) {
         let parsed = FileMatcher.Query(query)
         guard let match = Self.matchExpression(for: parsed.contentText), limit > 0 else {
             completion([])
@@ -581,17 +583,17 @@ final class ContentIndex: ObservableObject {
         }
         let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
         searchQueue.async {
-            let hits = self.runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, cancelled: cancelled)
+            let hits = self.runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, options: options, cancelled: cancelled)
             DispatchQueue.main.async { if !cancelled.get() { completion(hits) } }
         }
     }
 
     /// 测试用：同步搜索
-    func searchNow(_ query: String, limit: Int = 30, within folder: String? = nil) -> [Hit] {
+    func searchNow(_ query: String, limit: Int = 30, within folder: String? = nil, options: FileSearchOptions = .init()) -> [Hit] {
         let parsed = FileMatcher.Query(query)
         guard let match = Self.matchExpression(for: parsed.contentText), limit > 0 else { return [] }
         let roots = searchRoots.get().map { Scope(folder: $0, recursive: true) }
-        return searchQueue.sync { runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, cancelled: Locked(false)) }
+        return searchQueue.sync { runSearch(match, query: parsed, roots: roots, within: folder, limit: limit, options: options, cancelled: Locked(false)) }
     }
 
     /// 测试用：等到排队的文件都读完
@@ -602,20 +604,23 @@ final class ContentIndex: ObservableObject {
     /// 测试用：收录了内容的文件数（不经过主线程）
     var documentCountNow: Int { workQueue.sync { textCount } }
 
-    private func runSearch(_ match: String, query: FileMatcher.Query, roots: [Scope], within folder: String?, limit: Int, cancelled: Locked<Bool>) -> [Hit] {
-        guard !cancelled.get() else { return [] }
+    private func runSearch(_ match: String, query: FileMatcher.Query, roots: [Scope], within folder: String?,
+                           limit: Int, options: FileSearchOptions, cancelled: Locked<Bool>) -> [Hit] {
+        guard !cancelled.get(), !options.foldersOnly else { return [] }
         let terms = query.contentText.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         let selectedFolder = folder.map { Scope(folder: $0, recursive: true) }
         let directory = query.filters.isEmpty ? nil : query.directoryInput.map { Scope(folder: $0.folder, recursive: false) }
+        let since = options.modified.since(Date())
         if reader == nil {
             guard FileManager.default.fileExists(atPath: databasePath) else { return [] }
             reader = SQLiteDatabase(path: databasePath, create: false)
         }
-        // 原文只给最后用上的几个取，排序时不带着它
+        // 排序只读路径和属性。确定这一页后才解压摘要需要的正文。
+        let ranksByRelevance = options.order == .relevance
         guard let reader, let statement = reader.prepare("""
-            SELECT rowid, (SELECT path FROM docs WHERE id = docs_fts.rowid)
-            FROM docs_fts WHERE docs_fts MATCH ? ORDER BY rank
-            """), let textStatement = reader.prepare("SELECT text FROM docs WHERE id = ?")
+            SELECT path, mtime, size FROM docs_fts JOIN docs ON docs.id = docs_fts.rowid
+            WHERE docs_fts MATCH ? \(ranksByRelevance ? "ORDER BY rank" : "")
+            """), let textStatement = reader.prepare("SELECT text FROM docs WHERE path = ?")
         else {
             self.reader = nil   // 可能索引还没建好，下次再试
             return []
@@ -624,18 +629,31 @@ final class ContentIndex: ObservableObject {
         reader.observeCancellation(cancelled)
         defer { withExtendedLifetime(cancelled) { reader.observeCancellation(nil) } }
         statement.bind(1, match)
-        var hits: [Hit] = []
-        while hits.count < limit && !cancelled.get() && statement.step() {
-            let path = statement.string(1)
-            guard selectedFolder?.contains(path) != false, directory?.contains(path) != false, query.filters.accepts(fileAt: path),
-                  roots.isEmpty || roots.contains(where: { $0.contains(path) }),
-                  FileManager.default.fileExists(atPath: path) else { continue }
+        func makeHit(path: String, metadata: FileSearchMetadata?) -> Hit? {
+            guard !cancelled.get() else { return nil }
             textStatement.reset()
-            textStatement.bind(1, statement.int(0))
-            guard textStatement.step(), let text = Self.decompress(textStatement.data(0)) else { continue }
-            hits.append(Hit(path: path, snippet: Self.snippet(in: text, terms: terms)))
+            textStatement.bind(1, path)
+            guard textStatement.step(), let text = Self.decompress(textStatement.data(0)) else { return nil }
+            return Hit(path: path, snippet: Self.snippet(in: text, terms: terms), metadata: metadata)
         }
-        return hits
+        var hits: [Hit] = []
+        var best = BestFileResults(limit: limit, order: options.order)
+        while hits.count < limit && !cancelled.get() && statement.step() {
+            let path = statement.string(0)
+            guard selectedFolder?.contains(path) != false, directory?.contains(path) != false, query.filters.accepts(fileAt: path),
+                  roots.isEmpty || roots.contains(where: { $0.contains(path) }), options.acceptsKind(path, isFolder: false)
+            else { continue }
+            let metadata = FileSearchMetadata(modified: statement.double(1), size: statement.int(2))
+            guard options.accepts(metadata, since: since), query.filters.accepts(metadata),
+                  FileManager.default.fileExists(atPath: path) else { continue }
+            if ranksByRelevance {
+                if let hit = makeHit(path: path, metadata: options.showsMetadata ? metadata : nil) { hits.append(hit) }
+            } else {
+                best.add(FileSearchResult(path: path, name: (path as NSString).lastPathComponent, isDirectory: false,
+                                          score: 0, metadata: metadata))
+            }
+        }
+        return ranksByRelevance ? hits : best.sorted().compactMap { makeHit(path: $0.path, metadata: $0.metadata) }
     }
 
     // MARK: - 分词和摘要（纯函数，方便测试）
