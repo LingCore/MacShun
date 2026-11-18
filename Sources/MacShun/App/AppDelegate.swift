@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         // 发现新版本时弹出“软件更新”窗口。自动检查发现的不抢键盘
-        Updater.shared.onFound = { _, manual in UpdateWindowController.shared.show(activate: manual) }
+        Updater.shared.onFound = { _, manual in UpdateWindowController.shared.showNewVersion(activate: manual) }
 
         configStore.$config
             .receive(on: DispatchQueue.main)

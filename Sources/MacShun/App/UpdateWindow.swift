@@ -9,8 +9,14 @@ final class UpdateWindowController {
 
     private var window: NSWindow?
 
+    /// 异步检查返回时就地更新已打开的窗口，不跟着这时的指针换屏。
+    func showNewVersion(activate: Bool) {
+        if window?.isVisible != true { show(activate: activate) }
+    }
+
     /// activate：用户自己点的，把窗口切到前台。自动检查发现新版本时只把窗口摆到最上面，不抢正在打字的键盘
-    func show(activate: Bool) {
+    func show(activate: Bool, at pointer: CGPoint = NSEvent.mouseLocation) {
+        let center = window == nil
         if window == nil {
             let view = UpdateView(updater: .shared) { [weak self] in self?.window?.close() }
             let host = NSHostingController(rootView: view)
@@ -21,10 +27,13 @@ final class UpdateWindowController {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isReleasedWhenClosed = false
-            window.center()
+            window.setContentSize(host.view.fittingSize)
             self.window = window
         }
         guard let window else { return }
+        if activate || !window.isVisible {
+            WindowPlacement.place(window, on: WindowPlacement.pointerScreen(at: pointer), centered: center)
+        }
         if activate {
             Foreground.bring(window)
         } else if !window.isVisible {

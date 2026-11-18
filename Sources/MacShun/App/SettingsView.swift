@@ -89,14 +89,17 @@ final class SettingsWindowController {
         self.clipboard = clipboard
     }
 
-    func show(tab: SettingsTab? = nil) {
+    func show(tab: SettingsTab? = nil, at pointer: CGPoint = NSEvent.mouseLocation) {
         if let tab { selection.tab = tab }
+        let screen = WindowPlacement.pointerScreen(at: pointer)
+        var center = false
         if window == nil {
             let root = SettingsView(
                 configStore: configStore, state: state,
                 clipboardStore: clipboard.store, selection: selection
             )
-            let window = NSWindow(contentViewController: NSHostingController(rootView: root.environmentObject(selection)))
+            let host = NSHostingController(rootView: root.environmentObject(selection))
+            let window = NSWindow(contentViewController: host)
             window.title = L("Mac顺 设置")
             window.identifier = SettingsWindowController.windowID
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
@@ -104,7 +107,9 @@ final class SettingsWindowController {
             window.titleVisibility = .hidden
             window.isReleasedWhenClosed = false
             window.setFrameAutosaveName("SettingsWindow")
-            if !window.setFrameUsingName("SettingsWindow") { window.center() }
+            center = !window.setFrameUsingName("SettingsWindow")
+            // Resolve the SwiftUI size before positioning the window for its first presentation.
+            if center { window.setContentSize(host.view.fittingSize) }
             // 窗口关掉、被挡住或最小化时，“拾穗”页的动画停下来。
             NotificationCenter.default.addObserver(
                 forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
@@ -123,7 +128,11 @@ final class SettingsWindowController {
                 return nil
             }
         }
-        if let window { Foreground.bring(window) }
+        if let window {
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            WindowPlacement.place(window, on: screen, centered: center)
+            Foreground.bring(window)
+        }
     }
 }
 
