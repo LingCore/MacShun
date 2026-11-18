@@ -7,10 +7,11 @@ import Combine
 final class PerformanceMonitor: ObservableObject {
     static let shared = PerformanceMonitor()
     @Published private(set) var snapshot = PerformanceSnapshot()
+    private(set) var history = PerformanceHistory()
     private let worker = DispatchQueue(label: "com.macshun.performance", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var sampler: SystemMetricsSampler? // 只在 worker 访问
-    private var configuration: PerformanceConfig?
+    private var samplingMetrics: [PerformanceMetric] = []
     private var generation = 0
     private var sleeping = false
     private var observers: [NSObjectProtocol] = []
@@ -35,14 +36,15 @@ final class PerformanceMonitor: ObservableObject {
 
     func apply(_ config: PerformanceConfig) {
         precondition(Thread.isMainThread)
-        guard configuration != config else { return }
-        configuration = config
+        let metrics = config.enabled ? config.metrics : []
+        guard samplingMetrics != metrics else { return }
+        samplingMetrics = metrics
         restart()
     }
 
     func stop() {
         precondition(Thread.isMainThread)
-        configuration = nil
+        samplingMetrics = []
         restart()
     }
 
@@ -51,18 +53,21 @@ final class PerformanceMonitor: ObservableObject {
         let currentGeneration = generation
         timer?.cancel()
         timer = nil
+        history = PerformanceHistory()
         snapshot = PerformanceSnapshot()
         worker.async { [weak self] in self?.sampler = nil }
-        guard let config = configuration, config.isActive, !sleeping else { return }
+        let metrics = samplingMetrics
+        guard !metrics.isEmpty, !sleeping else { return }
 
         let source = DispatchSource.makeTimerSource(queue: worker)
         source.schedule(deadline: .now(), repeating: .seconds(2), leeway: .milliseconds(250))
         source.setEventHandler { [weak self] in
             guard let self else { return }
             if self.sampler == nil { self.sampler = SystemMetricsSampler() }
-            guard let sample = self.sampler?.sample(config) else { return }
+            guard let sample = self.sampler?.sample(metrics: metrics) else { return }
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == currentGeneration else { return }
+                self.history.append(sample)
                 self.snapshot = sample
             }
         }

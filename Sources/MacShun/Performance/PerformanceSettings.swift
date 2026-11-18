@@ -19,6 +19,25 @@ struct PerformanceSettings: View {
             }
 
             Section {
+                Picker(L("菜单栏样式"), selection: $config.menuBarStyle) {
+                    ForEach(PerformanceMenuBarStyle.allCases, id: \.self) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.menu)
+                .settingsAnchor(.performanceMenuBarStyle)
+
+                Toggle(L("合并 CPU 和 GPU"), isOn: $config.combineProcessors)
+                    .disabled(!config.canCombineProcessors)
+                    .settingsAnchor(.combinePerformanceProcessors)
+            } footer: {
+                if let styleHint {
+                    Text(styleHint).settingsFooter()
+                }
+            }
+            .disabled(!config.enabled)
+
+            Section {
                 metric(.cpu, isOn: $config.cpu, detail: L("处理器总占用"))
                     .settingsAnchor(.cpuUsage)
                 metric(.gpu, isOn: $config.gpu, detail: monitor.snapshot.gpuCount > 1 ? L("显示占用最高的一块 GPU") : L("图形处理器占用"))
@@ -48,6 +67,19 @@ struct PerformanceSettings: View {
         }
     }
 
+    private var styleHint: String? {
+        let combined = config.canCombineProcessors && config.combineProcessors
+        switch config.menuBarStyle {
+        case .text:
+            return L("图表样式可将 CPU 和 GPU 放在同一组。")
+        case .icons:
+            return combined ? L("芯片内左侧为 CPU，右侧为 GPU。悬停菜单栏可查看读数。")
+                            : L("悬停菜单栏可查看读数。")
+        case .trend:
+            return combined ? L("实线为 CPU，虚线为 GPU。") : nil
+        }
+    }
+
     private func metric(_ metric: PerformanceMetric, isOn: Binding<Bool>, detail: String) -> some View {
         Toggle(isOn: isOn) {
             HStack(spacing: 12) {
@@ -65,33 +97,5 @@ struct PerformanceSettings: View {
                     .fixedSize()
             }
         }
-    }
-}
-
-enum PerformanceMenuBarImage {
-    /// 每列固定宽度，1% → 100% 不挪动图标；模板图随菜单栏深浅和选中状态自动着色。
-    static func make(snapshot: PerformanceSnapshot, metrics: [PerformanceMetric], needsAttention: Bool) -> NSImage {
-        let columnWidth: CGFloat = 40, gap: CGFloat = 6, leading: CGFloat = 28
-        let width = leading + CGFloat(metrics.count) * columnWidth + CGFloat(max(0, metrics.count - 1)) * gap
-        let brand = BrandMark.menuBarImage(needsAttention: needsAttention)
-        let image = NSImage(size: NSSize(width: width, height: 22), flipped: false) { _ in
-            brand.draw(in: NSRect(x: 0, y: 2, width: 18, height: 18))
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            for (index, metric) in metrics.enumerated() {
-                let x = leading + CGFloat(index) * (columnWidth + gap)
-                let label = NSAttributedString(string: metric.barLabel, attributes: [
-                    .font: NSFont.systemFont(ofSize: 9, weight: .medium), .foregroundColor: NSColor.black, .paragraphStyle: paragraph
-                ])
-                let value = NSAttributedString(string: snapshot.text(metric, compact: true), attributes: [
-                    .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.black, .paragraphStyle: paragraph
-                ])
-                label.draw(in: NSRect(x: x, y: 12, width: columnWidth, height: 11))
-                value.draw(in: NSRect(x: x, y: 0, width: columnWidth, height: 14))
-            }
-            return true
-        }
-        image.isTemplate = true
-        return image
     }
 }

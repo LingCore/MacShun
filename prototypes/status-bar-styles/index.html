@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Mac顺 · 菜单栏图表样式</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f4f6f5;
+    --surface: #fff;
+    --ink: #152621;
+    --muted: #536660;
+    --border: #d9e1de;
+    --control: #edf1ef;
+    --accent: #13654f;
+    --selected: #e8f4ee;
+    --shadow: 0 1px 2px #16382a0a, 0 6px 18px #16382a09;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #151b19;
+      --surface: #1e2824;
+      --ink: #eff7f3;
+      --muted: #a9bcb3;
+      --border: #36443d;
+      --control: #293630;
+      --accent: #85d9b4;
+      --selected: #244236;
+      --shadow: 0 1px 2px #0004, 0 6px 18px #0002;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); }
+  button, input { font: inherit; }
+  .wrap { width: min(1040px, calc(100% - 64px)); margin-inline: auto; }
+  .top { border-bottom: 1px solid var(--border); }
+  .top-inner {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; min-height: 65px; padding-block: 10px;
+  }
+  .product { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 650; white-space: nowrap; }
+  .app-icon {
+    display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px;
+    background: #175740; color: white;
+  }
+  .app-icon canvas { width: 18px; height: 18px; }
+  .theme-control { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .control-label { color: var(--muted); font-size: .75rem; }
+  .segments {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 3px;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--control);
+  }
+  .segments button {
+    min-height: 29px; border: 1px solid transparent; border-radius: 6px;
+    padding: 3px 10px; color: var(--muted); background: transparent;
+    font-size: .78rem; cursor: pointer; white-space: nowrap;
+  }
+  .segments button:hover { color: var(--ink); }
+  .segments button[aria-pressed="true"] {
+    background: var(--surface); color: var(--ink); border-color: var(--border); box-shadow: var(--shadow);
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  main { padding-block: 31px 36px; }
+  .intro {
+    display: flex; flex-wrap: wrap; align-items: flex-end;
+    justify-content: space-between; column-gap: 28px; row-gap: 16px; margin-bottom: 22px;
+  }
+  h1 { margin: 0 0 7px; font-size: clamp(1.8rem, 4vw, 2.5rem); line-height: 1.2; letter-spacing: -.045em; }
+  h2 { margin: 0; font-size: .98rem; }
+  p { margin: 0; color: var(--muted); font-size: .86rem; line-height: 1.55; }
+  .choice-caption { display: flex; gap: 7px 10px; align-items: baseline; flex-wrap: wrap; }
+  .board { padding: 0; border: 0; margin: 0; min-width: 0; }
+  .live {
+    display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 16px;
+    background: var(--surface); box-shadow: var(--shadow); margin-bottom: 22px;
+  }
+  .live-heading {
+    display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
+    gap: 10px 14px; padding-inline: 4px;
+  }
+  .live-heading p { font-size: .75rem; }
+  .preview-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .processor-control {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 9px;
+    border: 1px solid var(--border); border-radius: 7px; color: var(--muted);
+    font-size: .75rem; cursor: pointer;
+  }
+  .processor-control input { margin: 0; accent-color: var(--accent); }
+  .processor-control:hover, .processor-control:has(input:checked) { color: var(--ink); border-color: var(--accent); }
+  .comparison {
+    position: relative; display: inline-flex; gap: 6px; align-items: center;
+    padding: 5px 10px; min-height: 30px; border: 1px solid var(--border); border-radius: 7px;
+    color: var(--muted); font-size: .75rem; background: var(--surface); cursor: pointer;
+  }
+  .comparison:hover { border-color: var(--accent); color: var(--ink); }
+  .comparison:has(input:checked) { border-color: var(--accent); background: var(--selected); color: var(--accent); }
+  .comparison:has(input:focus-visible), .card:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .wallpaper {
+    --menu-ink: #f7fffc;
+    --menu-bg: #11262b65;
+    --menu-edge: #effff72b;
+    --detail-bg: #152e32;
+    --wallpaper:
+      radial-gradient(ellipse 77% 174% at 69% 172%, #2d6d64 0 68%, #235758 69%, transparent 70%),
+      radial-gradient(ellipse 90% 205% at 85% 179%, #246469 0 68%, #39777a 69%, transparent 70%),
+      radial-gradient(ellipse 145% 220% at 106% 190%, #2a505a 0 70%, #366472 71%, transparent 72%),
+      linear-gradient(108deg, #182f46, #2f5d69 70%, #284a5c);
+    overflow: hidden; border-radius: 9px;
+    color: var(--menu-ink); background: var(--wallpaper);
+  }
+  body[data-theme="light"] .wallpaper {
+    --menu-ink: #182e2b;
+    --menu-bg: #f0f9f4a1;
+    --menu-edge: #162f2d20;
+    --detail-bg: #f3faf6;
+    --wallpaper:
+      radial-gradient(ellipse 77% 174% at 69% 172%, #a9c8b6 0 68%, #92b7ab 69%, transparent 70%),
+      radial-gradient(ellipse 90% 205% at 85% 179%, #bad5c9 0 68%, #9ec2b5 69%, transparent 70%),
+      radial-gradient(ellipse 145% 220% at 106% 190%, #c5dcd8 0 70%, #b8d4d0 71%, transparent 72%),
+      linear-gradient(108deg, #dce7ed, #c6ded9 72%, #d4e7df);
+  }
+  .desktop { position: relative; min-height: 82px; overflow: visible; }
+  .desktop-bar, .sample-bar {
+    display: flex; align-items: center; background: var(--menu-bg); border-bottom: 1px solid var(--menu-edge);
+  }
+  .desktop-bar {
+    justify-content: space-between; gap: 10px; min-height: 28px; padding: 2px 12px;
+    border-radius: 9px 9px 0 0; font-size: 12px; white-space: nowrap;
+  }
+  .desktop-menus, .desktop-right { display: flex; align-items: center; gap: 15px; }
+  .apple { font-size: 16px; line-height: 1; }
+  .desktop-clock { font-variant-numeric: tabular-nums; }
+  .desktop-right { justify-content: flex-end; }
+  #live-status { display: flex; }
+  .desktop-readouts {
+    display: none; position: absolute; z-index: 1; inset-block-start: 33px; inset-inline-end: 7px;
+    max-width: calc(100% - 14px); padding: 5px 8px; background: var(--detail-bg); color: var(--menu-ink);
+    border: 1px solid var(--menu-edge); border-radius: 6px; box-shadow: 0 2px 8px #0003;
+    font-size: .72rem; line-height: 1.4;
+  }
+  .desktop:has(.status[data-readouts]:is(:hover, :focus-visible)) .desktop-readouts { display: block; }
+  .sample-bar { justify-content: center; min-height: 41px; }
+  .status {
+    --column: 34px; --spacing: 3px;
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 22px; width: max-content; color: inherit; white-space: nowrap;
+    font-variant-numeric: tabular-nums; text-align: left;
+  }
+  .status[data-style="line"] { --spacing: 6px; }
+  .status[data-style="segments"] { --column: 37px; }
+  .status[data-style="columns"] { --column: 20px; }
+  .status[data-style="glyphs"] { --column: 17px; --spacing: 4px; }
+  .status[data-style="text"] { --column: 40px; --spacing: 6px; gap: 10px; }
+  .status-brand { flex: none; width: 18px; height: 18px; }
+  .meters { display: flex; align-items: center; gap: var(--spacing); }
+  .meter {
+    display: flex; align-items: center; justify-content: center; gap: 2px;
+    width: var(--column); height: 22px;
+  }
+  .meter canvas { flex: none; }
+  .meter-readout { display: flex; flex-direction: column; justify-content: center; }
+  .metric-name { font-size: 8px; line-height: 10px; font-weight: 600; }
+  .metric-value { font-size: 10.5px; line-height: 11px; font-weight: 600; }
+  [data-style="line"] .meters {
+    display: grid; grid-template-columns: 70px 77px; column-gap: var(--spacing); row-gap: 1px;
+  }
+  [data-style="line"] .meter { flex-direction: row-reverse; width: auto; height: 10px; gap: 2px; }
+  [data-style="line"] .meter-readout {
+    flex: 1 0 auto; flex-direction: row; align-items: baseline; justify-content: space-between; gap: 2px;
+  }
+  [data-style="line"] .metric-value { font-size: 10px; line-height: 10px; }
+  [data-style="segments"] .meter { justify-content: flex-start; gap: 2px; }
+  [data-style="segments"] .metric-value { font-size: 10px; }
+  [data-style="segments"] .meter:last-child { width: 40px; }
+  [data-style="ring"] .meter:last-child { width: 37px; }
+  [data-style="ring"] .meter-readout, [data-style="text"] .meter-readout { align-items: center; }
+  [data-style="ring"] .metric-name { display: flex; align-items: center; gap: 2px; }
+  [data-style="columns"] .meter { flex-direction: column-reverse; gap: 0; }
+  [data-style="columns"] .meter:last-child { width: 24px; }
+  [data-style="columns"] .metric-name { line-height: 9px; }
+  [data-style="glyphs"] .meter:last-child { width: 12px; }
+  .processor-values { flex: 1; }
+  .processor-row { display: flex; align-items: baseline; justify-content: space-between; gap: 2px; }
+  .processor-row .metric-value { font-size: 10px; line-height: 10px; }
+  [data-style="line"][data-combined] .meters { grid-template-columns: 58px 77px; grid-template-rows: repeat(2, 10px); }
+  [data-style="line"] .processor { grid-row: span 2; height: 21px; flex-direction: row; }
+  [data-style="segments"] .processor { width: 52px; }
+  [data-style="ring"] .processor { width: 59px; }
+  [data-style="columns"] .processor { width: 26px; flex-direction: column; }
+  [data-style="text"] .metric-name { font-size: 9px; line-height: 10px; font-weight: 500; }
+  [data-style="text"] .metric-value { font-size: 11px; line-height: 12px; font-weight: 500; }
+  .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .card {
+    position: relative; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+    padding: 12px; border: 1px solid var(--border); border-radius: 14px;
+    background: var(--surface); box-shadow: var(--shadow); cursor: pointer;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card:has(input:checked) { border-color: var(--accent); background: var(--selected); }
+  .card-heading {
+    display: flex; align-items: center; gap: 8px; min-height: 22px;
+    padding-inline: 2px; flex-wrap: wrap;
+  }
+  .card-title { flex: 1; font-size: .92rem; font-weight: 670; }
+  .card-width { color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .card-savings { color: var(--accent); font-weight: 650; }
+  .radio-mark {
+    display: grid; place-items: center; flex: none; width: 15px; height: 15px;
+    border: 1px solid var(--muted); border-radius: 50%;
+  }
+  .comparison .radio-mark { width: 12px; height: 12px; }
+  label:has(input:checked) .radio-mark { border-color: var(--accent); }
+  label:has(input:checked) .radio-mark::after {
+    content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  }
+  .comparison:has(input:checked) .radio-mark::after { width: 5px; height: 5px; }
+  .sample { padding-block: 11px; }
+  .sample .status { zoom: 1.72; }
+  .card-description { display: block; padding-inline: 2px; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+  .card[data-style="glyphs"] .status { zoom: 2; }
+  .notes { margin: 11px 2px 0; font-size: .73rem; }
+  @media (min-width: 786px) {
+    .card[data-style="glyphs"] {
+      grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-content: center; column-gap: 14px;
+    }
+    .card[data-style="glyphs"] .sample { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+  }
+  @media (max-width: 900px) {
+    .sample .status { zoom: 1.55; }
+  }
+  @media (max-width: 785px) {
+    .wrap { width: calc(100% - 32px); }
+    main { padding-block: 23px 26px; }
+    .cards { grid-template-columns: minmax(0, 1fr); }
+    .sample .status { zoom: 1.72; }
+  }
+  @media (max-width: 665px) {
+    .desktop-clock { display: none; }
+  }
+  @media (max-width: 560px) {
+    .desktop-menus span:not(.apple) { display: none; }
+    .sample .status { zoom: 1.4; }
+  }
+  @media (max-width: 385px) {
+    .wrap { width: calc(100% - 24px); }
+    .sample .status { zoom: 1.2; }
+    .desktop-menus { display: none; }
+    .desktop-bar { justify-content: center; padding-inline: 2px; }
+  }
+</style>
+</head>
+<body data-theme="dark">
+  <header class="top">
+    <div class="wrap top-inner">
+      <div class="product">
+        <span class="app-icon" aria-hidden="true"><canvas width="18" height="18" id="product-icon"></canvas></span>
+        Mac顺
+      </div>
+      <div class="theme-control">
+        <span class="control-label" id="theme-label">菜单栏背景</span>
+        <div class="segments" role="group" aria-labelledby="theme-label" id="themes">
+          <button type="button" data-theme="dark" aria-pressed="true">深色</button>
+          <button type="button" data-theme="light" aria-pressed="false">浅色</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="intro">
+      <div>
+        <h1>菜单栏图表样式</h1>
+        <p>点选样式，比较各方案在菜单栏里省下的宽度。</p>
+      </div>
+      <div class="segments" role="group" aria-label="模拟读数" id="scenarios">
+        <button type="button" data-scenario="normal" aria-pressed="true">典型负载</button>
+        <button type="button" data-scenario="busy" aria-pressed="false">高负载</button>
+        <button type="button" data-scenario="missing" aria-pressed="false">部分读数缺失</button>
+      </div>
+    </div>
+
+    <fieldset class="board">
+      <legend class="sr-only">选择菜单栏样式</legend>
+      <section class="live" aria-labelledby="preview-heading">
+        <div class="live-heading">
+          <div class="choice-caption">
+            <h2 id="preview-heading">原尺寸预览</h2>
+            <p id="selected-style" role="status"></p>
+          </div>
+          <div class="preview-actions">
+            <label class="processor-control"><input type="checkbox" id="combine-processors" checked>合并 CPU/GPU</label>
+            <label class="comparison">
+              <input class="sr-only" type="radio" name="style" value="text">
+              <span class="radio-mark" aria-hidden="true"></span>
+              原文字样式 <span id="reference-width"></span>
+            </label>
+          </div>
+        </div>
+        <div class="desktop wallpaper">
+          <div class="desktop-bar">
+            <div class="desktop-menus" aria-hidden="true">
+              <span class="apple"></span><span><strong>访达</strong></span><span>文件</span><span>编辑</span><span>显示</span>
+            </div>
+            <div class="desktop-right">
+              <div id="live-status"></div>
+              <span class="desktop-clock" aria-hidden="true">11月18日 周三 09:41</span>
+            </div>
+          </div>
+          <div class="desktop-readouts" id="desktop-readouts" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <div class="cards" id="cards"></div>
+      <p class="notes">宽度含四项指标和 Mac顺图标。卡片中的图表已放大，读数为模拟数据。</p>
+    </fieldset>
+  </main>
+
+  <template id="card-template">
+    <label class="card">
+      <input class="sr-only" type="radio" name="style">
+      <span class="card-heading">
+        <span class="radio-mark" aria-hidden="true"></span>
+        <span class="card-title"></span>
+        <span class="card-width"><span class="card-size"></span> · <span class="card-savings"></span></span>
+      </span>
+      <span class="sample wallpaper" aria-hidden="true"><span class="sample-bar"></span></span>
+      <span class="card-description"></span>
+    </label>
+  </template>
+
+<script>
+  const styles = [
+    {
+      id: "line", title: "折线走势",
+      description: "两行放下四项指标，每项都有精确读数和近期曲线。",
+      combinedDescription: "CPU 与 GPU 共用折线图，实线为 CPU，虚线为 GPU。",
+    },
+    {
+      id: "segments", title: "分段刻度",
+      description: "将刻度条竖在读数旁，四项指标一字排开。",
+      combinedDescription: "左刻度显示 CPU，右刻度显示 GPU，两项读数分两行。",
+    },
+    {
+      id: "ring", title: "环形仪表",
+      description: "小圆环贴着指标名，下方保留精确读数。",
+      combinedDescription: "CPU 在外环，GPU 在内环，旁边保留两项读数。",
+    },
+    {
+      id: "columns", title: "历史小柱图",
+      description: "菜单栏只放缩写和图形，悬停预览可查看精确读数。",
+      combinedDescription: "C/G 图中每对柱子的左侧是 CPU，右侧是 GPU。悬停可查读数。",
+    },
+    {
+      id: "glyphs", title: "纯图标仪表",
+      description: "用芯片、显卡、内存条和温度计的填充显示当前水平。",
+      combinedDescription: "芯片内左侧是 CPU，右侧是 GPU。内存条和温度计各自显示当前水平。",
+    },
+    { id: "text", title: "原文字样式" },
+  ];
+
+  const metrics = [
+    { label: "CPU", title: "CPU", unit: "%" },
+    { label: "GPU", title: "GPU", unit: "%" },
+    { label: "RAM", title: "内存", unit: "%" },
+    { label: "TEMP", title: "芯片温度", unit: "°C" },
+  ];
+
+  const scenarios = {
+    normal: [
+      [12, 16, 10, 24, 20, 31, 19, 18, 22, 17],
+      [8, 11, 19, 16, 33, 54, 39, 46, 32, 28],
+      [61, 61, 64, 64, 66, 67, 66, 69, 68, 70],
+      [53, 55, 57, 59, 66, 68, 67, 65, 68, 69],
+    ],
+    busy: [
+      [38, 56, 43, 71, 79, 65, 90, 82, 91, 100],
+      [35, 37, 55, 76, 67, 83, 76, 93, 85, 87],
+      [74, 76, 80, 80, 84, 86, 86, 90, 92, 94],
+      [71, 70, 75, 81, 80, 83, 88, 87, 91, 101],
+    ],
+    missing: [
+      [17, 15, 10, 19, 33, 23, 21, 29, 19, 23],
+      [],
+      [65, 64, 65, 66, 69, 71, 70, 73, 73, 72],
+      [],
+    ],
+  };
+
+  const preferenceKey = "macshun.status-chart-preview";
+  let preferences = {};
+  try { preferences = JSON.parse(localStorage.getItem(preferenceKey)) || {}; } catch {}
+  let selected = styles.some(style => style.id === preferences.style) ? preferences.style : "line";
+  let theme = preferences.theme === "light" ? "light" : "dark";
+  let combined = preferences.combined !== false;
+  let scenario = "normal";
+
+  const cards = document.querySelector("#cards");
+  const template = document.querySelector("#card-template");
+  const liveStatus = document.querySelector("#live-status");
+  const desktopReadouts = document.querySelector("#desktop-readouts");
+  const selectedStyle = document.querySelector("#selected-style");
+  const themeControls = document.querySelector("#themes");
+  const scenarioControls = document.querySelector("#scenarios");
+  const combineControl = document.querySelector("#combine-processors");
+  const board = document.querySelector(".board");
+  // PerformanceMenuBarImage uses 28 pt leading, four 40 pt columns, and three 6 pt gaps.
+  const referenceWidth = 206;
+  document.querySelector("#reference-width").textContent = `· ${referenceWidth} pt`;
+
+  for (const style of styles.filter(style => style.id !== "text")) {
+    const card = template.content.firstElementChild.cloneNode(true);
+    const title = card.querySelector(".card-title");
+    const description = card.querySelector(".card-description");
+    const width = card.querySelector(".card-width");
+    const input = card.querySelector("input");
+    card.dataset.style = style.id;
+    title.id = `title-${style.id}`;
+    description.id = `description-${style.id}`;
+    width.id = `width-${style.id}`;
+    title.textContent = style.title;
+    input.value = style.id;
+    input.setAttribute("aria-labelledby", title.id);
+    input.setAttribute("aria-describedby", `${width.id} ${description.id}`);
+    cards.append(card);
+  }
+
+  function savePreferences() {
+    try { localStorage.setItem(preferenceKey, JSON.stringify({ style: selected, theme, combined })); } catch {}
+  }
+
+  function canvasContext(canvas, width, height) {
+    const scale = (window.devicePixelRatio || 1) * 2;
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    const context = canvas.getContext("2d");
+    context.scale(canvas.width / width, canvas.height / height);
+    const color = getComputedStyle(canvas).color;
+    context.fillStyle = color;
+    context.strokeStyle = color;
+    return context;
+  }
+
+  // 菜单栏标志沿用 BrandMark.swift 的 18×18 点轮廓。
+  const brandOutline = new Path2D(
+    "M6.75 6.75 V3.75 C6.75 2.25 6.75 2.25 5.25 2.25 H3.75 C2.25 2.25 2.25 2.25 2.25 3.75 V5.25 C2.25 6.75 2.25 6.75 3.75 6.75 H11.25 C15.3 6.3 15.3 6.3 15.75 2.25 C11.7 2.7 11.7 2.7 11.25 6.75 V14.25 C11.25 15.75 11.25 15.75 12.75 15.75 H14.25 C15.75 15.75 15.75 15.75 15.75 14.25 V12.75 C15.75 11.25 15.75 11.25 14.25 11.25 H3.75 C2.25 11.25 2.25 11.25 2.25 12.75 V14.25 C2.25 15.75 2.25 15.75 3.75 15.75 H5.25 C6.75 15.75 6.75 15.75 6.75 14.25 Z"
+  );
+  const brandLeaf = new Path2D(
+    "M11.25 6.75 C15.3 6.3 15.3 6.3 15.75 2.25 C11.7 2.7 11.7 2.7 11.25 6.75 Z"
+  );
+
+  function drawBrand(canvas) {
+    const context = canvasContext(canvas, 18, 18);
+    context.lineWidth = 1.5;
+    context.lineJoin = "round";
+    context.stroke(brandOutline);
+    context.fill(brandLeaf);
+  }
+
+  function roundRect(context, x, y, width, height, radius) {
+    context.beginPath();
+    context.roundRect(x, y, width, height, radius);
+    context.fill();
+  }
+
+  function drawLine(context, samples, width) {
+    const baseline = 7.5;
+    context.globalAlpha = .22;
+    context.fillRect(0, baseline - .5, width, .5);
+    if (!samples.length) return;
+    const low = Math.min(...samples);
+    const high = Math.max(...samples);
+    const range = Math.max(30, high - low);
+    const floor = Math.max(0, Math.min(100 - range, (low + high - range) / 2));
+    const points = samples.map((value, index) => [
+      1 + index * (width - 2) / (samples.length - 1),
+      baseline - .7 - (value - floor) / range * 5.75,
+    ]);
+    context.beginPath();
+    points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+    context.lineTo(points.at(-1)[0], baseline);
+    context.lineTo(points[0][0], baseline);
+    context.closePath();
+    context.globalAlpha = .19;
+    context.fill();
+
+    context.beginPath();
+    points.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
+    context.globalAlpha = .93;
+    context.lineWidth = 1.05;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.stroke();
+    context.beginPath();
+    context.arc(...points.at(-1), 1, 0, 2 * Math.PI);
+    context.fill();
+  }
+
+  function drawSegments(context, samples) {
+    const count = 6;
+    const segmentHeight = 2;
+    const level = samples.at(-1) ?? 0;
+    for (let index = 0; index < count; index++) {
+      const bottom = 17 - index * 3;
+      context.globalAlpha = .27;
+      roundRect(context, 0, bottom - segmentHeight, 3.5, segmentHeight, .5);
+      const fill = Math.min(1, Math.max(0, level * count / 100 - index));
+      if (fill > 0) {
+        context.globalAlpha = .96;
+        roundRect(context, 0, bottom - segmentHeight * fill, 3.5, segmentHeight * fill, .5);
+      }
+    }
+  }
+
+  function drawRing(context, samples, center = 5.5, radius = 4) {
+    const start = -Math.PI / 2;
+    context.lineWidth = 1.45;
+    context.lineCap = "round";
+    context.globalAlpha = .28;
+    context.beginPath();
+    context.arc(center, center, radius, 0, 2 * Math.PI);
+    context.stroke();
+    const level = samples.at(-1) ?? 0;
+    if (level <= 0) return;
+    context.globalAlpha = .96;
+    context.beginPath();
+    context.arc(center, center, radius, start, start + Math.PI * 2 * level / 100);
+    context.stroke();
+  }
+
+  function drawColumns(context, samples) {
+    const baseline = 10.5;
+    context.globalAlpha = .28;
+    context.fillRect(0, baseline, 19, .5);
+    const recent = samples.slice(-5);
+    recent.forEach((value, index) => {
+      const height = Math.max(.8, value * .095);
+      context.globalAlpha = .50 + index * .115;
+      roundRect(context, index * 4, baseline - height, 3, height, .45);
+    });
+  }
+
+  function drawChart(style, canvas, samples) {
+    const levels = samples.map(value => Math.min(100, Math.max(0, value)));
+    switch (style) {
+      case "line": drawLine(canvasContext(canvas, 15, 8), levels, 15); break;
+      case "segments": drawSegments(canvasContext(canvas, 4, 17), levels); break;
+      case "ring": drawRing(canvasContext(canvas, 11, 11), levels); break;
+      case "columns": drawColumns(canvasContext(canvas, 19, 11), levels); break;
+    }
+  }
+
+  function glyphContext(canvas, width = 17) {
+    const context = canvasContext(canvas, width, 18);
+    context.lineWidth = 1;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.globalAlpha = .9;
+    return context;
+  }
+
+  function drawGaugeFill(context, x, y, width, height, value, vertical) {
+    context.globalAlpha = .24;
+    roundRect(context, x, y, width, height, .55);
+    if (value === undefined || value <= 0) return;
+    const fraction = Math.min(100, value) / 100;
+    context.globalAlpha = 1;
+    if (vertical) {
+      const fill = Math.max(.55, height * fraction);
+      roundRect(context, x, y + height - fill, width, fill, .55);
+    } else {
+      roundRect(context, x, y, Math.max(.55, width * fraction), height, .55);
+    }
+  }
+
+  function drawChipGlyph(canvas, ...values) {
+    const context = glyphContext(canvas);
+    context.beginPath();
+    context.roundRect(3.25, 3.75, 10.5, 10.5, 1.6);
+    for (const pin of [6.5, 10.5]) {
+      context.moveTo(pin, 2.25);
+      context.lineTo(pin, 3.75);
+      context.moveTo(pin, 14.25);
+      context.lineTo(pin, 15.75);
+    }
+    for (const pin of [7, 11]) {
+      context.moveTo(1.75, pin);
+      context.lineTo(3.25, pin);
+      context.moveTo(13.75, pin);
+      context.lineTo(15.25, pin);
+    }
+    context.stroke();
+    if (values.length === 2) {
+      drawGaugeFill(context, 5.25, 5.5, 2.25, 7, values[0], true);
+      drawGaugeFill(context, 9.5, 5.5, 2.25, 7, values[1], true);
+    } else {
+      drawGaugeFill(context, 5.25, 5.5, 6.5, 7, values[0], true);
+    }
+  }
+
+  function drawGraphicsGlyph(canvas, samples) {
+    const context = glyphContext(canvas);
+    context.beginPath();
+    context.roundRect(2.25, 4.25, 13, 8.5, 1.25);
+    context.moveTo(2.25, 3.25);
+    context.lineTo(2.25, 14.25);
+    context.moveTo(6.25, 12.75);
+    context.lineTo(6.25, 14.25);
+    context.lineTo(10.75, 14.25);
+    context.lineTo(10.75, 12.75);
+    context.stroke();
+    drawRing(context, samples, 8.5, 2.5);
+  }
+
+  function drawMemoryGlyph(canvas, value) {
+    const context = glyphContext(canvas);
+    context.beginPath();
+    context.roundRect(1.25, 5.25, 14.5, 7.5, 1.4);
+    for (const pin of [4.5, 8.5, 12.5]) {
+      context.moveTo(pin, 12.75);
+      context.lineTo(pin, 14.25);
+    }
+    context.stroke();
+    drawGaugeFill(context, 3.25, 7.5, 10.5, 3, value, false);
+  }
+
+  function drawTemperatureGlyph(canvas, value) {
+    const context = glyphContext(canvas, 12);
+    const outline = new Path2D("M4.25 10.6 V4.3 C4.25 1.9 7.75 1.9 7.75 4.3 V10.6 C10.25 12.35 9.1 16 6 16 C2.9 16 1.75 12.35 4.25 10.6 Z");
+    context.stroke(outline);
+    drawGaugeFill(context, 5.4, 4.25, 1.2, 8.9, value, true);
+    context.globalAlpha = value === undefined ? .24 : 1;
+    context.beginPath();
+    context.arc(6, 13.25, 1.35, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  function drawStatusGlyph(canvas, { label, samples }) {
+    const value = samples.at(-1);
+    switch (label) {
+      case "CPU": drawChipGlyph(canvas, value); break;
+      case "GPU": drawGraphicsGlyph(canvas, samples); break;
+      case "RAM": drawMemoryGlyph(canvas, value); break;
+      case "TEMP": drawTemperatureGlyph(canvas, value); break;
+    }
+  }
+
+  function drawCombinedLines(canvas, cpu, gpu) {
+    const context = canvasContext(canvas, 15, 19);
+    context.globalAlpha = .25;
+    context.fillRect(0, 18, 15, .5);
+    context.lineWidth = 1.05;
+    context.lineJoin = "round";
+    for (const [series, dashes, opacity] of [[gpu, [1.5, 1], .75], [cpu, [], 1]]) {
+      if (!series.length) continue;
+      context.beginPath();
+      context.setLineDash(dashes);
+      context.globalAlpha = opacity;
+      series.forEach((value, index) => {
+        const x = 1 + index * 13 / Math.max(1, series.length - 1);
+        const y = 17.5 - value * .155;
+        if (index === 0) context.moveTo(x, y);
+        else context.lineTo(x, y);
+      });
+      context.stroke();
+    }
+  }
+
+  function drawCombinedColumns(canvas, cpu, gpu) {
+    const context = canvasContext(canvas, 24, 11);
+    context.globalAlpha = .28;
+    context.fillRect(0, 10.5, 24, .5);
+    for (const [series, offset, opacity] of [[cpu, 0, .98], [gpu, 2.2, .6]]) {
+      context.globalAlpha = opacity;
+      series.slice(-5).forEach((value, index) => {
+        const height = Math.max(.8, value * .095);
+        roundRect(context, index * 4.8 + offset, 10.5 - height, 1.65, height, .35);
+      });
+    }
+  }
+
+  function drawProcessorChart(style, canvas, cpu, gpu) {
+    switch (style) {
+      case "line":
+        drawCombinedLines(canvas, cpu, gpu);
+        break;
+      case "segments": {
+        const context = canvasContext(canvas, 9, 17);
+        drawSegments(context, cpu);
+        context.translate(5, 0);
+        drawSegments(context, gpu);
+        break;
+      }
+      case "ring": {
+        const context = canvasContext(canvas, 16, 16);
+        drawRing(context, cpu, 8, 6.65);
+        drawRing(context, gpu, 8, 3.75);
+        break;
+      }
+      case "columns":
+        drawCombinedColumns(canvas, cpu, gpu);
+        break;
+      case "glyphs":
+        drawChipGlyph(canvas, cpu.at(-1), gpu.at(-1));
+        break;
+    }
+  }
+
+  function textSpan(className, text) {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = text;
+    return span;
+  }
+
+  function makeProcessorMeter(style, [cpu, gpu], painters) {
+    const meter = textSpan("meter processor", "");
+    const chart = document.createElement("canvas");
+    painters.push(() => drawProcessorChart(style, chart, cpu.samples, gpu.samples));
+    if (style === "glyphs") {
+      meter.append(chart);
+      return meter;
+    }
+    if (style === "columns") {
+      meter.append(textSpan("metric-name", "C/G"), chart);
+      return meter;
+    }
+    const readouts = textSpan("processor-values", "");
+    for (const reading of [cpu, gpu]) {
+      const row = textSpan("processor-row", "");
+      row.append(textSpan("metric-name", reading.label[0]), textSpan("metric-value", reading.value));
+      readouts.append(row);
+    }
+    if (style === "line") meter.append(readouts, chart);
+    else meter.append(chart, readouts);
+    return meter;
+  }
+
+  function makeMeter(style, reading, painters) {
+    const meter = textSpan("meter", "");
+    if (style === "glyphs") {
+      const glyph = document.createElement("canvas");
+      meter.append(glyph);
+      painters.push(() => drawStatusGlyph(glyph, reading));
+      return meter;
+    }
+    const readout = textSpan("meter-readout", "");
+    const name = textSpan("metric-name", reading.label);
+    readout.append(name);
+    if (style !== "columns") readout.append(textSpan("metric-value", reading.value));
+    if (style !== "text") {
+      const chart = document.createElement("canvas");
+      painters.push(() => drawChart(style, chart, reading.samples));
+      (style === "ring" ? name : meter).prepend(chart);
+    }
+    meter.append(readout);
+    return meter;
+  }
+
+  function renderStatus(container, style) {
+    const status = textSpan("status", "");
+    status.dataset.style = style;
+    const useCombined = combined && style !== "text";
+    status.toggleAttribute("data-combined", useCombined);
+    const brand = document.createElement("canvas");
+    brand.className = "status-brand";
+    const meters = textSpan("meters", "");
+    status.append(brand, meters);
+    const painters = [];
+    const readings = metrics.map((metric, index) => {
+      const samples = scenarios[scenario][index];
+      const value = samples.length ? `${samples.at(-1)}${metric.unit}` : "—";
+      return { ...metric, samples, value };
+    });
+    if (useCombined) meters.append(makeProcessorMeter(style, readings, painters));
+    for (const reading of useCombined ? readings.slice(2) : readings) {
+      meters.append(makeMeter(style, reading, painters));
+    }
+    const summary = readings.map(({ title, samples, value }) => `${title} ${samples.length ? value : "暂不可用"}`);
+    status.setAttribute("role", "img");
+    status.setAttribute("aria-label", summary.join("，"));
+    if ((style === "columns" || style === "glyphs") && container === liveStatus) {
+      status.setAttribute("data-readouts", "");
+      status.tabIndex = 0;
+      desktopReadouts.textContent = readings.map(({ label, value }) => `${label} ${value}`).join(" · ");
+    } else {
+      status.title = summary.join(" · ");
+    }
+    container.replaceChildren(status);
+    drawBrand(brand);
+    for (const paint of painters) paint();
+    return status.offsetWidth;
+  }
+
+  function render() {
+    document.body.dataset.theme = theme;
+    combineControl.checked = combined;
+    for (const button of themeControls.querySelectorAll("button")) {
+      button.setAttribute("aria-pressed", String(button.dataset.theme === theme));
+    }
+    for (const button of scenarioControls.querySelectorAll("button")) {
+      button.setAttribute("aria-pressed", String(button.dataset.scenario === scenario));
+    }
+    for (const input of board.querySelectorAll('input[name="style"]')) {
+      input.checked = input.value === selected;
+    }
+    const width = renderStatus(liveStatus, selected);
+    const savings = selected === "text" ? "" : ` · 省 ${referenceWidth - width} pt`;
+    selectedStyle.textContent = `${styles.find(style => style.id === selected).title} · ${width} pt${savings}`;
+    for (const card of cards.children) {
+      const style = card.querySelector("input").value;
+      const details = styles.find(option => option.id === style);
+      const sampleWidth = renderStatus(card.querySelector(".sample-bar"), style);
+      card.querySelector(".card-size").textContent = `${sampleWidth} pt`;
+      card.querySelector(".card-savings").textContent = `省 ${referenceWidth - sampleWidth} pt`;
+      card.querySelector(".card-description").textContent = combined ? details.combinedDescription : details.description;
+    }
+    drawBrand(document.querySelector("#product-icon"));
+  }
+
+  board.addEventListener("change", event => {
+    if (event.target.name !== "style") return;
+    selected = event.target.value;
+    savePreferences();
+    render();
+  });
+  combineControl.addEventListener("change", () => {
+    combined = combineControl.checked;
+    savePreferences();
+    render();
+  });
+  themeControls.addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    theme = button.dataset.theme;
+    savePreferences();
+    render();
+  });
+  scenarioControls.addEventListener("click", event => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    scenario = button.dataset.scenario;
+    render();
+  });
+
+  render();
+</script>
+</body>
+</html>

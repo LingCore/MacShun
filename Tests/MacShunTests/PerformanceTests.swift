@@ -86,7 +86,14 @@ struct PerformanceTests {
         #expect(old.performance == PerformanceConfig())
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"performance":{"gpu":false,"temperature":false}}"#.utf8))
         #expect(config.performance.metrics == [.cpu, .memory])
-        #expect(try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(config)) == config)
+        #expect(config.performance.menuBarStyle == .text)
+        var updated = config
+        updated.performance.menuBarStyle = .trend
+        updated.performance.combineProcessors = false
+        #expect(try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(updated)) == updated)
+        let future = try JSONDecoder().decode(PerformanceConfig.self, from: Data(#"{"menuBarStyle":"unknown","cpu":false}"#.utf8))
+        #expect(future.menuBarStyle == .text)
+        #expect(!future.cpu)
     }
 
     @Test func disablingEveryMetricStopsSampling() {
@@ -101,13 +108,48 @@ struct PerformanceTests {
         #expect(!config.isActive)
     }
 
+    @Test func historyKeepsTheLatestTenSamplesAndMissingReadings() {
+        var history = PerformanceHistory()
+        for index in 0..<15 {
+            history.append(PerformanceSnapshot(cpu: Double(index), gpu: index == 10 ? nil : Double(index)))
+        }
+        #expect(history.values(for: .cpu) == (5..<15).map { Double($0) as Double? })
+        #expect(history.values(for: .gpu) == (5..<15).map { $0 == 10 ? nil : Double($0) })
+    }
+
     @Test @MainActor func barKeepsWidthWhenValuesChange() {
-        let pending = PerformanceMenuBarImage.make(snapshot: PerformanceSnapshot(), metrics: PerformanceMetric.allCases, needsAttention: false)
         let loaded = PerformanceSnapshot(cpu: 100, gpu: 0, memory: MemoryUsage(used: 100, total: 100), temperature: 110)
-        let full = PerformanceMenuBarImage.make(snapshot: loaded, metrics: PerformanceMetric.allCases, needsAttention: true)
-        #expect(pending.size == full.size)
-        #expect(full.isTemplate)
+        let variants: [(PerformanceMenuBarStyle, Bool, CGFloat)] = [
+            (.text, true, 206), (.icons, true, 81), (.icons, false, 102), (.trend, true, 163), (.trend, false, 175),
+        ]
+        for (style, combined, width) in variants {
+            var config = PerformanceConfig()
+            config.menuBarStyle = style
+            config.combineProcessors = combined
+            let pending = PerformanceMenuBarImage.make(snapshot: PerformanceSnapshot(), configuration: config, needsAttention: false)
+            let full = PerformanceMenuBarImage.make(snapshot: loaded, configuration: config, needsAttention: true)
+            #expect(pending.size == NSSize(width: width, height: 22))
+            #expect(pending.size == full.size)
+            #expect(full.isTemplate)
+        }
         #expect(loaded.text(.gpu, compact: true) == "0%")
         #expect(PerformanceSnapshot().text(.gpu, compact: true) == "—")
+    }
+
+    @Test @MainActor func disablingEitherProcessorLeavesTheOtherAsAnIndividualMetric() {
+        let snapshot = PerformanceSnapshot(cpu: 17, gpu: 28)
+        for style in [PerformanceMenuBarStyle.icons, .trend] {
+            for cpuEnabled in [true, false] {
+                var config = PerformanceConfig()
+                config.menuBarStyle = style
+                config.cpu = cpuEnabled
+                config.gpu = !cpuEnabled
+                #expect(!config.canCombineProcessors)
+                let combined = PerformanceMenuBarImage.make(snapshot: snapshot, configuration: config, needsAttention: false)
+                config.combineProcessors = false
+                let separate = PerformanceMenuBarImage.make(snapshot: snapshot, configuration: config, needsAttention: false)
+                #expect(combined.size == separate.size)
+            }
+        }
     }
 }

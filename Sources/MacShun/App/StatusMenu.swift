@@ -57,7 +57,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let active = performanceConfig.isActive
         item.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
         button.imageScaling = .scaleNone
-        button.image = active ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, metrics: performanceConfig.metrics, needsAttention: !state.allGood)
+        button.image = active ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, history: performance.history,
+                                                           configuration: performanceConfig, needsAttention: !state.allGood)
                               : BrandMark.menuBarImage(needsAttention: !state.allGood)
         let name = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
         let values = active ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" } : []

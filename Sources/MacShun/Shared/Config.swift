@@ -234,12 +234,26 @@ struct UpdateConfig: Codable, Equatable {
     }
 }
 
+enum PerformanceMenuBarStyle: String, Codable, CaseIterable {
+    case text, icons, trend
+
+    var title: String {
+        switch self {
+        case .text: L("文字读数")
+        case .icons: L("纯图标仪表")
+        case .trend: L("折线走势")
+        }
+    }
+}
+
 struct PerformanceConfig: Codable, Equatable {
     var enabled = true
     var cpu = true
     var gpu = true
     var memory = true
     var temperature = true
+    var menuBarStyle: PerformanceMenuBarStyle = .text
+    var combineProcessors = true
 
     var metrics: [PerformanceMetric] {
         PerformanceMetric.allCases.filter { metric in
@@ -253,6 +267,7 @@ struct PerformanceConfig: Codable, Equatable {
     }
 
     var isActive: Bool { enabled && !metrics.isEmpty }
+    var canCombineProcessors: Bool { menuBarStyle != .text && cpu && gpu }
 
     init() {}
 
@@ -264,6 +279,8 @@ struct PerformanceConfig: Codable, Equatable {
         gpu = c.value(.gpu, default: d.gpu)
         memory = c.value(.memory, default: d.memory)
         temperature = c.value(.temperature, default: d.temperature)
+        menuBarStyle = c.value(.menuBarStyle, default: d.menuBarStyle)
+        combineProcessors = c.value(.combineProcessors, default: d.combineProcessors)
     }
 }
 

@@ -95,6 +95,20 @@ struct PerformanceSnapshot {
     }
 }
 
+struct PerformanceHistory {
+    static let capacity = 10
+    private var samples: [PerformanceSnapshot] = []
+
+    mutating func append(_ snapshot: PerformanceSnapshot) {
+        if samples.count == Self.capacity { samples.removeFirst() }
+        samples.append(snapshot)
+    }
+
+    func values(for metric: PerformanceMetric) -> [Double?] {
+        samples.map { $0.value(metric) }
+    }
+}
+
 /// 仅在 PerformanceMonitor 的串行工作队列使用，不启动进程，不写硬件，也不请求管理员权限。
 final class SystemMetricsSampler {
     private let host = mach_host_self()
@@ -103,9 +117,9 @@ final class SystemMetricsSampler {
 
     deinit { mach_port_deallocate(mach_task_self_, host) }
 
-    func sample(_ config: PerformanceConfig) -> PerformanceSnapshot {
+    func sample(metrics: [PerformanceMetric]) -> PerformanceSnapshot {
         var snapshot = PerformanceSnapshot()
-        if config.cpu {
+        if metrics.contains(.cpu) {
             if let counters = readCPU() {
                 snapshot.cpuPending = previousCPU == nil
                 snapshot.cpu = previousCPU.flatMap { counters.usage(since: $0) }
@@ -114,13 +128,13 @@ final class SystemMetricsSampler {
                 previousCPU = nil
             }
         }
-        if config.memory { snapshot.memory = readMemory() }
-        if config.gpu {
+        if metrics.contains(.memory) { snapshot.memory = readMemory() }
+        if metrics.contains(.gpu) {
             let values = readGPU()
             snapshot.gpu = values.max()
             snapshot.gpuCount = values.count
         }
-        if config.temperature {
+        if metrics.contains(.temperature) {
             if temperatureReader == nil { temperatureReader = ChipTemperatureReader() }
             snapshot.temperature = temperatureReader?.read()
         }

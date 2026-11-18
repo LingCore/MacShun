@@ -14,6 +14,7 @@ struct SettingsItem: Identifiable {
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
         case performanceEnabled, cpuUsage, gpuUsage, memoryUsage, chipTemperature
+        case performanceMenuBarStyle, combinePerformanceProcessors
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
@@ -123,6 +124,10 @@ extension SettingsItem {
 
         .init(id: .performanceEnabled, tab: .performance, title: "性能监控",
               keywords: "菜单栏 状态栏 系统 占用 performance monitor stats menu bar status"),
+        .init(id: .performanceMenuBarStyle, tab: .performance, title: "菜单栏样式",
+              keywords: "性能监控 状态栏 图表 图标 折线 menu bar style chart icon trend"),
+        .init(id: .combinePerformanceProcessors, tab: .performance, title: "合并 CPU 和 GPU",
+              keywords: "处理器 显卡 节省空间 图表 combine gpu cpu compact"),
         .init(id: .cpuUsage, tab: .performance, title: "CPU",
               keywords: "处理器 占用 使用率 cpu processor usage load"),
         .init(id: .gpuUsage, tab: .performance, title: "GPU",
