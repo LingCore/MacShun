@@ -25,7 +25,7 @@ struct FileQuickLook: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             Divider()
-            FileQuickLookView(url: URL(fileURLWithPath: result.path))
+            FileQuickLookView(url: result.fileURL)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background {

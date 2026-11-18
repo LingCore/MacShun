@@ -230,7 +230,7 @@ final class FileSearchController {
 
     /// 打开、在访达中显示，和右键菜单、结果右边按钮里的操作。除了移到废纸篓，做完都关掉搜索框。
     private func perform(_ action: FileAction, on result: FileSearchResult) {
-        let url = URL(fileURLWithPath: result.path)
+        let url = result.fileURL
         if case .goToFolder = action {
             guard let dialog else { return }
             hide()
@@ -2012,6 +2012,7 @@ struct FileSearchView: View {
                 }
             }
         }
+        .onDrag { NSItemProvider(object: result.fileURL as NSURL) }
         .overlay(ContextMenuArea { model.contextMenu(for: result) })
     }
 
@@ -2357,7 +2358,7 @@ private struct RowButtonFrames: PreferenceKey {
 enum FileContextMenu {
     static func make(for result: FileSearchResult, inFileDialog: Bool = false, pinItem: NSMenuItem? = nil,
                      searchInside: @escaping () -> Void, preview: @escaping () -> Void, perform: @escaping (FileAction) -> Void) -> NSMenu {
-        let url = URL(fileURLWithPath: result.path)
+        let url = result.fileURL
         let menu = NSMenu()
         if inFileDialog {
             menu.addItem(ActionMenuItem(L("前往文件夹"), symbol: "folder") { perform(.goToFolder) })

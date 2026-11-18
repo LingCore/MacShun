@@ -228,6 +228,7 @@ struct FileSearchResult: Identifiable, Equatable {
     var isHomophone = false
 
     var id: String { path }
+    var fileURL: URL { URL(fileURLWithPath: path, isDirectory: isDirectory) }
 }
 
 /// 打分和排序。纯函数，方便测试。
