@@ -54,6 +54,40 @@ struct ClipboardStoreTests {
         #expect(store.search("").count == 2)
     }
 
+    @Test func categoryFiltersComposeWithSearchAndKeepExplicitSelection() throws {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ClipboardStore(directory: dir)
+        let link = "https://example.com/guide"
+        store.add(text(link), maxItems: 10)
+        store.togglePin(store.items[0].id)
+        store.add(text("剪贴板使用说明"), maxItems: 10)
+        store.add(text("请参阅 \(link)"), maxItems: 10)
+        store.add(.init(kind: .image, fingerprint: "screenshot"), maxItems: 10)
+
+        let model = ClipboardPanelModel(store: store)
+        model.prepareForShow()
+        model.filter = .links
+        model.query = "guide"
+        #expect(model.results.map(\.text) == [link])
+        model.filter = .text
+        #expect(model.results.map(\.text) == ["请参阅 \(link)"])
+        model.query = "jtb"
+        #expect(model.selectedItem?.text == "剪贴板使用说明")
+        model.query = ""
+        model.select(try #require(model.results.first(where: { $0.text == "剪贴板使用说明" })))
+        let selectedID = model.selectedItem?.id
+        store.add(text("新复制的条目"), maxItems: 10, now: Date().addingTimeInterval(1))
+        model.refresh(keepingSelection: true)
+        #expect(model.selectedItem?.id == selectedID)
+
+        model.filter = .pinned
+        #expect(model.results.map(\.text) == [link])
+        #expect(!model.canClear)
+        model.filter = .images
+        #expect(model.results.map(\.kind) == [.image])
+    }
+
     @Test func persistsToDisk() {
         let dir = tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

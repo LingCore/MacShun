@@ -30,6 +30,39 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var pinned: Bool
     /// 从哪个应用复制的
     var sourceApp: String?
+
+    var isWebLink: Bool {
+        guard kind == .text, let text else { return false }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.contains(where: \.isWhitespace), let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else { return false }
+        return url.host?.isEmpty == false
+    }
+}
+
+enum ClipboardFilter: CaseIterable {
+    case all, text, links, images, pinned
+
+    var title: String {
+        switch self {
+        case .all: L("全部")
+        case .text: L("文字")
+        case .links: L("链接")
+        case .images: L("图片")
+        case .pinned: L("已固定")
+        }
+    }
+
+    func includes(_ item: ClipboardItem) -> Bool {
+        switch self {
+        case .all: true
+        case .text: item.kind == .text && !item.isWebLink
+        case .links: item.isWebLink
+        case .images: item.kind == .image
+        case .pinned: item.pinned
+        }
+    }
 }
 
 /// 从剪贴板读出来、还没存盘的内容。
@@ -85,9 +118,9 @@ final class ClipboardStore: ObservableObject {
         }
     }
 
-    func search(_ query: String) -> [ClipboardItem] {
-        let sorted = sortedItems
-        let q = query.trimmingCharacters(in: .whitespaces)
+    func search(_ query: String, filter: ClipboardFilter = .all) -> [ClipboardItem] {
+        let sorted = sortedItems.filter(filter.includes)
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return sorted }
         return sorted.filter { item in
             if item.kind == .image {

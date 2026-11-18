@@ -7,7 +7,7 @@ import AppKit
 /// macOS 没有剪贴板变化的通知，只能定时比较 changeCount。只在主线程上使用。
 @MainActor
 final class ClipboardWatcher {
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
     private let store: ClipboardStore
     private let config: () -> ClipboardConfig
     private var timer: Timer?
@@ -32,8 +32,9 @@ final class ClipboardWatcher {
     static let maxImageBytes = 30 * 1024 * 1024
     static let maxExtraBytes = 2 * 1024 * 1024
 
-    init(store: ClipboardStore, config: @escaping () -> ClipboardConfig) {
+    init(store: ClipboardStore, pasteboard: NSPasteboard = .general, config: @escaping () -> ClipboardConfig) {
         self.store = store
+        self.pasteboard = pasteboard
         self.config = config
         lastChangeCount = pasteboard.changeCount
     }
@@ -53,6 +54,11 @@ final class ClipboardWatcher {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// 复制后立刻呼出面板时，先收下这次复制，不等下一轮计时器。
+    func recordPendingChange() {
+        if timer != nil { check() }
     }
 
     /// 本程序写完剪贴板后调用，避免把自己写的内容又记一遍。
