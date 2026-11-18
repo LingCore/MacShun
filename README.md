@@ -37,14 +37,16 @@
 
 **Mac顺 是什么？** 一个让 Mac 用得更顺手的小工具。Mac 自带的没有、或者藏得很深的常用功能，装上就有：剪贴板历史、连按两下 Ctrl 搜文件（文件里的字也能搜）、窗口分屏、关掉鼠标加速、每块屏幕按百分比调缩放。从 Windows 换过来的人，还能直接用熟悉的习惯：Alt+Tab 切换程序、Win+E 打开访达，鼠标滚轮方向也和 Windows 一样。不用学新的快捷键，也不用写任何配置。
 
-它常驻在屏幕顶部的菜单栏，不占程序坞，除了检查更新和每天一次的匿名装机报告（可在“设置 › 通用”关闭）不联网，不需要账号，完全免费。界面有简体中文和英文两种，默认跟随系统语言。
+它常驻在屏幕顶部的菜单栏，不占程序坞，不需要账号，完全免费。联网用于软件更新、读取拾穗计划公开用户数，以及每天最多一次的匿名装机报告（可在“设置 › 通用”关闭）。界面有简体中文和英文两种，默认跟随系统语言。
 
 ### 功能
 
+连接多台显示器时，主动打开设置、软件更新、文件搜索或剪贴板历史，窗口会出现在鼠标指针所在的屏幕。
+
 #### 📋 剪贴板历史（Option+V / Win+V）
 
-- Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。选中一条按回车即可粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
-- **粘贴为纯文本**。右键点击文字条目，选“粘贴为纯文本”，即可去掉来源格式。按 Enter 可以按原格式粘贴。
+- Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。单击选中，双击或按 **Enter** 粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
+- **分类、预览和复制**。按文字、链接、图片或已固定筛选。点眼睛图标或按 **⌘Y** 预览，点复制按钮或按 **⌘⇧C** 只复制。按 **⇧Enter** 可把文字粘贴为纯文本。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
 - 记录文字和图片，常用的内容可以固定在最上面。右上角“全部清除”一键清空历史，固定的保留。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
@@ -60,11 +62,16 @@
 
 #### 截图与识别屏幕文字
 
-- 从菜单栏点 **开始截图**，拖选区域或点选窗口。拖动选区或边框可调整范围，也可画箭头、矩形或实心遮挡。按 **Enter** 复制、**⌘S** 保存 PNG、**Esc** 取消。
+- 从菜单栏点 **开始截图**，拖选区域或点选窗口。拖动选区或边框可调整范围。双行工具条把常用标注和复制放在靠近选区的一行，另一行有直线、样式、辅助打码和长截图。按 **Enter** 复制、**⌘S** 保存 PNG、**Esc** 取消。
+- 选中直线或箭头工具后，可设置箭头放在起点、终点或两端，或去掉箭头。箭头有实心、空心和开口三种样式。切回选择工具后点击已有线条，可以改样式或拖动两端。
+- 在「标注样式 › 线型」里，直线工具可选折线或曲线，箭头工具可选曲线。折线单击加点，按 **Enter**、双击或右键完成，点击起点可闭合。绘制中按 **Delete** 撤回最后一个点，按 **Esc** 取消这笔。曲线拖出起终点，拖动控制点调弧度。画完后双击路径插入节点，直线和直箭头插点后可以像折线一样编辑，并保留箭头样式。单击节点再按 **Delete** 可删除，支持 **⌘Z** 撤销和 **⇧⌘Z** 重做。绘制和拖动节点或控制点时按住 **Shift**，方向每 15° 吸附一次。
+- **屏幕取色**：开始截图后，把鼠标移到目标像素，放大镜会显示色块和色值。单按 **Shift** 在 **HEX、RGB、HSL** 之间切换，下次截图会沿用该格式。按 **C** 复制当前色值并退出截图。使用锚点选区或已编辑标注时，复制后可以继续编辑。
+- **像素微调**：用 **WASD** 移动光标，每次 1 像素，按住 **Shift** 时每次 10 像素。框选前也可以用方向键移动光标。框选后，方向键移动选区，**Shift + 方向键**调整矩形选区的大小。
 - **辅助打码**：选好截图范围后，点工具栏里实心遮挡旁的「辅助打码」。它在本机查找可能的中国大陆手机号和常见邮箱地址，点橙框即可实心遮挡。复制、保存和贴图只应用已确认的遮挡，发图前可以再检查一遍。
+- 双击**实心遮挡**的边线插入锚点，按多边形编辑遮挡范围并沿用填充颜色。选中锚点后按 **Delete** 删除，用 **⌘Z** 撤销、**⇧⌘Z** 重做。
 - 只想复制文字时，选 **识别屏幕文字**，框选后松开鼠标即可。简体、繁体中文和英文在本机识别。
-- **写说明和标步骤**：选「文字标注」后点一下输入，Enter 完成文字，双击可再改。选「步骤序号」后连续点击即可放置 1、2、3。用选择工具点中标注可拖动，按 Delete 删除，⌘Z 撤销，⇧⌘Z 重做。
-- **多边形与标注样式**：用多边形标注圈出不规则区域；「锚点选区」可以沿物体轮廓逐点选取，导出的范围外透明。通过「标注样式」选择颜色、线宽或文字大小。
+- **写说明和标步骤**：选「文字标注」后点一下输入，Shift+Enter 换行，Enter 确认，双击可再改。选中文字框后，可拖动左右边框调整宽度，也可在「标注样式」里切换对齐、粗体和文字底框。选「步骤序号」后连续点击即可放置 1、2、3，双击序号可改编号。用选择工具点中标注可拖动，按 Delete 删除。删除序号时，后面的编号会自动补位。⌘Z 撤销，⇧⌘Z 重做。
+- **多边形与标注样式**：用多边形标注圈出不规则区域；「锚点选区」可以沿物体轮廓逐点选取，导出的范围外透明。选区和多边形标注闭合后都能拖动锚点、双击边线插入锚点，或单击选点后按 **Delete** 删除。双击矩形或椭圆的边线可插点，分别转为多边形或闭合曲线编辑，沿用颜色和线宽。逐点绘制或拖动时，按住 **Shift** 可按 15° 吸附。选区编辑和标注按操作顺序用 **⌘Z** 撤销、**⇧⌘Z** 重做。通过「标注样式」选择颜色、线宽或文字大小。
 - **对齐同一区域**：再次截图时按 R 恢复上一次成功输出的选框。方向键移动 1 个实际像素，Shift 加方向键调整宽高。选框旁显示导出尺寸。
 - **长截图**：框住网页、文档或聊天记录里需要滚动的内容，点「长截图」或按 **⌘L / Ctrl+L**。等蓝框旁提示可以滚动后，用鼠标或触控板慢慢向下滚，点「完成」预览。要在长图上写说明或遮住一行，点「标注」，滚动到对应位置编辑，点「完成标注」后再复制、保存 PNG 或贴到屏幕。允许辅助功能后也可用 Enter 完成、Esc 取消。选区尽量只框正文，避开固定侧栏；如果画面中有大面积视频，先暂停播放。如果提示找不到重叠内容，往回滚一些再继续。
 - **贴图**：选好截图后按 **F3** 或点「贴到屏幕」，含标注的图片会留在原处。也可从菜单栏「贴出剪贴板图片」，或在历史图片上右键贴出。拖动移动、拖角或滚轮缩放、双击恢复原始大小，Ctrl 加滚轮调透明度。右键可复制、保存和关闭；点中贴图后按 Esc 也能关闭。
@@ -78,6 +85,9 @@
 - **也能搜文件内容**：txt、Markdown、CSV、JSON，代码（ts、js、py、swift、vue、html 等）、配置（yaml、xml、toml）、字幕（srt、ass、lrc），以及 Word、Excel、PowerPoint、PDF 里的文字都能搜到（跳过 node_modules、dist、build 这类生成和依赖的文件夹）；截图、照片和扫描版 PDF 里的字也会自动识别，结果里直接显示匹配的那一行。中文按单字建索引，两个字的词也能搜到，不需要聚焦（Spotlight）。默认选 **文件与功能**，按 Tab 或点击右侧可切到 **全部 / 内容 / 系统**；只有“全部”和“内容”会搜文件正文。常打开的文件会排在前面。
 - **筛选文件**。输入 `报价 *.pdf !草稿` 搜 PDF，并排除文件名含“草稿”的结果。`ext:pdf,docx` 可同时选两种格式。切换到“内容”时，关键词搜正文，筛选条件仍作用于文件名。要搜索字面名称 `!重要`，输入 `"!重要"`。
 - Enter 打开，Ctrl+Enter 在访达中显示。按 **⌘Y** 或点“快速查看”预览选中项，按 ↑↓ 依次查看，Esc 返回原来的搜索结果。
+- **展开和移动搜索面板**。点击右侧展开按钮或按 **Ctrl+E**，可多选文件类型，并叠加时间、大小和目录条件。筛选可以放在左侧或顶部。点列标题排序，滚到底自动加载更多。拖动顶部短横条或左侧放大镜移动窗口，拖动展开面板的右下角调整大小。胶囊和展开面板各自记住拖放位置，并在同一块屏幕上恢复。再次按 **Ctrl+E** 收回胶囊时会保留当前搜索，按 **⌘Y** 快速查看。
+- **搜索指定目录**。在展开面板的「目录」菜单选「只搜这一次」，可临时搜索目录及子目录的文件名。要让它参与以后每次全局搜索，选「加入搜索范围」，也可以在「设置 → 文件搜索 → 搜索范围」添加或移除目录。SMB 共享请先在访达挂载；共享收录文件名，断开时标记离线，重新挂载后恢复。
+- **保存筛选与同音查找**。「常用筛选」可保存目录、类型、时间、大小和排序，再用时保留当前输入的关键词。中文文件名没有字面匹配时会尝试同音，例如输入「年度报高」也能找到「年度报告」。
 - **在项目里查找**。选中普通文件夹后按 **⌘F**，或右键选“在此文件夹中搜索”。输入关键词或筛选条件会搜索子文件夹，切到“内容”可查这个范围内已收录的正文。按 **Esc** 回到原来的搜索词和选中项。
 - **常用项目夹**。右键点击文件夹结果，选“固定到常用项目夹”。再次连按两下 Ctrl，空白搜索页会列出这些项目。点击一项或按 Enter 进入文件夹搜索，按 Esc 回到列表。选中项目后可点“取消固定”。
 - **在“打开”和“存储”窗口里找位置**。原生文件对话框打开时连按两下 **Ctrl**，搜索文件或目录，按 **Enter** 让对话框前往该目录或文件所在的目录。存储时会保留已输入的文件名。
@@ -201,7 +211,7 @@ Mac顺 的文件搜索也能按内容搜：txt、CSV、JSON、代码、Word、Ex
 macOS 本来就支持每块屏幕单独设置。Mac顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
 **收费吗？会上传我的数据吗？**
-完全免费，源代码公开。Mac顺 只会联网做两件事：一是检查和下载更新（设置里可以关掉自动检查）——检查更新连接拾穗发布服务，下载安装包时先走第三方加速镜像（目前依次是 gh-proxy.com、ghfast.top），都不行再用 GitHub，请求里不带任何个人信息；二是每天最多一次的匿名装机报告，发给拾穗发布服务，用来统计用户数。报告只包含随机化的电脑标识（由机器标识加项目名做 SHA-256 得到，不可还原）、版本号、系统版本和芯片架构，不含文件、剪贴板或任何个人信息；可以在“设置 › 通用”里关掉“发送匿名统计”，关掉后完全不发送。剪贴板内容只保存在你自己的电脑上。
+完全免费，源代码公开。检查更新时连接拾穗发布服务，下载安装包时先走第三方加速镜像（目前依次是 gh-proxy.com、ghfast.top），都不行再用 GitHub。可以在设置里关掉自动检查。打开“拾穗计划”页时会读取公开的作品用户数，查询不携带电脑标识。每天最多一次的匿名装机报告只包含随机化的电脑标识（由机器标识加项目名做 SHA-256 得到，不可还原）、版本号、系统版本和芯片架构。可以在“设置 › 通用”里关掉“发送匿名统计”，关掉后便不再发送装机报告。剪贴板内容只保存在你自己的电脑上。
 
 **怎么更新到新版本？**
 Mac顺 定期向拾穗发布服务检查有没有新版本，有的话弹出窗口，写着新版本改了什么，点“立即更新”就会先从加速镜像下载（镜像不可用时换下一个地址，最后用 GitHub 原始地址），核对大小、SHA-256 和签名，通过后装好并重新打开，设置和授权都保留。镜像是第三方，安装包是否可信完全靠这些核对：摘要不符的文件会被丢弃。所有地址都失败才会提示重试。也可以在菜单栏图标里选“检查更新…”。0.3.0 仍通过 GitHub 检查更新，升到 0.4.0 后会自动切换到拾穗发布服务。
@@ -238,7 +248,7 @@ scripts/release.sh             # 打包发布用的通用版 dmg（Apple 芯片 
 
 **What is MacShun?** MacShun (Mac顺, "a Mac that feels smooth"; formerly WinShun) is a small macOS menu bar app that makes your Mac smoother to use. It adds everyday tools that macOS lacks or hides away: clipboard history, press-Ctrl-twice file search (including text inside files), window snapping, turning off pointer acceleration, and per-display scaling in percentages. If you come from Windows, your habits work too: Alt+Tab to switch apps, Win+E to open Finder, and Windows-style mouse wheel direction. No new shortcuts to learn and no configuration files to write.
 
-It lives in the menu bar, stays out of the Dock, works offline apart from checking for updates and a once-a-day anonymous install report (which you can turn off in Settings › General), needs no account, and is completely free.
+It lives in the menu bar, stays out of the Dock, needs no account, and is completely free. It connects to the internet for software updates, public user counts on the Gleaning page, and an anonymous install report at most once a day. You can turn off the report in Settings › General.
 
 The interface is available in **English** and **Simplified Chinese**. It follows your system language, or you can pick one in Settings › General.
 
@@ -251,13 +261,15 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 ### Features
 
+When you open Settings, Software Update, File Search, or Clipboard History, the window opens on the display under your pointer.
+
 #### 📋 Clipboard history (Option+V / Win+V)
 
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
 
-- Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Press Return to paste an item. In the file search bar, the selected text goes into the query.
-- **Paste as plain text.** Right-click a text item and choose **Paste as Plain Text** to strip the original formatting. Press Enter for a regular paste with formatting.
+- Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Click to select, then double-click or press **Return** to paste. In the file search bar, the selected text goes into the query.
+- **Filter, preview, and copy.** Filter by text, links, images, or pinned items. Click the eye icon or press **⌘Y** to preview. Use the copy button or **⌘⇧C** to copy an entry. Press **Shift+Return** to paste plain text.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
 - Stores text and images; pin the items you use often. “Clear All” in the top-right corner empties the history and keeps pinned items.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.
@@ -271,11 +283,16 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 #### Screenshots and text capture
 
-- Choose **Take a Screenshot** from the menu bar. Drag an area or click a window, then move or resize the selection. Add arrows, rectangles or solid redactions. Press **Enter** to copy, **⌘S** to save a PNG, or **Esc** to cancel.
+- Choose **Take a Screenshot** from the menu bar. Drag an area or click a window, then move or resize the selection. The row next to the selection has common annotations and the copy button. The other row has lines, style controls, assisted redaction and scrolling capture. Press **Enter** to copy, **⌘S** to save a PNG, or **Esc** to cancel.
+- The line and arrow tools support arrowheads at the start, end or both ends, or a plain line. Choose filled, outlined or open arrowheads. Switch to the selection tool and click an existing line to restyle it or drag its endpoints.
+- Open **Annotation Style › Line shape** to draw a polyline or curve with the line tool, or a curve with the arrow tool. Click to add polyline nodes, then press **Enter**, double-click or right-click to finish. Click the first node to close the path. While drawing, press **Delete** to remove the last node or **Esc** to cancel the stroke. Drag out a curve and adjust its curvature with the control points. Double-click a finished line, arrow, polyline or curve to insert a node. Straight lines and arrows become editable polylines and retain their arrowhead styles. Select a node and press **Delete** to remove it. Use **⌘Z** to undo and **⇧⌘Z** to redo. Hold **Shift** to snap to 15° increments while drawing or editing points.
+- **Screen color picker**. Hover over a pixel to see its swatch and value in the magnifier. Tap **Shift** to cycle through **HEX, RGB and HSL**. MacShun remembers the format for your next screenshot. Press **C** to copy the displayed value and exit. If you have a polygon selection or annotation edits, the screenshot stays open so you can keep editing.
+- **Pixel adjustment**. Use **WASD** to move the pointer by one pixel, or hold **Shift** for ten. Arrow keys also move the pointer before you select an area. After selection, use the arrow keys to move it or **Shift + arrow keys** to resize a rectangular selection.
 - **Redaction Assist.** After selecting an area, click Redaction Assist beside Solid Redaction. It looks for likely mainland Chinese mobile numbers and common email addresses on your Mac. Click an orange box to cover it. Copying, saving and floating an image include the covers you applied.
+- Double-click the edge of a **Solid Redaction** mark to insert a point and edit it as a filled polygon with its original color. Select a point and press **Delete** to remove it. Use **⌘Z** to undo or **⇧⌘Z** to redo.
 - Choose **Copy Text from Screen** and release the mouse to copy text. Simplified Chinese, Traditional Chinese and English are recognized on the Mac.
-- **Add notes and numbered steps.** Select Text and click to type. Enter commits the text, and double-clicking a label lets you edit it. Choose Step Number and click to place successive badges. Select a mark to move or delete it. ⌘Z undoes a change and ⇧⌘Z redoes it.
-- **Polygons and annotation styles.** Outline an irregular area with a polygon, or use Anchor Selection to select a shape with a transparent exterior. Annotation Style offers color, stroke width and text size controls.
+- **Add notes and numbered steps.** Select Text and click to type. Shift+Enter inserts a line break, and Enter commits the text. Double-click a label to edit it. Drag either side of a selected text box to adjust its width and wrap the text. Use Annotation Style to change the alignment, bold weight, or background of a text box. Choose Step Number and click to place successive badges. Double-click a badge to change its number. Select a mark to move or delete it. Deleting a badge shifts the following numbers down. ⌘Z undoes a change and ⇧⌘Z redoes it.
+- **Polygons and annotation styles.** Outline an irregular area with a polygon, or use Anchor Selection to select a shape with a transparent exterior. Once a selection or polygon annotation is closed, drag points to reshape it, double-click an edge to insert a point, or select a point and press **Delete** to remove it. Double-click a rectangle or ellipse edge to insert a point and edit it as a polygon or closed curve, respectively, with its original color and stroke width. Hold **Shift** to snap to 15° increments when drawing or dragging points. Undo selection edits and annotations in order with **⌘Z**, or redo with **⇧⌘Z**. Annotation Style offers color, stroke width and text size controls.
 - **Repeat a region.** Press R to recall the last successfully exported region on its display. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height. The size beside the selection is the exported pixel size.
 - **Scrolling screenshots**: select the scrollable content of a page, document or chat and press **⌘L / Ctrl+L**. When the controls are ready, scroll slowly down inside the blue frame. Click **Finish** to review. Choose **Annotate** to mark any part of the long image, then **Done** to return to the preview and copy, save a PNG or float it. With Accessibility access, Enter finishes and Esc cancels. Select the scrolling body to avoid repeating a fixed sidebar, and pause large videos before capturing. If an overlap is lost, scroll back slightly and continue.
 - **Float an image** with F3 or the Float on Screen button after making a selection. You can also float a clipboard image from the menu bar or an image entry in history. Drag to move, drag a corner or scroll to zoom, double-click for actual size, and Control-scroll for opacity. Right-click to copy, save or close.
@@ -289,6 +306,9 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 - **Searches file contents too**: text inside txt, Markdown, CSV and JSON files, code (ts, js, py, swift, vue, html…), config (yaml, xml, toml), subtitles (srt, ass, lrc), plus Word, Excel, PowerPoint and PDF (skipping generated and dependency folders like node_modules, dist and build); text in screenshots, photos and scanned PDFs is recognized too, with the matching line shown in the results. Works for short Chinese queries and doesn't depend on Spotlight. Start in **Files & Features**. Press Tab to switch to **Contents**, **System**, or **All**; only Contents and All search inside files. Files you open often rank higher.
 - **Filter files** with `quote *.pdf !draft` to find PDFs and exclude names containing “draft”. Use `ext:pdf,docx` for either type. In Contents, words match document text while filters apply to the file name. Quote the whole query to search for a literal name such as `"!important"`.
 - Enter opens the selection and Ctrl+Enter reveals it in Finder. Press **⌘Y** or click Quick Look to preview it, use ↑↓ to browse matches, and press Esc to return to the selected result.
+- **Expand or move the search panel**. Use **Ctrl+E** or the right-hand button to expand. Select more than one file kind and combine the selection with date, size, or folder filters. Put filters at the left or above the results. Click a column to sort and scroll to the bottom to load more. Drag the top grip to move the window or the lower-right corner to resize the expanded panel. The compact and expanded views remember their positions separately and restore them on the same display. Press **Ctrl+E** again to collapse with your current search, or **⌘Y** for Quick Look.
+- **Search a specific folder**. Use **Search This Time** in the expanded panel’s Folder menu to search names in the folder and its subfolders. Choose **Add to Search Locations** to include it in future global searches. You can also manage folders in **Settings → File Search → Search Scope**. Mount SMB shares in Finder first. Added shares are indexed by name, marked offline when disconnected, and restored when remounted.
+- **Save filters and find Chinese homophones**. Saved Filters recalls a folder, kind, date, size, and sort order while keeping your current query. If a Chinese file name has no literal match, search tries whole-syllable homophones.
 - **Search within a project.** Select a folder and press **⌘F**, or choose **Search in This Folder** from its context menu. Words and filters apply throughout its subfolders. Choose Contents for previously indexed text. **Esc** returns to the previous query and selection.
 - **Pin project folders.** Right-click a folder result and choose **Pin to Project Folders**. Press Ctrl twice to see your pins in the empty search panel. Click a folder or press Enter to search inside it, and press Esc to return to the list. Select a folder and click **Unpin** to remove its shortcut.
 - **Jump to a folder in Open and Save dialogs.** With a native file dialog active, press **Ctrl twice** and find a folder or file. Press **Enter** to go to that folder or the file’s enclosing folder. The Save dialog keeps the name you entered.
@@ -415,7 +435,7 @@ macOS supports per-display scaling; MacShun's Displays page shows it as Windows-
 WinShun has been renamed MacShun. Quit WinShun from the menu bar, drag Win顺 from Applications to the Trash, then install MacShun. Permissions, settings and clipboard history carry over, so there is nothing to grant again.
 
 **Is it free? Does it collect data?**
-Free and open source. MacShun only goes online for two things: checking for and downloading updates (automatic checks can be turned off in Settings) — update checks contact the Gleaning release service, while installers are downloaded through third-party accelerated mirrors (currently gh-proxy.com, then ghfast.top) with GitHub as the last fallback, and no personal information is sent in those requests — and an anonymous install report at most once a day to the Gleaning release service, used to count users. The report contains only a randomized computer ID (a SHA-256 of the machine identifier plus the project name, which cannot be reversed), the app version, the macOS version and the chip architecture; no files, clipboard content or personal information. Turn off "Send anonymous usage statistics" in Settings › General and nothing is sent. your clipboard history stays on your Mac.
+Free and open source. MacShun checks for updates through the Gleaning release service and tries third-party mirrors for installer downloads, with GitHub as the fallback. You can turn off automatic checks in Settings. Opening the Gleaning page fetches public user counts without sending a computer identifier. The anonymous install report runs at most once a day and includes a SHA-256 hash of the machine identifier and project name, the app version, the macOS version, and the chip architecture. You can turn off install reports with “Send anonymous usage statistics” in Settings › General. Clipboard history stays on your Mac.
 
 **How do I update?**
 MacShun periodically checks the Gleaning release service. When there is a new version, a window shows what's new; click Update Now to download it from an accelerated mirror (falling back to the next address, and finally to the original GitHub URL), verify its size, SHA-256 and signature, then install and reopen, keeping settings and permissions. Mirrors are third parties, so trust comes entirely from those checks: a file with a wrong digest is discarded. You only see an error to retry if every address fails. You can also choose Check for Updates… from the menu bar icon. Version 0.3.0 checks GitHub for updates and switches to the Gleaning release service once it upgrades to 0.4.0.
