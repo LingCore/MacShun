@@ -189,6 +189,8 @@
 "%ld 项结果" = "%ld Results";
 "筛选已启用" = "Filters active";
 "类型" = "Kind";
+"向左滚动" = "Scroll Left";
+"向右滚动" = "Scroll Right";
 "修改时间" = "Date Modified";
 "大小" = "Size";
 "目录" = "Folder";

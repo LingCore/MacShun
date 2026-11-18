@@ -13,8 +13,7 @@ struct FileSearchTypeCapsule: View {
         ViewThatFits(in: .horizontal) {
             chips(withSymbols: true)
             chips(withSymbols: false)
-            ScrollView(.horizontal) { chips(withSymbols: true) }
-                .scrollIndicators(.hidden)
+            FileSearchOverflowStrip { chips(withSymbols: true) }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, inset)
@@ -100,7 +99,7 @@ struct FileSearchPanelControls: View {
 
     private var strip: some View {
         HStack(spacing: 6) {
-            ScrollView(.horizontal) {
+            FileSearchOverflowStrip {
                 HStack(spacing: 3) {
                     ForEach(FileSearchKind.allCases, id: \.self) { typeButton($0) }
                     Divider().frame(height: 17).padding(.horizontal, 3)
