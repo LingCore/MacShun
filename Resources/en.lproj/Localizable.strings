@@ -331,6 +331,7 @@
 "%ld 个文件，还有 %ld 个在读…" = "%ld files, %ld more to read…";
 "%ld 个文件，占用 %@" = "%ld files, %@ on disk";
 "搜索文件或系统功能" = "Find files or system features";
+"搜索" = "Search";
 "正在读取文件内容" = "Reading file contents";
 "打开" = "Open";
 "在访达中显示" = "Show in Finder";

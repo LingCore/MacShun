@@ -5,16 +5,18 @@ import SwiftUI
 struct PinnedFolderRow: View {
     let project: PinnedSearchFolder
     let selected: Bool
+    let expanded: Bool
     let open: () -> Void
 
     var body: some View {
         Button(action: open) {
             HoverReader { hovering in
-                HStack(spacing: 10) {
+                let iconSize = FileSearchRowStyle.iconSize(expanded: expanded)
+                HStack(spacing: FileSearchRowStyle.spacing) {
                     Image(systemName: "folder.fill")
-                        .font(.system(size: 19))
+                        .font(.system(size: expanded ? 15 : 19))
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 30, height: 30)
+                        .frame(width: iconSize, height: iconSize)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(project.name).font(.system(size: 14)).truncationMode(.middle)
@@ -26,11 +28,7 @@ struct PinnedFolderRow: View {
                     Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: FileSearchView.rowHeight)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(hovering ? 0.05 : 0)))
-                .contentShape(Rectangle())
+                .modifier(FileSearchRowStyle(expanded: expanded, selected: selected, hovering: hovering))
             }
         }
         .buttonStyle(.plain)

@@ -11,7 +11,14 @@ struct CompactSearchHeights: Equatable {
 
 struct CompactSearchPresentation: Equatable {
     var visible: CompactSearchHeights
-    let target: CompactSearchHeights
+    var target: CompactSearchHeights
+    var fileTypesOpacity: Double
+
+    init(visible: CompactSearchHeights, target: CompactSearchHeights) {
+        self.visible = visible
+        self.target = target
+        fileTypesOpacity = visible.fileTypes > 0 ? 1 : 0
+    }
 }
 
 /// 文件搜索（F1、F2）：连按两下 Ctrl 弹出胶囊形的搜索框，边打字边出结果，按文件名和文件内容搜。只在主线程上使用。
@@ -31,7 +38,7 @@ final class FileSearchController {
     private var showingModal = false
     private var windowPosition: FileSearchWindowPosition?
     private var expandedGeometry: FileSearchExpandedGeometry?
-    private var compactResize: Task<Void, Never>?
+    private var fileTypesFade: Task<Void, Never>?
     private var dialog: FileDialogTarget?
     private var dialogNavigation: Task<Void, Never>?
     init(configStore: ConfigStore) {
@@ -171,6 +178,7 @@ final class FileSearchController {
 
     func show(at pointer: CGPoint = NSEvent.mouseLocation) {
         guard configStore.config.fileSearch.enabled else { return }
+        cancelFileTypesFade()
         let screen = WindowPlacement.pointerScreen(at: pointer)
         if !configStore.config.fileSearch.activated {
             configStore.config.fileSearch.activated = true
@@ -184,7 +192,7 @@ final class FileSearchController {
         model.preferredFolder = dialog == nil ? Self.finderFolder() : nil
         model.prepareForShow(inFileDialog: dialog != nil)
         let target = model.preferredCompactHeights
-        model.compactPresentation = .init(visible: animatesCompactResize ? .init() : target, target: target)
+        model.compactPresentation = .init(visible: animatesCompactTypeStrip ? .init() : target, target: target)
         model.isShown = true
         if !SelfTest.isRequested, let data = UserDefaults.standard.data(forKey: FileSearchExpandedGeometry.defaultsKey),
            let saved = try? JSONDecoder().decode(FileSearchExpandedGeometry.self, from: data),
@@ -221,8 +229,7 @@ final class FileSearchController {
             panel.endEditing(for: nil)
             panel.orderOut(nil)
         }
-        compactResize?.cancel()
-        compactResize = nil
+        cancelFileTypesFade()
         // 关着时不用跟着文件变化重新搜
         model.isShown = false
         dialog = nil
@@ -477,7 +484,7 @@ final class FileSearchController {
         resizeToContent()
     }
 
-    private var animatesCompactResize: Bool {
+    private var animatesCompactTypeStrip: Bool {
         !SelfTest.isRequested && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
@@ -493,47 +500,55 @@ final class FileSearchController {
             target.results = min(target.results, max(0, available - header))
         }
 
-        let starting = model.compactLayout
-        let canAnimate = !model.isExpanded && model.folder == nil && !model.isPreviewing && animatesCompactResize
-        if compactResize != nil && starting.target == target && canAnimate { return }
-        compactResize?.cancel()
-        compactResize = nil
-        guard canAnimate && starting.visible != target else {
-            let settled = CompactSearchPresentation(visible: target, target: target)
-            if starting != settled { model.compactPresentation = settled }
+        let previous = model.compactLayout
+        let settled = CompactSearchPresentation(visible: target, target: target)
+        guard !model.isExpanded, model.folder == nil, !model.isPreviewing, animatesCompactTypeStrip else {
+            cancelFileTypesFade()
+            if previous != settled { model.compactPresentation = settled }
             return
         }
 
-        model.compactPresentation = .init(visible: starting.visible, target: target)
-        let started = ProcessInfo.processInfo.systemUptime
-        let duration = target.fileTypes + target.results >= starting.visible.fileTypes + starting.visible.results ? 0.18 : 0.14
-        let scale = max(1, panel.backingScaleFactor)
-        compactResize = Task { @MainActor [weak self] in
+        var layout = previous
+        layout.target = target
+        layout.visible.results = target.results
+        if fileTypesFade != nil && previous.target.fileTypes == target.fileTypes {
+            if layout != previous { model.compactPresentation = layout }
+            return
+        }
+        cancelFileTypesFade()
+        let from = previous.fileTypesOpacity
+        let to = settled.fileTypesOpacity
+        guard from != to else {
+            if previous != settled { model.compactPresentation = settled }
+            return
+        }
+        // 类型栏的内容保持完整高度，只做一次短淡化。结果高度直接跟随当前查询。
+        layout.visible.fileTypes = max(previous.visible.fileTypes, target.fileTypes)
+        model.compactPresentation = layout
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        let duration = max(0.04, 0.11 * abs(to - from))
+        fileTypesFade = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self, self.panel.isVisible else { return }
-                if !self.panel.isDraggingFromHandle {
-                    let elapsed = ProcessInfo.processInfo.systemUptime - started
-                    let remaining = CGFloat(1 - min(elapsed / duration, 1))
-                    let weight = remaining * remaining * remaining
-                    func blend(_ source: CGFloat, _ destination: CGFloat) -> CGFloat {
-                        if remaining == 0 { return destination }
-                        let height = destination + (source - destination) * weight
-                        return (height * scale).rounded() / scale
-                    }
-                    let heights = CompactSearchHeights(fileTypes: blend(starting.visible.fileTypes, target.fileTypes),
-                                                       results: blend(starting.visible.results, target.results))
-                    if self.model.compactLayout.visible != heights {
-                        self.model.compactPresentation = .init(visible: heights, target: target)
-                        self.resizeToContent()
-                    }
-                    if remaining == 0 {
-                        self.compactResize = nil
-                        return
-                    }
+                let progress = min(1, (ProcessInfo.processInfo.systemUptime - startedAt) / duration)
+                let remaining = 1 - progress
+                var frame = self.model.compactLayout
+                frame.fileTypesOpacity = progress == 1 ? to : from + (to - from) * (1 - remaining * remaining)
+                if progress == 1 { frame.visible.fileTypes = frame.target.fileTypes }
+                if frame != self.model.compactLayout { self.model.compactPresentation = frame }
+                if progress == 1 {
+                    self.fileTypesFade = nil
+                    self.resizeToContent()
+                    return
                 }
                 try? await Task.sleep(for: .milliseconds(16))
             }
         }
+    }
+
+    private func cancelFileTypesFade() {
+        fileTypesFade?.cancel()
+        fileTypesFade = nil
     }
 
     private func screenForCompactWindow(at position: FileSearchWindowPosition) -> NSScreen? {
@@ -1006,11 +1021,10 @@ final class FileSearchModel: ObservableObject {
         scope = choices[(i + (reverse ? choices.count - 1 : 1)) % choices.count]
     }
 
-    /// 结果下面要不要显示一行状态（正在建立索引、没有找到）
-    /// 内容还在搜的时候先不说“没有找到”，免得一闪
+    /// 等待文件名或正文时保留状态位置，避免结果卡反复消失。
     var showsStatus: Bool {
         (!query.trimmingCharacters(in: .whitespaces).isEmpty || ((folder != nil || hasPanelFilters) && searchesNames))
-            && rows.isEmpty && !searchingContent
+            && rows.isEmpty
     }
 
     func prepareForShow(inFileDialog: Bool = false) {
@@ -1618,11 +1632,10 @@ struct FileSearchView: View {
             } else {
                 let layout = model.compactLayout
                 if layout.visible.fileTypes > 0 {
-                    let interactive = layout.target.fileTypes > 0 && layout.visible.fileTypes == layout.target.fileTypes
+                    let interactive = layout.target.fileTypes > 0 && layout.fileTypesOpacity == 1
                     FileSearchTypeCapsule(model: model)
                         .padding(.top, Self.gap)
-                        .frame(height: layout.visible.fileTypes, alignment: .top)
-                        .clipped()
+                        .opacity(layout.fileTypesOpacity)
                         .allowsHitTesting(interactive)
                         .accessibilityHidden(!interactive)
                 }
@@ -1652,20 +1665,15 @@ struct FileSearchView: View {
     }
 
     private func compactResults(_ layout: CompactSearchPresentation) -> some View {
-        let interactive = layout.target.results > 0 && layout.visible.results >= layout.target.results
-        return GeometryReader { geometry in
-            if layout.target.results > 0 {
-                let height = model.compactPresentation == nil ? geometry.size.height : layout.target.results
-                searchBody
-                    .frame(height: max(0, height - Self.gap))
-                    .padding(.top, Self.gap)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            }
+        GeometryReader { geometry in
+            let height = model.compactPresentation == nil ? geometry.size.height : layout.visible.results
+            searchBody
+                .frame(height: max(0, height - Self.gap))
+                .padding(.top, Self.gap)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxHeight: layout.visible.results)
         .clipped()
-        .allowsHitTesting(interactive)
-        .accessibilityHidden(!interactive)
     }
 
     private var panelShape: RoundedRectangle { RoundedRectangle(cornerRadius: 15, style: .continuous) }
@@ -1718,6 +1726,7 @@ struct FileSearchView: View {
             } else {
                 .shortTitles
             }
+            let showsFileTools = expanded && model.effectiveScope != .system
             HStack(spacing: expanded ? 9 : 8) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: expanded ? 17 : 20, weight: .medium))
@@ -1726,7 +1735,7 @@ struct FileSearchView: View {
                     .overlay { FileSearchDragRegion(toggle: model.toggleExpanded) }
                 SearchField(
                     text: $model.query,
-                    placeholder: placeholder,
+                    placeholder: showsFileTools && scopePresentation == .icons ? L("搜索") : placeholder,
                     focusToken: model.focusToken,
                     fontSize: 20,
                     onMove: { model.move($0) },
@@ -1743,7 +1752,7 @@ struct FileSearchView: View {
                     }
                     .padding(.leading, expanded ? 0 : 8)
                 }
-                if expanded {
+                if showsFileTools {
                     Divider().frame(height: 18).padding(.horizontal, 2)
                     headerTools
                 }
@@ -1774,7 +1783,6 @@ struct FileSearchView: View {
             .accessibilityLabel(L("排序"))
             .accessibilityValue(model.panelOptions.order.title)
             .help(L("排序"))
-            .disabled(model.effectiveScope == .system)
 
             Button {
                 model.showsPanelFilters.toggle()
@@ -1795,13 +1803,14 @@ struct FileSearchView: View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= Self.sidebarBreakpoint
             let top = model.filtersOnTop || !wide
+            let showsFilters = model.showsPanelFilters && model.effectiveScope != .system
             VStack(spacing: 0) {
-                if model.showsPanelFilters && top {
+                if showsFilters && top {
                     FileSearchPanelControls(model: model, onTop: true, canShowSidebar: wide)
                     Divider()
                 }
                 HStack(spacing: 0) {
-                    if model.showsPanelFilters && !top {
+                    if showsFilters && !top {
                         FileSearchPanelControls(model: model, onTop: false, canShowSidebar: true)
                             .frame(width: Self.sidebarWidth)
                         Divider()
@@ -1818,19 +1827,25 @@ struct FileSearchView: View {
         } else if !model.rows.isEmpty {
             GeometryReader { geometry in
                 resultList(compact: geometry.size.width < (model.isExpanded ? 760 : 500), viewportHeight: geometry.size.height,
-                           showColumns: model.isExpanded && geometry.size.width >= 610 && !model.showsPinnedFolders
-                               && model.effectiveScope != .system)
+                           fileColumns: fileColumns(for: geometry.size.width))
             }
         } else if model.isExpanded {
             GeometryReader { geometry in
                 VStack(spacing: 0) {
-                    if geometry.size.width >= 610 && model.effectiveScope != .system { columns }
+                    let columns = fileColumns(for: geometry.size.width)
+                    if columns.showsFolder { columnHeaders(columns) }
                     status
                 }
             }
         } else if model.showsStatus {
             status
         }
+    }
+
+    private func fileColumns(for width: CGFloat) -> FileResultColumns {
+        guard model.isExpanded, model.effectiveScope != .system, !model.showsPinnedFolders,
+              model.rows.isEmpty || model.rows.contains(where: { $0.file != nil }) else { return .none }
+        return FileResultColumns(width: width)
     }
 
     private var panelToggle: some View {
@@ -1874,10 +1889,11 @@ struct FileSearchView: View {
     }
     private enum ListAnchor: Hashable { case top }
 
-    private func resultList(compact: Bool, viewportHeight: CGFloat, showColumns: Bool) -> some View {
+    private func resultList(compact: Bool, viewportHeight: CGFloat, fileColumns: FileResultColumns) -> some View {
         let expanded = model.isExpanded
+        let listHeight = viewportHeight - (fileColumns.showsFolder ? FileResultColumns.headerHeight : 0)
         return VStack(spacing: 0) {
-            if showColumns { columns }
+            if fileColumns.showsFolder { columnHeaders(fileColumns) }
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -1887,19 +1903,19 @@ struct FileSearchView: View {
                             if position == model.contentStart { sectionHeader(L("文件内容")) }
                             switch row {
                             case .feature(let feature):
-                                SystemFeatureRow(feature: feature, selected: position == model.selection) {
+                                SystemFeatureRow(feature: feature, selected: position == model.selection, expanded: expanded) {
                                     model.selection = position
                                     model.openSelected(reveal: false)
                                 }
                                 .id(row.id)
                             case .project(let project):
-                                PinnedFolderRow(project: project, selected: position == model.selection) {
+                                PinnedFolderRow(project: project, selected: position == model.selection, expanded: expanded) {
                                     model.openProject(project)
                                 }
                                 .id(row.id)
                                 .overlay(ContextMenuArea { model.contextMenu(for: project) })
                             case .file(let result):
-                                fileRow(result, position: position, compact: compact, showColumns: showColumns)
+                                fileRow(result, position: position, compact: compact, columns: fileColumns)
                                     .id(row.id)
                             }
                         }
@@ -1918,13 +1934,13 @@ struct FileSearchView: View {
                 }
                 .scrollIndicators(.never)
                 .onChange(of: ScrollRequest(selection: model.selectedRow?.id, position: model.selection,
-                                            viewportHeight: viewportHeight), initial: true) { _, _ in
+                                            viewportHeight: listHeight), initial: true) { _, _ in
                     if expanded {
-                        let bodyHeight = max(0, viewportHeight - (showColumns ? 29 : 0))
+                        let bodyHeight = max(0, listHeight - 2 * Self.listPadding)
                         model.visiblePageRows = max(1, Int(bodyHeight / Self.expandedRowHeight))
                     }
                     // 结果先到、原生面板后变高。不能在折叠高度里滚动，否则首行会留在可视区上方。
-                    guard viewportHeight >= (expanded ? Self.expandedRowHeight : Self.rowHeight + Self.footerHeight) else { return }
+                    guard listHeight >= (expanded ? Self.expandedRowHeight : Self.rowHeight + Self.footerHeight) else { return }
                     guard let selected = model.selectedRow else { return }
                     if model.selection == 0 { proxy.scrollTo(ListAnchor.top, anchor: .top) }
                     else { proxy.scrollTo(selected.id) }
@@ -1932,12 +1948,9 @@ struct FileSearchView: View {
             }
             if !expanded {
                 Divider().opacity(0.6)
-                ViewThatFits(in: .horizontal) {
-                    resultFooter(detailed: true)
-                    resultFooter(detailed: false)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: Self.footerHeight)
+                adaptiveResultFooter
+                    .padding(.horizontal, 12)
+                    .frame(height: Self.footerHeight)
             }
         }
         .background {
@@ -1950,54 +1963,40 @@ struct FileSearchView: View {
     }
 
     private var expandedFooter: some View {
-        expandedResultFooter
+        adaptiveResultFooter
             .padding(.horizontal, 12)
             .padding(.trailing, 7)
             .frame(height: Self.footerHeight)
     }
 
-    private var expandedResultFooter: some View {
+    private enum FooterDensity: Equatable { case detailed, compact, icons }
+
+    private var adaptiveResultFooter: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                pageControls
-                resultFooter(detailed: true)
-            }
-            HStack(spacing: 8) {
-                pageControls
-                resultFooter(detailed: false)
-            }
-            HStack(spacing: 6) {
-                pageControls
-                Spacer(minLength: 0)
-                if model.selectedResult != nil {
-                    Button { model.toggleQuickLook() } label: {
-                        Image(systemName: "eye").frame(width: 25, height: 24)
-                    }
-                    .buttonStyle(.searchPanelTool(active: model.isPreviewing))
-                    .accessibilityLabel(L("快速查看"))
-                    .help(L("快速查看") + "  ⌘Y")
-                }
-            }
+            resultFooter(density: .detailed)
+            resultFooter(density: .compact)
+            resultFooter(density: .icons)
         }
     }
 
-    private var pageControls: some View {
+    private func pageControls(iconOnly: Bool) -> some View {
         HStack(spacing: 8) {
             if !model.rows.isEmpty {
                 Text(model.hasMoreResults ? L("已显示 %ld 项", model.rows.count) : L("%ld 项结果", model.rows.count))
-                    .font(.caption).foregroundStyle(.secondary).fixedSize()
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .fixedSize(horizontal: !iconOnly, vertical: false)
             }
             if model.hasMoreResults && !model.isPreviewing {
                 if model.isLoadingResults { ProgressView().controlSize(.mini) }
-                searchButton(L("继续加载"), key: nil, symbol: "plus") { model.loadMoreResults() }
+                searchButton(L("继续加载"), key: nil, symbol: "plus", showTitle: !iconOnly) { model.loadMoreResults() }
                     .disabled(model.isLoadingResults)
             }
         }
     }
 
-    private func fileRow(_ result: FileSearchResult, position: Int, compact: Bool, showColumns: Bool) -> some View {
+    private func fileRow(_ result: FileSearchResult, position: Int, compact: Bool, columns: FileResultColumns) -> some View {
         let row = FileResultRow(model: model, result: result, isSelected: position == model.selection, compact: compact,
-                                showColumns: showColumns)
+                                columns: columns)
         return Group {
             if model.isExpanded {
                 row.onTapGesture(count: 2) {
@@ -2016,21 +2015,27 @@ struct FileSearchView: View {
         .overlay(ContextMenuArea { model.contextMenu(for: result) })
     }
 
-    private var columns: some View {
-        HStack(spacing: 10) {
+    private func columnHeaders(_ columns: FileResultColumns) -> some View {
+        let inset = Self.listPadding + FileSearchRowStyle.inset
+        return HStack(spacing: FileSearchRowStyle.spacing) {
             sortColumn(L("名称"), first: .nameAscending, second: .nameDescending, firstIsAscending: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             sortColumn(L("所在目录"), first: .folder, second: .folderDescending, firstIsAscending: true)
-                .frame(width: FileResultRow.folderWidth, alignment: .leading)
-            sortColumn(L("修改时间"), first: .newest, second: .oldest)
-                .frame(width: FileResultRow.dateWidth, alignment: .leading)
-            sortColumn(L("大小"), first: .largest, second: .smallest)
-                .frame(width: FileResultRow.sizeWidth, alignment: .trailing)
+                .frame(width: FileResultColumns.folderWidth, alignment: .leading)
+            if columns.showsDate {
+                sortColumn(L("修改时间"), first: .newest, second: .oldest)
+                    .frame(width: FileResultColumns.dateWidth, alignment: .leading)
+            }
+            if columns.showsSize {
+                sortColumn(L("大小"), first: .largest, second: .smallest)
+                    .frame(width: FileResultColumns.sizeWidth, alignment: .trailing)
+            }
         }
         .font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, Self.listPadding + 10)
-        .frame(height: 29)
-        .overlay(alignment: .bottom) { Divider().padding(.horizontal, Self.listPadding + 10).opacity(0.6) }
+        .padding(.leading, inset + FileSearchRowStyle.iconSize(expanded: true) + FileSearchRowStyle.spacing)
+        .padding(.trailing, inset)
+        .frame(height: FileResultColumns.headerHeight)
+        .overlay(alignment: .bottom) { Divider().padding(.horizontal, inset).opacity(0.6) }
     }
 
     private func sortColumn(_ title: String, first: FileSearchOrder, second: FileSearchOrder,
@@ -2056,18 +2061,26 @@ struct FileSearchView: View {
         .help(L("按“%@”排序", title))
     }
 
-    private func resultFooter(detailed: Bool) -> some View {
-        HStack(spacing: 8) {
+    private func resultFooter(density: FooterDensity) -> some View {
+        let detailed = density == .detailed
+        let iconOnly = density == .icons
+        return HStack(spacing: iconOnly ? 6 : 8) {
+            if model.isExpanded { pageControls(iconOnly: iconOnly) }
             if let result = model.selectedResult {
                 if result.canSearchInside {
-                    searchButton(L("在此搜索"), key: "⌘F", symbol: "magnifyingglass", showKey: detailed) { model.searchInside(result) }
+                    searchButton(L("在此搜索"), key: "⌘F", symbol: "magnifyingglass", showKey: detailed, showTitle: !iconOnly) {
+                        model.searchInside(result)
+                    }
                 }
-                searchButton(L("快速查看"), key: "⌘Y", symbol: "eye", showKey: detailed) { model.toggleQuickLook() }
+                searchButton(model.isPreviewing ? L("关闭预览") : L("快速查看"), key: "⌘Y",
+                             symbol: model.isPreviewing ? "eye.slash" : "eye", showKey: detailed, showTitle: !iconOnly) {
+                    model.toggleQuickLook()
+                }
             } else if case .project(let project) = model.selectedRow {
-                searchButton(L("取消固定"), key: nil, symbol: "pin.slash") { model.unpinProject(project.path) }
+                searchButton(L("取消固定"), key: nil, symbol: "pin.slash", showTitle: !iconOnly) { model.unpinProject(project.path) }
             }
             Spacer(minLength: 0)
-            if !model.rows.isEmpty {
+            if !iconOnly && !model.rows.isEmpty {
                 KeyHint(key: "Enter", action: model.showsPinnedFolders ? L("在此搜索") : model.inFileDialog ? L("前往文件夹") : L("打开"))
             }
             if detailed, let result = model.selectedResult, !result.canSearchInside {
@@ -2084,15 +2097,15 @@ struct FileSearchView: View {
         }
     }
 
-    private func searchButton(_ title: String, key: String?, symbol: String, showKey: Bool = true,
+    private func searchButton(_ title: String, key: String?, symbol: String, showKey: Bool = true, showTitle: Bool = true,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: symbol)
-                Text(title)
+                if showTitle { Text(title) }
                 if showKey, let key { Text(key).foregroundStyle(.secondary).font(.caption2) }
             }
-            .font(.caption).padding(.horizontal, 7).frame(minHeight: 23).fixedSize()
+            .font(.caption).padding(.horizontal, 7).frame(minWidth: 26, minHeight: 23).fixedSize()
         }
         .buttonStyle(.chip())
         .accessibilityLabel(title)
@@ -2171,16 +2184,39 @@ struct FileSearchView: View {
     }
 }
 
+private enum FileResultColumns: Equatable {
+    case none, folder, folderAndDate, all
+
+    static let headerHeight: CGFloat = 29
+    static let folderWidth: CGFloat = 178
+    static let dateWidth: CGFloat = 132
+    static let sizeWidth: CGFloat = 70
+
+    init(width: CGFloat) {
+        let spacing = FileSearchRowStyle.spacing
+        let leadingArea = 2 * (FileSearchView.listPadding + FileSearchRowStyle.inset)
+            + FileSearchRowStyle.iconSize(expanded: true) + 2 * spacing
+        // Leave room for two lines of filename and a content match before adding metadata columns.
+        let available = width - leadingArea - 220
+        let folder = Self.folderWidth + spacing
+        let date = Self.dateWidth + spacing
+        if available >= folder + date + Self.sizeWidth + spacing { self = .all }
+        else if available >= folder + date { self = .folderAndDate }
+        else if available >= folder { self = .folder }
+        else { self = .none }
+    }
+
+    var showsFolder: Bool { self != .none }
+    var showsDate: Bool { self == .folderAndDate || self == .all }
+    var showsSize: Bool { self == .all }
+}
+
 private struct FileResultRow: View {
     @ObservedObject var model: FileSearchModel
     let result: FileSearchResult
     let isSelected: Bool
     let compact: Bool
-    let showColumns: Bool
-
-    static let dateWidth: CGFloat = 132
-    static let sizeWidth: CGFloat = 70
-    static let folderWidth: CGFloat = 178
+    let columns: FileResultColumns
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
@@ -2209,13 +2245,13 @@ private struct FileResultRow: View {
 
     var body: some View {
         let expanded = model.isExpanded
-        let iconSize: CGFloat = expanded ? 22 : 30
-        return HStack(spacing: 10) {
+        let iconSize = FileSearchRowStyle.iconSize(expanded: expanded)
+        return HStack(spacing: FileSearchRowStyle.spacing) {
             Image(nsImage: model.icon(for: result))
                 .resizable()
                 .frame(width: iconSize, height: iconSize)
             if let snippet = result.snippet {
-                // 按内容搜到的：第一行文件名和位置，第二行匹配的那段文字
+                // 正文命中显示文件名和摘要。没有独立目录列时才在第一行补位置。
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(result.name)
@@ -2223,11 +2259,13 @@ private struct FileResultRow: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .layoutPriority(1)
-                        Text(folder)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.head)
+                        if !columns.showsFolder {
+                            Text(folder)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
                     }
                     Text(highlighted(snippet, terms: model.contentHighlightTerms, size: 12))
                         .font(.system(size: 12))
@@ -2244,7 +2282,7 @@ private struct FileResultRow: View {
                             .truncationMode(.middle)
                         if result.isHomophone { Text(L("同音")).font(.caption2).foregroundStyle(.secondary) }
                     }
-                    if !showColumns {
+                    if !columns.showsFolder {
                         Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
@@ -2258,28 +2296,21 @@ private struct FileResultRow: View {
             if !expanded && !model.inFileDialog && (isSelected || hovering || confirmingDelete) {
                 actions
             }
-            if showColumns {
+            if columns.showsFolder {
                 Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
-                    .frame(width: Self.folderWidth, alignment: .leading)
+                    .frame(width: FileResultColumns.folderWidth, alignment: .leading)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
-                Text(modified ?? "—").frame(width: Self.dateWidth, alignment: .leading)
+            }
+            if columns.showsDate {
+                Text(modified ?? "—").frame(width: FileResultColumns.dateWidth, alignment: .leading)
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
-                Text(size ?? "—").frame(width: Self.sizeWidth, alignment: .trailing)
+            }
+            if columns.showsSize {
+                Text(size ?? "—").frame(width: FileResultColumns.sizeWidth, alignment: .trailing)
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: expanded ? FileSearchView.expandedRowHeight : FileSearchView.rowHeight)
-        .background(
-            RoundedRectangle(cornerRadius: expanded ? 5 : 8, style: .continuous)
-                .fill(rowFill)
-        )
-        .overlay(alignment: .leading) {
-            if expanded && isSelected {
-                Capsule().fill(Color.accentColor).frame(width: 2.5, height: 16).padding(.leading, 2)
-            }
-        }
-        .contentShape(Rectangle())
+        .modifier(FileSearchRowStyle(expanded: expanded, selected: isSelected, hovering: hovering))
         .help(model.isExpanded ? ([result.path] + [modified, size].compactMap { $0 }).joined(separator: "\n") : "")
         .onHover { inside in
             if inside {
@@ -2288,12 +2319,6 @@ private struct FileResultRow: View {
                 model.hoveredPath = nil
             }
         }
-    }
-
-    private var rowFill: Color {
-        if isSelected { return Color.accentColor.opacity(model.isExpanded ? 0.16 : 0.22) }
-        if hovering { return Color.primary.opacity(0.05) }
-        return .clear
     }
 
     /// 定位、复制、删除。删除放最右边：点一下变成红色的“确定删除”，往左变宽，鼠标下面还是它

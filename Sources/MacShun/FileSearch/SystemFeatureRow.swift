@@ -5,33 +5,31 @@ import SwiftUI
 struct SystemFeatureRow: View {
     let feature: SystemFeature
     let selected: Bool
+    let expanded: Bool
     let open: () -> Void
 
     var body: some View {
         Button(action: open) {
             HoverReader { hovering in
-                HStack(spacing: 10) {
+                let iconSize = FileSearchRowStyle.iconSize(expanded: expanded)
+                HStack(spacing: FileSearchRowStyle.spacing) {
                     Image(systemName: feature.symbol)
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: expanded ? 14 : 18, weight: .medium))
                         .foregroundStyle(Color.accentColor)
-                        .frame(width: 30, height: 30)
-                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                        .frame(width: iconSize, height: iconSize)
+                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: expanded ? 5 : 7))
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(feature.localizedTitle).font(.system(size: 14))
                         Text(feature.category).font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     .lineLimit(1)
-                    Spacer()
-                    if selected || hovering {
-                        Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.forward").font(.caption).foregroundStyle(.secondary)
+                        .opacity(selected || hovering ? 1 : 0)
+                        .accessibilityHidden(true)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: FileSearchView.rowHeight)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(hovering ? 0.05 : 0)))
-                .contentShape(Rectangle())
+                .modifier(FileSearchRowStyle(expanded: expanded, selected: selected, hovering: hovering))
             }
         }
         .buttonStyle(.plain)
