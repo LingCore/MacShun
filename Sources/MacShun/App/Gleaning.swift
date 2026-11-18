@@ -4,8 +4,7 @@ import AppKit
 import SwiftUI
 
 /// “拾穗”：作者的其他作品，开源的和付费的。作者的每个程序都带这一页。
-/// 名字取自米勒的《拾穗者》。内容只写在这里，不联网获取（隐私原则：除了检查更新不联网）。
-/// 换到别的程序里用时，把这个文件和 AuthorMark.swift 复制过去，只改 `works` 和 `authorURL`；反馈页的地址由更新源推出（InstallReport.feedbackURL），项目名在 InstallReport.project。
+/// 名字取自米勒的《拾穗者》。作品资料写在这里，用户数来自拾穗计划的公开目录。
 struct Work: Identifiable {
     enum Kind {
         case openSource, paid
@@ -13,6 +12,8 @@ struct Work: Identifiable {
 
     /// 应用标识（没有就随便取个不重复的名字），用来认出“正在使用”的那个。
     let id: String
+    /// 发布服务的项目标识，与本机的应用标识独立。
+    let projectSlug: String
     let name: String
     /// 一句话介绍，只占一行（十来个字），多出来的会被省略。
     let summary: String
@@ -48,6 +49,7 @@ enum Gleaning {
     static let works: [Work] = [
         Work(
             id: "io.github.lingcore.winshun",
+            projectSlug: InstallReport.project,
             name: L("Mac顺"),
             summary: L("让 Mac 用得更顺手"),
             kind: .openSource,
@@ -59,6 +61,7 @@ enum Gleaning {
         ),
         Work(
             id: "io.github.lingcore.winshun.windows",
+            projectSlug: "winshun",
             name: L("Win顺"),
             summary: L("Windows 上双击 Ctrl 搜文件"),
             kind: .openSource,
@@ -96,6 +99,7 @@ struct GleaningPage: View {
     /// 设置窗口看不看得见，看不见时头像不动、声音停下
     var windowVisible = true
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var userCounts = GleaningUserCounts()
 
     private var palette: WarmPalette { .current(colorScheme) }
     private var others: [Work] { Gleaning.works.filter { !isCurrent($0) } }
@@ -111,6 +115,12 @@ struct GleaningPage: View {
             .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(.never)
         }
+        .task(id: windowVisible) {
+            guard windowVisible, Updater.isSupported,
+                  let counts = try? await GleaningUserCounts.fetch(),
+                  !Task.isCancelled else { return }
+            userCounts.values = counts
+        }
     }
 
     private var content: some View {
@@ -124,7 +134,7 @@ struct GleaningPage: View {
                 ) {
                     // 付费的排在开源的后面
                     ForEach(Gleaning.works.sorted { $0.kind == .openSource && $1.kind == .paid }) {
-                        WorkItem(work: $0, isCurrent: isCurrent($0), palette: palette)
+                        WorkItem(work: $0, isCurrent: isCurrent($0), userCount: userCounts.values[$0.projectSlug], palette: palette)
                     }
                     if others.isEmpty {
                         ComingSoonItem(palette: palette)
@@ -451,6 +461,7 @@ private struct SceneCanvas: View {
 private struct WorkItem: View {
     let work: Work
     let isCurrent: Bool
+    let userCount: Int?
     let palette: WarmPalette
     @ObservedObject private var hover = WorkLinkHover.shared
 
@@ -476,12 +487,32 @@ private struct WorkItem: View {
                     .font(.callout)
                     .foregroundStyle(palette.inkSoft)
                     .lineLimit(1)
-                HStack(spacing: 5) {
-                    Tag(text: work.kind == .openSource ? L("开源") : L("付费"), palette: palette)
-                    if isCurrent { Tag(text: L("正在使用"), palette: palette) }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 5) {
+                        statusTags
+                        userCountTag
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 5) { statusTags }
+                        userCountTag
+                    }
                 }
                 .padding(.top, 3)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var statusTags: some View {
+        Tag(text: work.kind == .openSource ? L("开源") : L("付费"), palette: palette)
+        if isCurrent { Tag(text: L("正在使用"), palette: palette) }
+    }
+
+    @ViewBuilder
+    private var userCountTag: some View {
+        if let userCount {
+            Tag(text: L("%ld 位用户", userCount), palette: palette)
         }
     }
 
