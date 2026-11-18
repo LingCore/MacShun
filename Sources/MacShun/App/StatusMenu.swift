@@ -2,7 +2,6 @@
 
 import AppKit
 import Combine
-import SwiftUI
 
 /// 菜单栏图标和菜单。
 final class StatusMenu: NSObject, NSMenuDelegate {
@@ -72,14 +71,6 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let cfg = configStore.config
 
-        if cfg.performance.isActive {
-            menu.addItem(.sectionHeader(title: L("性能监控")))
-            let overview = NSMenuItem()
-            let host = NSHostingView(rootView: PerformanceMenuOverview(monitor: performance, metrics: cfg.performance.metrics))
-            host.frame = NSRect(x: 0, y: 0, width: 270, height: CGFloat(cfg.performance.metrics.count) * 25 + 16)
-            overview.view = host
-            menu.addItem(overview)
-        }
         menu.addItem(action(L("性能监控设置…"), #selector(showPerformance), symbol: "gauge.with.dots.needle.50percent"))
         menu.addItem(.separator())
 

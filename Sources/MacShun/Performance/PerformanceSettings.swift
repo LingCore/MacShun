@@ -68,32 +68,6 @@ struct PerformanceSettings: View {
     }
 }
 
-/// 菜单打开后继续更新，无需重建整个 NSMenu，也不影响菜单的键盘交互。
-struct PerformanceMenuOverview: View {
-    @ObservedObject var monitor: PerformanceMonitor
-    let metrics: [PerformanceMetric]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(metrics) { metric in
-                HStack(spacing: 16) {
-                    Text(metric.title)
-                    Spacer(minLength: 8)
-                    Text(monitor.snapshot.text(metric))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-                .frame(height: 25)
-                .accessibilityElement(children: .combine)
-            }
-        }
-        .font(.system(size: NSFont.systemFontSize))
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .frame(width: 270)
-    }
-}
-
 enum PerformanceMenuBarImage {
     /// 每列固定宽度，1% → 100% 不挪动图标；模板图随菜单栏深浅和选中状态自动着色。
     static func make(snapshot: PerformanceSnapshot, metrics: [PerformanceMetric], needsAttention: Bool) -> NSImage {
