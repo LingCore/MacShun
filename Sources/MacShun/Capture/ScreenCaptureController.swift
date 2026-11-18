@@ -8,6 +8,8 @@ import UniformTypeIdentifiers
 private final class CapturePanel: NSPanel {
     let canvas: CaptureCanvas
     let displayID: CGDirectDisplayID
+    var onResignKey: (() -> Void)?
+    var onInputEvent: ((NSEvent) -> Void)?
 
     init(frame: CGRect, displayID: CGDirectDisplayID, canvas: CaptureCanvas) {
         self.displayID = displayID
@@ -28,9 +30,31 @@ private final class CapturePanel: NSPanel {
     override var canBecomeMain: Bool { false }
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        canvas.handleKey(event) || super.performKeyEquivalent(with: event)
+        if event.type == .keyDown { onInputEvent?(event) }
+        return canvas.handleKey(event) || super.performKeyEquivalent(with: event)
     }
-    override func keyDown(with event: NSEvent) { _ = canvas.handleKey(event) }
+    override func keyDown(with event: NSEvent) {
+        onInputEvent?(event)
+        _ = canvas.handleKey(event)
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        onInputEvent?(event)
+        switch event.type {
+        case .keyUp: canvas.releaseDirectionKey(event)
+        case .flagsChanged: canvas.updateDirectionModifiers(event)
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown: canvas.restoreSystemCursor()
+        default: break
+        }
+        super.sendEvent(event)
+    }
+
+    override func resignKey() {
+        canvas.stopDirectionRepeat()
+        onResignKey?()
+        super.resignKey()
+    }
+
 }
 
 /// 只记本次运行中上一次成功输出的屏幕和选区。显示器移动后仍使用该屏内的位置。
@@ -57,6 +81,7 @@ private struct CaptureRegionMemory {
 /// 一次只保留一组冻结画面；全部屏幕取完才显示选区窗口。取消时不写剪贴板或磁盘。
 @MainActor
 final class ScreenCaptureController: NSObject {
+    private static let colorFormatKey = "captureColorFormat"
     private var panels: [CapturePanel] = []
     private var lastRegion: CaptureRegionMemory?
     private var session: UUID?
@@ -64,17 +89,31 @@ final class ScreenCaptureController: NSObject {
     private var previousApp: NSRunningApplication?
     private var notice: NSPanel?
     private var scrolling: ScrollingCapture?
+    private weak var keyboardPointerCanvas: CaptureCanvas?
+    private let colorDefaults: UserDefaults
+    private var colorFormat: CaptureColorFormat
+    private var shiftDown = false
+    private var shiftAlone = false
 
     private let captureClipboard: CaptureClipboard
     private var pasteboard: NSPasteboard { captureClipboard.pasteboard }
     private let makeScrollSource: ScrollCaptureSource.Factory
     private let freeze: @MainActor () async throws -> [FrozenScreen]
+    private let mouseLocation: @MainActor () -> CGPoint
+    private let warpPointer: @MainActor (CGPoint) -> CGError
 
     init(clipboard: CaptureClipboard = .general,
          makeScrollSource: @escaping ScrollCaptureSource.Factory = ScrollCaptureSource.stream,
-         freeze: @escaping @MainActor () async throws -> [FrozenScreen] = { try await FrozenScreen.captureAll() }) {
+         freeze: @escaping @MainActor () async throws -> [FrozenScreen] = { try await FrozenScreen.captureAll() },
+         mouseLocation: @escaping @MainActor () -> CGPoint = { NSEvent.mouseLocation },
+         warpPointer: @escaping @MainActor (CGPoint) -> CGError = { CGWarpMouseCursorPosition(ScreenGeometry.axPoint($0)) },
+         colorDefaults: UserDefaults = .standard) {
         self.captureClipboard = clipboard
         self.freeze = freeze
+        self.mouseLocation = mouseLocation
+        self.warpPointer = warpPointer
+        self.colorDefaults = colorDefaults
+        colorFormat = colorDefaults.string(forKey: Self.colorFormatKey).flatMap(CaptureColorFormat.init(rawValue:)) ?? .hex
         self.makeScrollSource = makeScrollSource
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(cancel), name: NSApplication.didChangeScreenParametersNotification, object: nil)
@@ -119,10 +158,19 @@ final class ScreenCaptureController: NSObject {
     private func addPanel(for screen: FrozenScreen, mode: CaptureMode, canRestore: Bool) {
         let canvas = CaptureCanvas(photo: screen.photo, mode: mode, windowRects: screen.windowRects, canRestore: canRestore)
         let panel = CapturePanel(frame: screen.frame, displayID: screen.displayID, canvas: canvas)
+        canvas.setColorFormat(colorFormat)
+        panel.onInputEvent = { [weak self, weak canvas] event in
+            if let canvas { self?.handleColorFormatGesture(event, from: canvas) }
+        }
+        panel.onResignKey = { [weak self] in
+            self?.shiftDown = false
+            self?.shiftAlone = false
+            self?.keyboardPointerCanvas?.endKeyboardPointer()
+        }
         canvas.onChooseAnchorMode = { [weak self, weak panel] in
             guard let self, let panel else { return }
             let target = panel.canvas.selection == nil
-                ? self.panels.first { $0.frame.contains(NSEvent.mouseLocation) } ?? panel
+                ? self.panel(at: self.mouseLocation()) ?? panel
                 : panel
             self.panels.filter { $0 !== target }.forEach { $0.canvas.clearSelection() }
             target.makeKeyAndOrderFront(nil)
@@ -134,6 +182,14 @@ final class ScreenCaptureController: NSObject {
         }
         canvas.onCopy = { [weak self, weak canvas] in
             if let canvas { self?.copy(canvas) }
+        }
+        canvas.canSampleDisplay = { [weak self, weak canvas] in
+            self?.panels.allSatisfy { $0.canvas === canvas || $0.canvas.selection == nil } ?? false
+        }
+        canvas.onCopyColor = { [weak self] in self?.copyColor() }
+        canvas.onNudgePointer = { [weak self, weak panel] dx, dy in
+            guard let self, let panel else { return }
+            self.nudgePointer(dx: dx, dy: dy, from: panel)
         }
         canvas.onPin = { [weak self, weak canvas] in
             guard let self, let canvas, let selection = canvas.selection, let window = canvas.window,
@@ -176,15 +232,16 @@ final class ScreenCaptureController: NSObject {
               let target = panels.first(where: { lastRegion.matches($0.displayID, $0.canvas.photo) }) else { return }
         for panel in panels where panel !== target { panel.canvas.clearSelection() }
         target.canvas.restoreRegion(target.canvas.photo.pointRect(lastRegion.rect), polygon: lastRegion.polygon)
+        target.canvas.hover(at: target.convertPoint(fromScreen: mouseLocation()))
         target.makeKeyAndOrderFront(nil)
         target.makeFirstResponder(target.canvas)
     }
 
     private func showPanels(focusing preferred: CaptureCanvas? = nil) {
-        let mouse = NSEvent.mouseLocation
+        let mouse = mouseLocation()
         FrontAppTracker.shared.captureActive.set(true)
         for panel in panels { panel.orderFrontRegardless() }
-        let panel = panels.first { $0.canvas === preferred } ?? panels.first { $0.frame.contains(mouse) } ?? panels.first
+        let panel = panels.first { $0.canvas === preferred } ?? panel(at: mouse) ?? panels.first
         if let panel {
             panel.canvas.hover(at: panel.convertPoint(fromScreen: mouse))
             panel.makeKeyAndOrderFront(nil)
@@ -194,7 +251,14 @@ final class ScreenCaptureController: NSObject {
 
     private func hidePanels() {
         FrontAppTracker.shared.captureActive.set(false)
-        panels.forEach { $0.orderOut(nil) }
+        shiftDown = false
+        shiftAlone = false
+        keyboardPointerCanvas?.endKeyboardPointer()
+        keyboardPointerCanvas = nil
+        for panel in panels {
+            panel.canvas.stopDirectionRepeat()
+            panel.orderOut(nil)
+        }
     }
 
     func finishScrolling() { scrolling?.requestFinish() }
@@ -250,6 +314,86 @@ final class ScreenCaptureController: NSObject {
                 toast(L("未能写入剪贴板"))
             }
         }
+    }
+
+    private func colorUnderPointer() -> (canvas: CaptureCanvas, value: String)? {
+        // 键盘焦点可能仍在另一块屏幕，按实际鼠标位置找到冻结图。
+        let mouse = mouseLocation()
+        guard let panel = panel(at: mouse) else { return nil }
+        let canvas = panel.canvas
+        let point = canvas.convert(panel.convertPoint(fromScreen: mouse), from: nil)
+        return canvas.colorToCopy(at: point).map { (canvas, $0) }
+    }
+
+    private func cycleColorFormat() {
+        guard colorUnderPointer() != nil else { return }
+        colorFormat = colorFormat.next
+        colorDefaults.set(colorFormat.rawValue, forKey: Self.colorFormatKey)
+        panels.forEach { $0.canvas.setColorFormat(colorFormat) }
+    }
+
+    private func handleColorFormatGesture(_ event: NSEvent, from canvas: CaptureCanvas) {
+        switch event.type {
+        case .flagsChanged:
+            let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command, .function])
+            let isDown = modifiers.contains(.shift)
+            let isShift = event.keyCode == KeyCode.shift || event.keyCode == KeyCode.rightShift
+            defer { shiftDown = isDown }
+            if isShift, !shiftDown, isDown {
+                shiftAlone = modifiers == .shift && canvas.mode == .image && !canvas.isDragging
+                    && !canvas.hasHeldDirection && !canvas.isEditingText
+            } else {
+                let shouldCycle = isShift && shiftDown && !isDown && modifiers.isEmpty && shiftAlone
+                shiftAlone = false
+                if shouldCycle { cycleColorFormat() }
+            }
+        case .keyDown, .keyUp, .leftMouseDown, .rightMouseDown, .otherMouseDown,
+             .leftMouseUp, .rightMouseUp, .otherMouseUp, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel:
+            shiftAlone = false
+        default: break
+        }
+    }
+
+    private func copyColor() {
+        guard let (canvas, value) = colorUnderPointer() else { return }
+        let item = NSPasteboardItem()
+        item.setString(value, forType: .string)
+        guard write(item) else { return }
+        if canvas.polygon != nil || canvas.annotations.canUndo || canvas.annotations.canRedo {
+            canvas.showColorCopied()
+        } else {
+            cancel()
+            toast(L("已复制色值 %@", value))
+        }
+    }
+
+    private func nudgePointer(dx: Int, dy: Int, from source: CapturePanel) {
+        let mouse = mouseLocation()
+        // 按住鼠标时，继续调整拖动开始的那块屏幕。
+        let target = source.canvas.isDragging ? source : panel(at: mouse) ?? source
+        let canvas = target.canvas
+        let point = canvas.effectivePointer(at: canvas.convert(target.convertPoint(fromScreen: mouse), from: nil))
+        let moved = canvas.photo.nudgedPointer(point, dx: dx, dy: dy)
+        guard moved != point else { return }
+        let screenPoint = target.convertPoint(toScreen: canvas.convert(moved, to: nil))
+        // Retina 相邻两个像素可能落在同一个系统坐标，避免在这个位置重复移动系统光标。
+        let systemPoint = CGPoint(x: floor(screenPoint.x), y: ceil(screenPoint.y))
+        if mouse != systemPoint, warpPointer(screenPoint) != .success { return }
+        // 系统移动光标不会发鼠标事件。直接更新取色、悬停或拖动终点。
+        let systemPosition = canvas.convert(target.convertPoint(fromScreen: mouseLocation()), from: nil)
+        if keyboardPointerCanvas !== canvas {
+            keyboardPointerCanvas?.endKeyboardPointer()
+            keyboardPointerCanvas = canvas
+        }
+        canvas.nudgePointer(to: moved, systemPosition: systemPosition)
+    }
+
+    private func panel(at mouse: CGPoint) -> CapturePanel? {
+        // AppKit 换算后，最上面一行像素落在 maxY。
+        panels.first { panel in
+            let frame = panel.frame
+            return mouse.x >= frame.minX && mouse.x < frame.maxX && mouse.y > frame.minY && mouse.y <= frame.maxY
+        } ?? panels.first { $0.frame.contains(mouse) }
     }
 
     /// 由既有 ClipboardWatcher 按记录开关、权限和大小限制入库。

@@ -4,30 +4,30 @@ import AppKit
 import Testing
 @testable import MacShun
 
+func captureTestPhoto(width: Int, height: Int, points: CGSize) throws -> CaptureImage {
+    let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                         bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height / 2))
+    context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
+    context.fill(CGRect(x: 0, y: height / 2, width: width, height: height - height / 2))
+    return CaptureImage(image: try #require(context.makeImage()), size: points)
+}
+
 @Suite("截图")
 struct CaptureTests {
-    private func photo(width: Int, height: Int, points: CGSize) throws -> CaptureImage {
-        let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                             bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height / 2))
-        context.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: height / 2, width: width, height: height - height / 2))
-        return CaptureImage(image: try #require(context.makeImage()), size: points)
-    }
-
     @Test func windowsOnLeftAndAbovePrimary() throws {
         let window = CGRect(x: -500, y: -100, width: 520, height: 160)
         let leftScreen = CGRect(x: -800, y: -180, width: 800, height: 500)
         #expect(CaptureImage.localWindows([window], in: leftScreen) == [CGRect(x: 300, y: 260, width: 500, height: 160)])
         let local = try #require(CaptureImage.localWindows([window], in: CGRect(x: 0, y: 0, width: 800, height: 600)).first)
-        let primary = try photo(width: 1600, height: 1200, points: CGSize(width: 800, height: 600))
+        let primary = try captureTestPhoto(width: 1600, height: 1200, points: CGSize(width: 800, height: 600))
         #expect(primary.pixelRect(local) == CGRect(x: 0, y: 0, width: 40, height: 120))
     }
 
     @Test func cropAndRedactionStayAlignedAtRetinaScale() throws {
-        let photo = try photo(width: 80, height: 60, points: CGSize(width: 40, height: 30))
+        let photo = try captureTestPhoto(width: 80, height: 60, points: CGSize(width: 40, height: 30))
         let area = CGRect(x: 8.25, y: 5, width: 12, height: 18.5)
         #expect(photo.pixelRect(area) == CGRect(x: 16, y: 13, width: 25, height: 37))
         #expect(photo.render(CGRect(x: -10, y: 100, width: 5, height: 2), marks: []) == nil)
@@ -41,6 +41,42 @@ struct CaptureTests {
         #expect(hidden.redComponent < 0.01 && hidden.blueComponent < 0.01 && hidden.alphaComponent == 1)
         #expect(try #require(png.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB)).blueComponent > 0.99)
         #expect(try #require(png.colorAt(x: 0, y: 36)?.usingColorSpace(.sRGB)).redComponent > 0.99)
+    }
+
+    @Test func loupeSamplesPhysicalPixelsAndConvertsP3() throws {
+        let photo = try captureTestPhoto(width: 80, height: 60, points: CGSize(width: 40, height: 30))
+        let top = try #require(photo.pixel(at: CGPoint(x: 0, y: 30)))
+        let bottom = try #require(photo.pixel(at: CGPoint(x: 39.75, y: 0)))
+        #expect(top == CGPoint(x: 0, y: 0))
+        #expect(bottom == CGPoint(x: 79, y: 59))
+        #expect(photo.pixel(at: CGPoint(x: 10.75, y: 12.25)) == CGPoint(x: 21, y: 35))
+        #expect(photo.pixel(at: CGPoint(x: 40, y: 20)) == nil)
+
+        let sample = try #require(CaptureLoupeSample(image: photo.image, pixel: top))
+        #expect(sample.hex == "#0000FF")
+        #expect(sample.text(in: .rgb) == "rgb(0, 0, 255)")
+        #expect(sample.text(in: .hsl) == "hsl(240, 100%, 50%)")
+        #expect(CaptureLoupeSample(image: sample.image, pixel: .zero)?.text(in: .hsl) == "hsl(0, 0%, 0%)")
+        #expect(CaptureLoupeSample(image: photo.image, pixel: bottom)?.hex == "#FF0000")
+        let preview = NSBitmapImageRep(cgImage: sample.image)
+        #expect(preview.colorAt(x: 7, y: 7)?.usingColorSpace(.sRGB)?.blueComponent == 1)
+        #expect(preview.colorAt(x: 7, y: 6)?.usingColorSpace(.sRGB)?.blueComponent == 0)
+        #expect(preview.colorAt(x: 6, y: 7)?.usingColorSpace(.sRGB)?.blueComponent == 0)
+        #expect(preview.colorAt(x: 7, y: 8)?.usingColorSpace(.sRGB)?.blueComponent == 1)
+
+        let p3 = NSColor(displayP3Red: 0.8, green: 0.4, blue: 0.2, alpha: 1)
+        let context = try #require(CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8,
+                                             bytesPerRow: 0, space: p3.colorSpace.cgColorSpace!,
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(p3.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let wideGamut = try #require(context.makeImage())
+        let converted = try #require(CaptureLoupeSample(image: wideGamut, pixel: .zero))
+        let srgb = try #require(p3.usingColorSpace(.sRGB))
+        #expect(abs(converted.color.redComponent - srgb.redComponent) <= 1 / 255.0)
+        #expect(abs(converted.color.greenComponent - srgb.greenComponent) <= 1 / 255.0)
+        #expect(abs(converted.color.blueComponent - srgb.blueComponent) <= 1 / 255.0)
+        #expect(converted.hex != "#CC6633")
     }
 
     @Test func shortcutsAreOptInAndRespectExclusions() throws {
@@ -72,7 +108,7 @@ struct CaptureTests {
         _ = NSApplication.shared
         let size = CGSize(width: 640, height: 420)
         let target = CGRect(x: 140, y: 90, width: 320, height: 220)
-        let photo = try photo(width: 1280, height: 840, points: size)
+        let photo = try captureTestPhoto(width: 1280, height: 840, points: size)
         for mode in [CaptureMode.image, .text] {
             let canvas = CaptureCanvas(photo: photo, mode: mode, windowRects: [target])
             let window = NSPanel(contentRect: photo.bounds, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -111,7 +147,8 @@ struct CaptureTests {
             let toolbar = try #require(canvas.subviews.compactMap { $0 as? CaptureToolbar }.first)
             toolbar.layoutSubtreeIfNeeded()
             let buttons = toolbar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-            #expect(buttons.count == 16 && canvas.bounds.contains(toolbar.frame))
+            #expect(buttons.count == CaptureMark.Kind.allCases.count + 10 && canvas.bounds.contains(toolbar.frame))
+            #expect(buttons.contains { $0.accessibilityLabel() == CaptureMark.Kind.ellipse.title })
             for button in buttons { #expect(button.frame.width >= 26 && button.accessibilityLabel() != nil) }
             let redact = try #require(buttons.first { $0.toolTip == CaptureMark.Kind.cover.title })
             redact.performClick(nil)
@@ -127,7 +164,7 @@ struct CaptureTests {
         }
     }
     @Test func polygonExportsTransparentCornersAndClipsMarksAtRetinaScale() throws {
-        let photo = try photo(width: 80, height: 60, points: CGSize(width: 40, height: 30))
+        let photo = try captureTestPhoto(width: 80, height: 60, points: CGSize(width: 40, height: 30))
         let polygon = try #require(CapturePolygon([
             CGPoint(x: 10, y: 5), CGPoint(x: 30, y: 8), CGPoint(x: 20, y: 25)
         ]))
@@ -155,16 +192,28 @@ struct CaptureTests {
         let toolbar = CaptureToolbar()
         panel.contentView?.addSubview(toolbar)
         let buttons = toolbar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-        let singleRow = toolbar.frame.size
+        let fullWidth = toolbar.frame.size
+        #expect(Set(buttons.map { $0.frame.minY }).count == 2)
+        let line = try #require(buttons.first { $0.accessibilityLabel() == CaptureMark.Kind.line.title })
+        let copy = try #require(buttons.first { $0.accessibilityLabel() == L("复制图片（Enter）") })
+        #expect(copy.frame.maxY < line.frame.minY)
+        let besideSecondRow = toolbar.convert(CGPoint(x: copy.frame.midX, y: line.frame.midY), to: toolbar.superview)
+        #expect(toolbar.hitTest(besideSecondRow) == nil)
+        toolbar.setPrimaryRowOnTop(false)
+        #expect(line.frame.maxY < copy.frame.minY)
+        toolbar.setPrimaryRowOnTop(true)
+        toolbar.fit(within: 408)
+        #expect(toolbar.frame.width <= 408 && Set(buttons.map { $0.frame.minY }).count == 2)
+        #expect(copy.frame.maxY < line.frame.minY)
         toolbar.fit(within: 308)
-        #expect(toolbar.frame.width <= 308 && toolbar.frame.height > singleRow.height)
+        #expect(toolbar.frame.width <= 308 && toolbar.frame.height > fullWidth.height)
         for (index, button) in buttons.enumerated() {
             #expect(toolbar.bounds.contains(button.frame))
             #expect(buttons.dropFirst(index + 1).allSatisfy { !$0.frame.intersects(button.frame) })
             #expect(toolbar.hitTest(button.convert(NSPoint(x: 16, y: 16), to: toolbar.superview)) === button)
         }
         toolbar.fit(within: 640)
-        #expect(toolbar.frame.size == singleRow)
+        #expect(toolbar.frame.size == fullWidth)
 
         let arrow = try #require(buttons.first { $0.accessibilityLabel() == CaptureMark.Kind.arrow.title })
         let undo = try #require(buttons.first { $0.accessibilityLabel() == L("撤销标注") })
@@ -229,17 +278,27 @@ struct CaptureTests {
             }
             throw CocoaError(.coderValueNotFound)
         }
-        func clickWindow(_ panel: NSWindow, at point: CGPoint? = nil) throws {
+        func mouse(_ type: NSEvent.EventType, at point: CGPoint, in panel: NSWindow,
+                   modifiers: NSEvent.ModifierFlags = [], clicks: Int = 1) throws {
+            let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
+                timestamp: 1, windowNumber: panel.windowNumber, context: nil, eventNumber: 1, clickCount: clicks, pressure: 1))
+            panel.sendEvent(event)
+        }
+        func clickWindow(_ panel: NSWindow, at point: CGPoint? = nil, clicks: Int = 1) throws {
             let point = point ?? CGPoint(x: target.midX, y: target.midY)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let event = try #require(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-                                                            timestamp: 1, windowNumber: panel.windowNumber,
-                                                            context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-                panel.sendEvent(event)
+                try mouse(type, at: point, in: panel, clicks: clicks)
             }
         }
-        func press(_ key: CGKeyCode, _ char: String, in panel: NSWindow) throws {
-            let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+        func setShift(_ down: Bool, in panel: NSWindow) throws {
+            let event = try #require(NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: down ? .shift : [],
+                timestamp: 1, windowNumber: panel.windowNumber, context: nil, characters: "",
+                charactersIgnoringModifiers: "", isARepeat: false, keyCode: KeyCode.shift))
+            panel.sendEvent(event)
+        }
+        func press(_ key: CGKeyCode, _ char: String, in panel: NSWindow,
+                   modifiers: NSEvent.ModifierFlags = [], type: NSEvent.EventType = .keyDown) throws {
+            let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: modifiers,
                                                       timestamp: 1, windowNumber: panel.windowNumber, context: nil,
                                                       characters: char, charactersIgnoringModifiers: char,
                                                       isARepeat: false, keyCode: key))
@@ -331,22 +390,141 @@ struct CaptureTests {
         try press(KeyCode.backspace, "\u{7f}", in: panel)
         try clickWindow(panel, at: vertices[0])
         #expect(polygonCanvas.polygon?.vertices == vertices)
+        let historyButtons = polygonCanvas.toolbar.subviews.compactMap { $0 as? NSButton }
+        let undo = try #require(historyButtons.first { $0.accessibilityLabel() == L("撤销") })
+        let redo = try #require(historyButtons.first { $0.accessibilityLabel() == L("重做") })
+        #expect(!undo.isEnabled && !redo.isEnabled)
+        func expectShape(_ shape: CapturePolygon) {
+            #expect(polygonCanvas.polygon == shape && polygonCanvas.selection == shape.bounds)
+        }
+        func undoEdit() throws { try press(KeyCode.z, "z", in: panel, modifiers: .command) }
+        func redoEdit() throws { try press(KeyCode.z, "Z", in: panel, modifiers: [.shift, .command]) }
+
+        let first = CGPoint(x: 55, y: 25)
+        try mouse(.leftMouseDown, at: CGPoint(x: 88, y: 34), in: panel)
+        try mouse(.leftMouseDragged, at: CGPoint(x: 53, y: 29), in: panel)
+        #expect(polygonCanvas.polygon?.vertices.first == first && polygonCanvas.selection?.origin == first)
+        try mouse(.leftMouseUp, at: CGPoint(x: 53, y: 29), in: panel)
+        let firstMoved = try #require(polygonCanvas.polygon)
+
+        let raw = CGPoint(x: 409, y: 80)
+        try mouse(.leftMouseDown, at: vertices[1], in: panel)
+        try mouse(.leftMouseDragged, at: raw, in: panel)
+        #expect(polygonCanvas.polygon?.vertices[1] == raw && polygonCanvas.selection?.maxX == raw.x)
+        try setShift(true, in: panel)
+        let adjusted = try #require(polygonCanvas.polygon)
+        let snapped = adjusted.vertices[1]
+        #expect(abs(atan2(snapped.y - first.y, snapped.x - first.x) - .pi / 12) < 1e-7)
+        #expect(adjusted.vertices.first == first && adjusted.vertices.last == vertices[2])
+        #expect(polygonCanvas.selection == adjusted.bounds)
+        try setShift(false, in: panel)
+        #expect(polygonCanvas.polygon?.vertices[1] == raw)
+        try setShift(true, in: panel)
+        try mouse(.leftMouseUp, at: raw, in: panel, modifiers: .shift)
+        try setShift(false, in: panel)
+        #expect(polygonCanvas.polygon == adjusted && !polygonCanvas.isDragging)
+
+        try mouse(.leftMouseDown, at: first, in: panel)
+        try mouse(.leftMouseDragged, at: vertices[2], in: panel)
+        #expect(polygonCanvas.polygon == adjusted)
+        try mouse(.leftMouseDragged, at: CGPoint(x: 30, y: 18), in: panel)
+        #expect(polygonCanvas.selection?.minX == 30)
+        try press(KeyCode.escape, "\u{1b}", in: panel)
+        try mouse(.leftMouseUp, at: CGPoint(x: 30, y: 18), in: panel)
+        #expect(panel.isVisible && polygonCanvas.polygon == adjusted && polygonCanvas.selection == adjusted.bounds)
+
+        try press(KeyCode.backspace, "\u{7f}", in: panel)
+        #expect(polygonCanvas.polygon == adjusted)
+        #expect(undo.isEnabled && !redo.isEnabled)
+        try undoEdit()
+        expectShape(firstMoved)
+        #expect(redo.isEnabled)
+        try redoEdit()
+        expectShape(adjusted)
+
+        // The first click is just outside the closing edge and must preserve the selection.
+        let outsideEdge = CGPoint(x: 99.2, y: 62.6)
+        let projection = CGPoint(x: 101.5, y: 59.5)
+        #expect(!adjusted.contains(outsideEdge))
+        try clickWindow(panel, at: outsideEdge)
+        #expect(polygonCanvas.polygon == adjusted)
+        try clickWindow(panel, at: outsideEdge, clicks: 2)
+        let added = try #require(polygonCanvas.polygon)
+        #expect(added.vertices.dropLast().elementsEqual(adjusted.vertices))
+        let inserted = try #require(added.vertices.last)
+        #expect(hypot(inserted.x - projection.x, inserted.y - projection.y) < 1e-7)
+        try clickWindow(panel, at: first)
+        try clickWindow(panel, at: inserted)
+        try press(KeyCode.forwardDelete, "\u{f728}", in: panel)
+        #expect(polygonCanvas.polygon == adjusted)
+        try undoEdit()
+        expectShape(added)
+        undo.performClick(nil)
+        expectShape(adjusted)
+        redo.performClick(nil)
+        expectShape(added)
+        try redoEdit()
+        expectShape(adjusted)
+        try undoEdit()
+        try undoEdit()
+        expectShape(adjusted)
+
+        try clickWindow(panel, at: outsideEdge)
+        try clickWindow(panel, at: outsideEdge, clicks: 2)
+        #expect(!redo.isEnabled)
+        let movedAnchor = CGPoint(x: 95, y: 104)
+        try mouse(.leftMouseDown, at: inserted, in: panel)
+        try mouse(.leftMouseDragged, at: movedAnchor, in: panel)
+        try mouse(.leftMouseUp, at: movedAnchor, in: panel)
+        let edited = try #require(polygonCanvas.polygon)
+        #expect(edited.vertices == adjusted.vertices + [movedAnchor])
+
+        try press(KeyCode.rightArrow, "\u{f703}", in: panel)
+        polygonCanvas.advanceDirectionRepeat(at: .infinity)
+        polygonCanvas.advanceDirectionRepeat(at: .infinity)
+        try press(KeyCode.rightArrow, "\u{f703}", in: panel, type: .keyUp)
+        expectShape(edited.offsetBy(dx: 3, dy: 0))
+        try undoEdit()
+        expectShape(edited)
+
         let scrollButton = try #require(polygonCanvas.toolbar.subviews.compactMap { $0 as? NSButton }.first {
             $0.toolTip == L("长截图需要矩形选区")
         })
         #expect(!scrollButton.isEnabled)
         polygonCanvas.toolbar.perform?(.tool(.polygon))
-        for point in [CGPoint(x: 170, y: 70), CGPoint(x: 240, y: 70), CGPoint(x: 214, y: 108)] {
+        for point in [CGPoint(x: 170, y: 90), CGPoint(x: 235, y: 90), CGPoint(x: 214, y: 115)] {
             try clickWindow(panel, at: point)
         }
         try press(KeyCode.returnKey, "\r", in: panel)
-        #expect(panel.isVisible && polygonCanvas.marks.first?.kind == .polygon)
+        let mark = try #require(polygonCanvas.marks.first)
+        #expect(panel.isVisible && mark.kind == .polygon)
+        try clickWindow(panel, at: first)
+        try press(KeyCode.backspace, "\u{7f}", in: panel)
+        #expect(polygonCanvas.polygon?.vertices == Array(edited.vertices.dropFirst()) && polygonCanvas.marks == [mark])
+        try undoEdit()
+        expectShape(edited)
+        #expect(polygonCanvas.marks == [mark])
+        try undoEdit()
+        #expect(polygonCanvas.marks.isEmpty)
+        try undoEdit()
+        expectShape(added)
+        try redoEdit()
+        expectShape(edited)
+        try redoEdit()
+        #expect(polygonCanvas.marks == [mark])
         try press(KeyCode.returnKey, "\r", in: panel)
         let cutoutData = try #require(pb.data(forType: .png))
         let cutout = try #require(NSBitmapImageRep(data: cutoutData))
-        #expect(!panel.isVisible && cutout.pixelsWide == 260 && cutout.pixelsHigh == 110 && cutout.hasAlpha)
-        let stroke = try #require(cutout.colorAt(x: 110, y: 70)?.usingColorSpace(.sRGB))
+        let crop = photo.pixelRect(edited.bounds)
+        #expect(!panel.isVisible && cutout.pixelsWide == Int(crop.width) && cutout.pixelsHigh == Int(crop.height) && cutout.hasAlpha)
+        let stroke = try #require(cutout.colorAt(x: 151, y: 50)?.usingColorSpace(.sRGB))
         #expect(stroke.redComponent > 0.95 && stroke.greenComponent < 0.35)
+        let outside = try #require(cutout.colorAt(x: cutout.pixelsWide - 4, y: cutout.pixelsHigh - 4))
+        #expect(outside.alphaComponent < 0.05)
+        let addedArea = CGPoint(x: 125, y: 88)
+        #expect(!adjusted.contains(addedArea))
+        let inside = try #require(cutout.colorAt(x: Int(addedArea.x - crop.minX), y: Int(edited.bounds.maxY - addedArea.y)))
+        #expect(inside.alphaComponent > 0.95)
     }
 
 }

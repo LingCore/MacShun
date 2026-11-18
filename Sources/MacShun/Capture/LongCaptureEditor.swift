@@ -47,8 +47,8 @@ final class LongCaptureEditor: NSView {
 
     private func goBack() { if !rendering { onBack() } }
     private func applyMarks() {
-        guard !rendering, !canvas.isPlacingPolygonMark else { return }
-        canvas.finishText(commit: true)
+        guard !rendering, !canvas.isPlacingPolygonMark, canvas.finishText(commit: true) else { return }
+        canvas.finishPolyline()
         onDone(canvas.annotations)
     }
 

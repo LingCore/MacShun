@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-import CoreGraphics
-import Foundation
+import AppKit
 import CoreText
 
 enum CaptureMode: Equatable {
@@ -15,11 +14,28 @@ enum CaptureMode: Equatable {
     }
 }
 
-/// 坐标始终是当前屏幕内的点（AppKit，左下为原点），只在裁切时换成图片像素。
+/// 坐标始终是当前屏幕内的点（AppKit，左下为原点），裁切和取色时换成图片像素。
 struct CaptureImage {
     let image: CGImage
     let size: CGSize
     var bounds: CGRect { CGRect(origin: .zero, size: size) }
+
+    func pixel(at point: CGPoint) -> CGPoint? {
+        guard point.x >= 0, point.x < size.width, point.y >= 0, point.y <= size.height else { return nil }
+        let x = floor(point.x * (CGFloat(image.width) / size.width))
+        let y = floor((size.height - point.y) * (CGFloat(image.height) / size.height))
+        return CGPoint(x: min(x, CGFloat(image.width - 1)), y: min(y, CGFloat(image.height - 1)))
+    }
+
+    /// 将光标放在目标像素的中心，Retina 下连续微调也不会落在像素边界上。
+    func nudgedPointer(_ point: CGPoint, dx: Int, dy: Int) -> CGPoint {
+        let clamped = CGPoint(x: min(max(point.x, 0), size.width.nextDown), y: min(max(point.y, 0), size.height))
+        let pixel = pixel(at: clamped) ?? .zero
+        let x = min(max(0, pixel.x + CGFloat(dx)), CGFloat(image.width - 1))
+        let y = min(max(0, pixel.y - CGFloat(dy)), CGFloat(image.height - 1))
+        let rect = pointRect(CGRect(x: x, y: y, width: 1, height: 1))
+        return CGPoint(x: rect.midX, y: rect.midY)
+    }
 
     func pixelRect(_ selection: CGRect) -> CGRect {
         let area = selection.standardized.intersection(bounds)
@@ -149,6 +165,53 @@ struct AnnotationStroke: Equatable {
     var width: Width = .medium
 }
 
+struct AnnotationLineStyle: Equatable {
+    enum Ends: CaseIterable {
+        case none, start, end, both
+
+        var title: String {
+            switch self {
+            case .none: L("无箭头")
+            case .start: L("起点箭头")
+            case .end: L("终点箭头")
+            case .both: L("双向箭头")
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .none: "line.diagonal"
+            case .start: "arrow.left"
+            case .end: "arrow.right"
+            case .both: "arrow.left.and.right"
+            }
+        }
+    }
+
+    enum Head: CaseIterable {
+        case filled, outline, open
+
+        var title: String {
+            switch self {
+            case .filled: L("实心箭头")
+            case .outline: L("空心箭头")
+            case .open: L("开口箭头")
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .filled: "arrowtriangle.right.fill"
+            case .outline: "arrowtriangle.right"
+            case .open: "chevron.right"
+            }
+        }
+    }
+
+    var ends: Ends = .none
+    var head: Head = .filled
+}
+
 struct AnnotationLettering: Equatable {
     enum Size: Int, CaseIterable {
         case small = 12, regular = 18, large = 24, extraLarge = 32, largest = 48
@@ -162,15 +225,62 @@ struct AnnotationLettering: Equatable {
     var size: Size = .regular
 }
 
+struct AnnotationTextFormat: Equatable {
+    enum Alignment: CaseIterable {
+        case left, center, right
+
+        var title: String {
+            switch self {
+            case .left: L("左对齐")
+            case .center: L("居中对齐")
+            case .right: L("右对齐")
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .left: "text.alignleft"
+            case .center: "text.aligncenter"
+            case .right: "text.alignright"
+            }
+        }
+
+        var appKitAlignment: NSTextAlignment {
+            switch self {
+            case .left: .left
+            case .center: .center
+            case .right: .right
+            }
+        }
+
+        var paragraphStyle: CTParagraphStyle {
+            var alignment: CTTextAlignment = switch self {
+            case .left: .left
+            case .center: .center
+            case .right: .right
+            }
+            return withUnsafePointer(to: &alignment) { pointer in
+                var setting = CTParagraphStyleSetting(spec: .alignment, valueSize: MemoryLayout<CTTextAlignment>.size,
+                                                      value: pointer)
+                return CTParagraphStyleCreate(&setting, 1)
+            }
+        }
+    }
+
+    var alignment: Alignment = .left
+    var bold = false
+    var showsBackground = true
+}
+
 enum AnnotationStyle: Equatable {
     case stroke(AnnotationStroke)
-    case lettering(AnnotationLettering)
+    case lettering(AnnotationLettering, text: AnnotationTextFormat? = nil)
     case fill(AnnotationColor)
 
     var color: AnnotationColor {
         switch self {
         case .stroke(let stroke): stroke.color
-        case .lettering(let lettering): lettering.color
+        case .lettering(let lettering, _): lettering.color
         case .fill(let color): color
         }
     }
@@ -178,7 +288,7 @@ enum AnnotationStyle: Equatable {
     var sizeTitle: String? {
         switch self {
         case .stroke(let stroke): stroke.width.title
-        case .lettering(let lettering): lettering.size.title
+        case .lettering(let lettering, _): lettering.size.title
         case .fill: nil
         }
     }
@@ -186,15 +296,19 @@ enum AnnotationStyle: Equatable {
 
 struct CaptureMark: Equatable {
     enum Kind: CaseIterable {
-        case arrow, rectangle, polygon, cover, text, number
+        case arrow, line, rectangle, ellipse, polygon, cover, text, number
 
-        var usesStroke: Bool { self == .arrow || self == .rectangle || self == .polygon }
+        var isLine: Bool { self == .line || self == .arrow }
+        var isBasicShape: Bool { self == .rectangle || self == .ellipse || self == .cover }
+        var usesStroke: Bool { self != .cover && (isLine || isBasicShape || self == .polygon) }
         var usesLettering: Bool { self == .text || self == .number }
 
         var title: String {
             switch self {
             case .arrow: L("箭头")
+            case .line: L("直线")
             case .rectangle: L("矩形")
+            case .ellipse: L("椭圆")
             case .polygon: L("锚点标注")
             case .cover: L("实心遮挡")
             case .text: L("文字标注")
@@ -204,7 +318,9 @@ struct CaptureMark: Equatable {
         var symbol: String {
             switch self {
             case .arrow: "arrow.up.right"
+            case .line: "line.diagonal"
             case .rectangle: "rectangle"
+            case .ellipse: "oval"
             case .polygon: "point.3.filled.connected.trianglepath.dotted"
             case .cover: "rectangle.fill"
             case .text: "text.cursor"
@@ -221,24 +337,55 @@ struct CaptureMark: Equatable {
     var stroke = AnnotationStroke()
     var letteringStyle: AnnotationLettering?
     var fillColor: AnnotationColor = .black
+    var customLineStyle: AnnotationLineStyle?
+    var lineShape: CaptureLineShape?
+    var hasFixedTextWidth = false
+    var textFormat = AnnotationTextFormat()
+
+    static let textInset = CGSize(width: 5, height: 3)
+    private var textLayoutWidth: CGFloat { max(1, end.x - start.x - 2 * Self.textInset.width) }
+
+    var lineStyle: AnnotationLineStyle {
+        customLineStyle ?? AnnotationLineStyle(ends: kind == .arrow ? .end : .none)
+    }
 
     var lettering: AnnotationLettering { letteringStyle ?? AnnotationLettering(color: kind == .number ? .red : .black) }
+    var annotationFont: NSFont {
+        .systemFont(ofSize: lettering.size.points, weight: kind == .text && textFormat.bold ? .bold : .regular)
+    }
+
     var style: AnnotationStyle? {
         if kind.usesStroke { return .stroke(stroke) }
-        if kind.usesLettering { return .lettering(lettering) }
+        if kind.usesLettering { return .lettering(lettering, text: kind == .text ? textFormat : nil) }
         if kind == .cover { return .fill(fillColor) }
         return nil
     }
 
-    private func lettering(_ value: String, color: CGColor) -> NSAttributedString {
-        NSAttributedString(string: value, attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): lettering.size.typeface,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color
-        ])
+    mutating func applyLettering(_ lettering: AnnotationLettering, text format: AnnotationTextFormat?) {
+        if let format {
+            if format.alignment != textFormat.alignment, !hasFixedTextWidth, !text.isEmpty {
+                // 对现有文字框重新对齐时，沿用它当前可见的宽度。
+                end.x = bounds.maxX
+                hasFixedTextWidth = true
+            }
+            textFormat = format
+        }
+        letteringStyle = lettering
+    }
+
+    private func textFramesetter(_ value: String, alignment: AnnotationTextFormat.Alignment) -> CTFramesetter {
+        CTFramesetterCreateWithAttributedString(NSAttributedString(string: value, attributes: [
+            .font: annotationFont,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): lettering.color.ink,
+            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): alignment.paragraphStyle
+        ]))
     }
 
     private var numberLine: CTLine {
-        CTLineCreateWithAttributedString(lettering(String(number), color: lettering.color.contrastingInk))
+        CTLineCreateWithAttributedString(NSAttributedString(string: String(number), attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): lettering.size.typeface,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): lettering.color.contrastingInk
+        ]))
     }
 
     private func badgeBounds(for glyph: CGRect) -> CGRect {
@@ -249,57 +396,115 @@ struct CaptureMark: Equatable {
 
     var bounds: CGRect {
         switch kind {
+        case .line, .arrow: return linePath(from: start, to: end).boundingBoxOfPath
         case .polygon: return polygon?.bounds ?? .null
+        case .cover: return polygon?.bounds ?? CaptureImage.rect(from: start, to: end)
         case .number: return badgeBounds(for: CTLineGetBoundsWithOptions(numberLine, .useGlyphPathBounds))
         case .text:
-            let maxWidth = max(1, end.x - start.x - 10)
-            let setter = CTFramesetterCreateWithAttributedString(lettering(text, color: lettering.color.ink))
+            let maxWidth = textLayoutWidth
+            // 结尾的空行也参与测量，编辑和导出时保留相同的段落高度。
+            let content = text.last?.isNewline == true ? text + " " : text
+            let setter = textFramesetter(content, alignment: .left)
             let size = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRange(), nil,
                 CGSize(width: maxWidth, height: .greatestFiniteMagnitude), nil)
-            let height = max(ceil(lettering.size.points * 1.22), ceil(size.height) + 2) + 6
-            return CGRect(x: start.x, y: start.y - height, width: min(maxWidth, ceil(size.width) + 1) + 10, height: height)
+            let height = max(ceil(lettering.size.points * 1.22), ceil(size.height) + 2) + 2 * Self.textInset.height
+            let usesFullWidth = hasFixedTextWidth || textFormat.alignment != .left
+            let width = usesFullWidth ? maxWidth : min(maxWidth, ceil(size.width) + 1)
+            return CGRect(x: start.x, y: start.y - height, width: width + 2 * Self.textInset.width, height: height)
         default:
             return CaptureImage.rect(from: start, to: end)
         }
     }
 
-    private var arrowHead: (base: CGPoint, path: CGPath)? {
-        let dx = end.x - start.x, dy = end.y - start.y
+    private struct ArrowGeometry {
+        let base: CGPoint
+        let path: CGPath
+        let length: CGFloat
+    }
+
+    private func arrowHead(tip: CGPoint, opposite: CGPoint) -> ArrowGeometry? {
+        let dx = tip.x - opposite.x, dy = tip.y - opposite.y
         let length = hypot(dx, dy)
         guard length > 0 else { return nil }
         let head = min(8 + 2 * stroke.width.points, length * 0.45)
-        let base = CGPoint(x: end.x - dx / length * head, y: end.y - dy / length * head)
+        let base = CGPoint(x: tip.x - dx / length * head, y: tip.y - dy / length * head)
         let wing = head * 0.45
         let path = CGMutablePath()
-        path.addLines(between: [end,
-            CGPoint(x: base.x - dy / length * wing, y: base.y + dx / length * wing),
-            CGPoint(x: base.x + dy / length * wing, y: base.y - dx / length * wing)])
-        path.closeSubpath()
-        return (base, path)
+        path.addLines(between: [CGPoint(x: base.x - dy / length * wing, y: base.y + dx / length * wing),
+                                tip, CGPoint(x: base.x + dy / length * wing, y: base.y - dx / length * wing)])
+        if lineStyle.head != .open { path.closeSubpath() }
+        return ArrowGeometry(base: base, path: path, length: head)
+    }
+
+    private var arrowHeads: (start: ArrowGeometry?, end: ArrowGeometry?) {
+        guard lineShape?.isClosed != true else { return (nil, nil) }
+        let ends = lineStyle.ends
+        let firstTangent: CGPoint, lastTangent: CGPoint
+        if let curves = curveSegments, let first = curves.first, let last = curves.last {
+            let weight = curves.reduce(0) { $0 + $1.weight }
+            firstTangent = first.tangentGuide(atStart: true, totalWeight: weight)
+            lastTangent = last.tangentGuide(atStart: false, totalWeight: weight)
+        } else {
+            let nodes = lineNodes
+            firstTangent = tangentGuide(in: nodes, from: 0, step: 1)
+            lastTangent = tangentGuide(in: nodes, from: nodes.count - 1, step: -1)
+        }
+        return (ends == .start || ends == .both ? arrowHead(tip: start, opposite: firstTangent) : nil,
+                ends == .end || ends == .both ? arrowHead(tip: end, opposite: lastTangent) : nil)
+    }
+
+    private func tangentGuide(in nodes: [CGPoint], from endpoint: Int, step: Int) -> CGPoint {
+        let origin = nodes[endpoint]
+        var guide = nodes[endpoint + step]
+        let dx = guide.x - origin.x, dy = guide.y - origin.y
+        let length = hypot(dx, dy)
+        var index = endpoint + step * 2
+        // 同一直线上的节点不改变箭头可用的线段长度。
+        while nodes.indices.contains(index) {
+            let node = nodes[index]
+            let advance = (node.x - guide.x) * dx + (node.y - guide.y) * dy
+            let cross = (node.x - origin.x) * dy - (node.y - origin.y) * dx
+            guard advance > 0, abs(cross) <= length * 0.00001 else { break }
+            guide = node
+            index += step
+        }
+        return guide
     }
 
     var selectionBounds: CGRect {
         guard kind.usesStroke else { return bounds.insetBy(dx: -3, dy: -3) }
         let margin = stroke.width.points / 2 + 2
         let shaft = bounds.insetBy(dx: -margin, dy: -margin)
-        if kind == .arrow, let head = arrowHead { return shaft.union(head.path.boundingBoxOfPath.insetBy(dx: -2, dy: -2)) }
-        return shaft
+        guard kind.isLine else { return shaft }
+        let heads = arrowHeads
+        return [heads.start, heads.end].compactMap { $0 }.reduce(shaft) {
+            $0.union($1.path.boundingBoxOfPath.insetBy(dx: -margin, dy: -margin))
+        }
     }
 
     func hit(_ point: CGPoint) -> Bool {
         let box = bounds
-        let tolerance = stroke.width.points / 2 + 4
+        let tolerance = kind == .cover ? 5 : stroke.width.points / 2 + 4
         switch kind {
-        case .arrow:
-            if let head = arrowHead, head.path.contains(point) { return true }
-            let dx = end.x - start.x, dy = end.y - start.y
-            let t = min(1, max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / max(1, dx * dx + dy * dy)))
-            return hypot(point.x - start.x - t * dx, point.y - start.y - t * dy) <= tolerance
+        case .arrow, .line:
+            let heads = arrowHeads
+            for head in [heads.start, heads.end].compactMap({ $0 }) {
+                if lineStyle.head != .open, head.path.contains(point) { return true }
+                if head.path.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
+                                  lineJoin: .round, miterLimit: 10).contains(point) { return true }
+            }
+            return linePath(from: start, to: end).copy(strokingWithWidth: tolerance * 2,
+                       lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
         case .rectangle:
             return box.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
                 && !box.insetBy(dx: tolerance, dy: tolerance).contains(point)
-        case .polygon:
-            guard let polygon, box.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return false }
+        case .ellipse:
+            return box.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
+                && ellipsePath.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
+                                    lineJoin: .round, miterLimit: 10).contains(point)
+        case .polygon, .cover:
+            guard box.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return false }
+            guard let polygon else { return kind == .cover }
             return polygon.contains(point) || polygon.path.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
                                                                 lineJoin: .round, miterLimit: 10).contains(point)
         default: return box.insetBy(dx: -5, dy: -5).contains(point)
@@ -307,10 +512,11 @@ struct CaptureMark: Equatable {
     }
 
     func translated(dx: CGFloat, dy: CGFloat) -> Self {
-        if let polygon { return Self(polygon: polygon.offsetBy(dx: dx, dy: dy), stroke: stroke) }
+        if let polygon { return replacingPolygon(with: polygon.offsetBy(dx: dx, dy: dy)) }
         var copy = self
         copy.start = CGPoint(x: start.x + dx, y: start.y + dy)
         copy.end = CGPoint(x: end.x + dx, y: end.y + dy)
+        copy.lineShape = lineShape?.translated(dx: dx, dy: dy)
         return copy
     }
 
@@ -340,35 +546,66 @@ struct CaptureMark: Equatable {
             CTLineDraw(line, context)
         case .text:
             let box = bounds
-            context.setFillColor(lettering.color.contrastingInk)
-            context.addPath(CGPath(roundedRect: box, cornerWidth: 3, cornerHeight: 3, transform: nil))
-            context.fillPath()
-            let setter = CTFramesetterCreateWithAttributedString(lettering(text, color: lettering.color.ink))
-            let path = CGPath(rect: box.insetBy(dx: 5, dy: 3), transform: nil)
+            if textFormat.showsBackground {
+                context.setFillColor(lettering.color.contrastingInk)
+                context.addPath(CGPath(roundedRect: box, cornerWidth: 3, cornerHeight: 3, transform: nil))
+                context.fillPath()
+            }
+            let setter = textFramesetter(text, alignment: textFormat.alignment)
+            var content = box.insetBy(dx: Self.textInset.width, dy: Self.textInset.height)
+            content.size.width = textLayoutWidth
+            let path = CGPath(rect: content, transform: nil)
             context.textMatrix = .identity
             CTFrameDraw(CTFramesetterCreateFrame(setter, CFRange(), path, nil), context)
         case .cover:
             context.setShouldAntialias(false)
             context.setFillColor(fillColor.ink)
-            context.fill(rect)
+            if let polygon {
+                context.addPath(polygon.path)
+                context.drawPath(using: .eoFill)
+            } else {
+                context.fill(rect)
+            }
         case .rectangle:
             context.stroke(rect)
+        case .ellipse:
+            context.addPath(ellipsePath)
+            context.strokePath()
         case .polygon:
             if let polygon {
                 context.addPath(polygon.path)
                 context.strokePath()
             }
-        case .arrow:
-            guard let head = arrowHead else { return }
-            if hypot(end.x - head.base.x, end.y - head.base.y) <= stroke.width.points / 2 {
+        case .arrow, .line:
+            guard start != end || lineShape != nil else { return }
+            let heads = arrowHeads
+            let headStyle = lineStyle.head
+            let startPoint = headStyle == .open ? start : heads.start?.base ?? start
+            let endPoint = headStyle == .open ? end : heads.end?.base ?? end
+            let visibleHeads = [heads.start, heads.end].compactMap { $0 }
+            if !visibleHeads.isEmpty, headStyle != .filled || visibleHeads.contains(where: { $0.length <= stroke.width.points / 2 }) {
                 context.setLineCap(.butt)
             }
-            context.move(to: start)
-            context.addLine(to: head.base)
-            context.strokePath()
-            context.addPath(head.path)
+            if case .curve = lineShape {
+                context.saveGState()
+                if headStyle != .open, !visibleHeads.isEmpty {
+                    // 沿完整曲线画线杆，在封闭箭头内挖去线杆，保持曲率及空心样式。
+                    context.addRect(selectionBounds)
+                    for head in visibleHeads { context.addPath(head.path) }
+                    context.clip(using: .evenOdd)
+                    context.setLineCap(.butt)
+                }
+                context.addPath(linePath(from: start, to: end))
+                context.strokePath()
+                context.restoreGState()
+            } else {
+                context.addPath(linePath(from: startPoint, to: endPoint))
+                context.strokePath()
+            }
+            for head in visibleHeads { context.addPath(head.path) }
             context.setFillColor(ink)
-            context.fillPath()
+            context.setLineCap(.round)
+            context.drawPath(using: headStyle == .filled ? .fill : .stroke)
         }
     }
 }
@@ -378,5 +615,14 @@ extension CaptureMark {
         let bounds = polygon.bounds
         self.init(kind: .polygon, start: bounds.origin, end: CGPoint(x: bounds.maxX, y: bounds.maxY),
                   polygon: polygon, stroke: stroke)
+    }
+
+    func replacingPolygon(with shape: CapturePolygon) -> Self {
+        let bounds = shape.bounds
+        var updated = self
+        updated.polygon = shape
+        updated.start = bounds.origin
+        updated.end = CGPoint(x: bounds.maxX, y: bounds.maxY)
+        return updated
     }
 }
