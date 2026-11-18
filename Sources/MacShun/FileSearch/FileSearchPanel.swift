@@ -303,6 +303,7 @@ final class FileSearchController {
             else { NSSound.beep() }
         }
         model.onClose = { [weak self] in self?.hide() }
+        model.onShowResultMenu = { [weak self] in self?.showResultMenu() }
         model.onChooseFolder = { [weak self] in self?.chooseFolder() }
         model.onAddLocation = { [weak self] path in
             guard let self else { return }
@@ -363,6 +364,25 @@ final class FileSearchController {
             return nil
         }
         return panel
+    }
+
+    private func showResultMenu() {
+        guard !showingModal, panel.isKeyWindow, let view = panel.contentView,
+              (panel.firstResponder as? NSTextView)?.hasMarkedText() != true,
+              let menu = model.contextMenuForSelection() else { return }
+        let point: NSPoint
+        if let event = NSApp.currentEvent, event.type == .leftMouseUp, event.window === panel {
+            point = view.convert(event.locationInWindow, from: nil)
+        } else {
+            let inset = FileSearchView.margin + 12
+            point = NSPoint(x: view.bounds.minX + inset,
+                            y: view.isFlipped ? view.bounds.maxY - inset : view.bounds.minY + inset)
+        }
+        showingModal = true
+        menu.popUp(positioning: nil, at: point, in: view)
+        showingModal = false
+        if panel.isKeyWindow { model.focusSearch() }
+        else if panel.isVisible { hide() }
     }
 
     private func chooseFolder() {
@@ -920,6 +940,7 @@ final class FileSearchModel: ObservableObject {
     var onAction: (FileSearchResult, FileAction) -> Void = { _, _ in }
     var onFeature: (SystemFeature) -> Void = { _ in }
     var onClose: () -> Void = {}
+    var onShowResultMenu: () -> Void = {}
     var onChooseFolder: () -> Void = {}
     var onAddLocation: (String) -> Void = { _ in }
     var onSaveFilters: () -> Void = {}
@@ -1383,6 +1404,10 @@ final class FileSearchModel: ObservableObject {
 
     func handlePanelKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if event.keyCode == KeyCode.o, modifiers == .control || modifiers == .command {
+            if !event.isARepeat { onShowResultMenu() }
+            return true
+        }
         if modifiers == .control, event.keyCode == KeyCode.e {
             if !event.isARepeat { toggleExpanded() }
             return true
@@ -1476,6 +1501,26 @@ final class FileSearchModel: ObservableObject {
         case .preview: showQuickLook(result)
         case .open: onAction(result, primaryAction)
         case .reveal: onAction(result, .reveal)
+        }
+    }
+
+    var canShowResultMenu: Bool {
+        switch selectedRow {
+        case .file(let result):
+            return !waitingForNames && (result.snippet == nil || !searchingContent || contentResultsQuery == query)
+        case .project: return true
+        default: return false
+        }
+    }
+
+    func contextMenuForSelection() -> NSMenu? {
+        guard canShowResultMenu else { return nil }
+        pendingSelectionAction = nil
+        cancelDelete()
+        switch selectedRow {
+        case .file(let result): return contextMenu(for: result)
+        case .project(let project): return contextMenu(for: project)
+        default: return nil
         }
     }
 
@@ -2066,6 +2111,11 @@ struct FileSearchView: View {
         let iconOnly = density == .icons
         return HStack(spacing: iconOnly ? 6 : 8) {
             if model.isExpanded { pageControls(iconOnly: iconOnly) }
+            if model.canShowResultMenu {
+                searchButton(L("更多操作"), key: "Ctrl+O / ⌘O", symbol: "ellipsis", showKey: false, showTitle: detailed) {
+                    model.onShowResultMenu()
+                }
+            }
             if let result = model.selectedResult {
                 if result.canSearchInside {
                     searchButton(L("在此搜索"), key: "⌘F", symbol: "magnifyingglass", showKey: detailed, showTitle: !iconOnly) {

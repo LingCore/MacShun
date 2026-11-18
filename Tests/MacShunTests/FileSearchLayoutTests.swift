@@ -8,6 +8,46 @@ import Testing
 @Suite("搜索结果布局", .serialized)
 @MainActor
 struct FileSearchLayoutTests {
+    @Test func resultMenuShortcutsUseTheSelectedFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = FileSearchModel(index: FileIndex(mainRoots: []), contentIndex: ContentIndex(directory: directory))
+        let first = FileSearchResult(path: "/tmp/first.txt", name: "first.txt", isDirectory: false, score: 2)
+        let second = FileSearchResult(path: "/tmp/second.txt", name: "second.txt", isDirectory: false, score: 1)
+        model.showPreview(query: "txt", results: [first, second])
+        model.selection = 1
+        var menus: [NSMenu] = []
+        model.onShowResultMenu = { [weak model] in
+            if let menu = model?.contextMenuForSelection() { menus.append(menu) }
+        }
+        var copied: [String] = []
+        model.onAction = { result, action in
+            if case .copyPath = action { copied.append(result.path) }
+        }
+
+        func press(_ modifiers: NSEvent.ModifierFlags, repeatKey: Bool = false) throws -> Bool {
+            let event = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                                                      timestamp: 0, windowNumber: 0, context: nil, characters: "o",
+                                                      charactersIgnoringModifiers: "o", isARepeat: repeatKey, keyCode: KeyCode.o))
+            return model.handlePanelKey(event)
+        }
+        #expect(try press(.control))
+        #expect(try press(.command))
+        #expect(try press(.command, repeatKey: true))
+        #expect(try !press([.command, .shift]))
+        #expect(menus.count == 2)
+        let copy = try #require(menus.first?.item(withTitle: L("复制路径")))
+        let action = try #require(copy.action)
+        #expect(NSApplication.shared.sendAction(action, to: copy.target, from: copy))
+        #expect(copied == [second.path])
+        #expect(model.selection == 1)
+        #expect(model.query == "txt")
+
+        model.showPreview(query: "missing", results: [])
+        #expect(try press(.control))
+        #expect(menus.count == 2)
+    }
+
     @Test func draggedPositionKeepsThePanelReachableAndRestoresTheCompactAnchor() throws {
         let inUse = CGRect(x: -1024, y: 24, width: 1024, height: 704)
         let position = FileSearchWindowPosition(point: CGPoint(x: -390, y: 402))
