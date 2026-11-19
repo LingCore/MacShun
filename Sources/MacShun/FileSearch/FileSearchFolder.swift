@@ -7,7 +7,9 @@ import Foundation
 final class FileSearchFolder {
     let path: String
     private let prefix: String
-    private lazy var physicalRoot = Self.physicalPath(path)
+    private let lock = NSLock()
+    private var resolvedPhysicalRoot = false
+    private var cachedPhysicalRoot: String?
     private struct Listing {
         let inode: ino_t
         let device: dev_t
@@ -15,10 +17,30 @@ final class FileSearchFolder {
         let entries: FolderEntries
     }
     private var listings: [String: Listing] = [:]
+    private static let maxCachedListings = 256
 
     init(path: String) {
         self.path = path
         prefix = path == "/" ? "/" : path + "/"
+    }
+
+    private var physicalRoot: String? {
+        lock.lock()
+        if resolvedPhysicalRoot {
+            let root = cachedPhysicalRoot
+            lock.unlock()
+            return root
+        }
+        lock.unlock()
+        let root = Self.physicalPath(path)
+        lock.lock()
+        if !resolvedPhysicalRoot {
+            cachedPhysicalRoot = root
+            resolvedPhysicalRoot = true
+        }
+        let result = cachedPhysicalRoot
+        lock.unlock()
+        return result
     }
 
     func includes(_ directory: String) -> Bool { directory == path || directory.hasPrefix(prefix) }
@@ -66,13 +88,22 @@ final class FileSearchFolder {
               actual == root || actual.hasPrefix(root == "/" ? "/" : root + "/") else { return nil }
         var info = stat()
         guard lstat(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
-        if let saved = listings[directory], saved.inode == info.st_ino, saved.device == info.st_dev,
+        lock.lock()
+        let saved = listings[directory]
+        lock.unlock()
+        if let saved, saved.inode == info.st_ino, saved.device == info.st_dev,
            saved.changed.tv_sec == info.st_ctimespec.tv_sec, saved.changed.tv_nsec == info.st_ctimespec.tv_nsec {
             return saved.entries
         }
         guard let listing = autoreleasepool(invoking: { FileSearchDirectory.read(directory, isCancelled: isCancelled) }),
               !isCancelled() else { return nil }
-        listings[directory] = Listing(inode: info.st_ino, device: info.st_dev, changed: info.st_ctimespec, entries: listing.entries)
+        let fresh = Listing(inode: info.st_ino, device: info.st_dev, changed: info.st_ctimespec, entries: listing.entries)
+        lock.lock()
+        if listings.count >= Self.maxCachedListings, listings[directory] == nil {
+            listings.removeAll(keepingCapacity: true)
+        }
+        listings[directory] = fresh
+        lock.unlock()
         return listing.entries
     }
 }

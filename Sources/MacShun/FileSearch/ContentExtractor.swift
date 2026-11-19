@@ -354,13 +354,70 @@ enum ContentExtractor {
         alarm(90)
         let url = URL(fileURLWithPath: path)
         guard let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageText(at: url) else { exit(1) }
-        FileHandle.standardOutput.write(Data(text.utf8))
+        let limited = truncated(text, maxBytes: maxTextBytes)
+        try? FileHandle.standardOutput.write(contentsOf: Data(limited.utf8))
         exit(0)
     }
 
     /// 打包好的 Mac顺 用子进程读；测试和截图工具里没有 Mac顺 程序可启动，直接读。
     private static let helperExecutable: URL? =
         Bundle.main.bundleIdentifier == "io.github.lingcore.winshun" ? Bundle.main.executableURL : nil
+
+    /// 正在运行中的提取子进程：停止索引或退出程序时立即终止，避免阻塞长达 60 秒。
+    private final class RunningHelper: @unchecked Sendable {
+        let process: Process
+        let readHandle: FileHandle
+        private let lock = NSLock()
+        private var finished = false
+        private var killed = false
+        private var killWork: DispatchWorkItem?
+
+        init(process: Process, readHandle: FileHandle) {
+            self.process = process
+            self.readHandle = readHandle
+        }
+
+        var wasKilled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return killed
+        }
+
+        func cancel() {
+            lock.lock()
+            guard !finished else { lock.unlock(); return }
+            killed = true
+            let pid = process.processIdentifier
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let stillRunning = !self.finished && self.process.isRunning
+                self.lock.unlock()
+                if stillRunning, pid > 0 { kill(pid, SIGKILL) }
+            }
+            killWork?.cancel()
+            killWork = work
+            lock.unlock()
+            process.terminate()
+            try? readHandle.close()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3, execute: work)
+        }
+
+        func markFinished() {
+            lock.lock()
+            finished = true
+            killWork?.cancel()
+            killWork = nil
+            lock.unlock()
+        }
+    }
+
+    private static let activeHelpers = Locked<[ObjectIdentifier: RunningHelper]>([:])
+
+    static func terminateAllHelpers() {
+        let helpers = activeHelpers.withLock { Array($0.values) }
+        helpers.forEach { $0.cancel() }
+    }
 
     private static func helperText(_ kind: Kind, _ url: URL) -> Outcome {
         let ocr = readsImages.get()
@@ -374,26 +431,37 @@ enum ContentExtractor {
         // 建索引不急（扫描版 PDF、图片还要认字），让给前台的程序
         process.qualityOfService = .background
         let output = Pipe()
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return .retryLater }
-        // 卡住的文件最多等一分钟（扫描版 PDF 要认好几页）；不理 SIGTERM 时再过 3 秒强制结束
-        let pid = process.processIdentifier
-        let timedOut = Locked(false)
-        let timeout = DispatchWorkItem {
-            guard process.isRunning else { return }
-            timedOut.set(true)
-            process.terminate()
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3) {
-                if process.isRunning { kill(pid, SIGKILL) }
-            }
+        let readHandle = output.fileHandleForReading
+        let helper = RunningHelper(process: process, readHandle: readHandle)
+        let helperID = ObjectIdentifier(helper)
+        activeHelpers.update { $0[helperID] = helper }
+        defer {
+            helper.markFinished()
+            activeHelpers.update { $0.removeValue(forKey: helperID) }
+            try? readHandle.close()
         }
+        // 卡住的文件最多等一分钟（扫描版 PDF 要认好几页）；不理 SIGTERM 时再过 3 秒强制结束
+        let timeout = DispatchWorkItem { helper.cancel() }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60, execute: timeout)
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let maxRead = maxTextBytes * 2
+        var data = Data()
+        while data.count < maxRead {
+            guard let chunk = try? readHandle.read(upToCount: min(65536, maxRead - data.count)), !chunk.isEmpty else { break }
+            data.append(chunk)
+        }
+        if data.count >= maxRead {
+            // 已经读够上限，关掉读端让子进程尽快退出。
+            try? readHandle.close()
+        }
         process.waitUntilExit()
         timeout.cancel()
-        // 超时多半是电脑太忙（子进程优先级最低），下次再读；子进程崩了是文件的问题，记下来不再读
-        if timedOut.get() { return .retryLater }
+        helper.markFinished()
+        // 超时或主动取消多半是电脑太忙/正在停止，下次再读；子进程崩了是文件的问题，记下来不再读
+        if helper.wasKilled { return .retryLater }
         guard process.terminationReason == .exit, process.terminationStatus == 0 else {
             Log.app.notice("内容索引：读不了 \(url.path, privacy: .public)")
             return .empty

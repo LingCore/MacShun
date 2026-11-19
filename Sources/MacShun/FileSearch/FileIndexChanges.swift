@@ -19,6 +19,8 @@ struct FileIndexChanges {
 
     mutating func record(_ rawPath: String, flags: FSEventStreamEventFlags) {
         guard !rawPath.isEmpty else { return }
+        // 卷卸载由挂载通知单独处理，不能记成目录删除以免清掉外接盘已收录的正文索引。
+        if flags & UInt32(kFSEventStreamEventFlagUnmount) != 0 { return }
         let path = rawPath.hasSuffix("/") && rawPath != "/" ? String(rawPath.dropLast()) : rawPath
         let file = UInt32(kFSEventStreamEventFlagItemIsFile)
         let directory = UInt32(kFSEventStreamEventFlagItemIsDir)

@@ -143,6 +143,7 @@ final class ContentIndex: ObservableObject {
 
     /// 停止读文件。deleteData 为 true 时把索引文件也删掉。
     func stop(deleteData: Bool) {
+        ContentExtractor.terminateAllHelpers()
         workQueue.async {
             guard self.database != nil || deleteData else { return }
             self.documentQuery = nil
@@ -183,29 +184,24 @@ final class ContentIndex: ObservableObject {
     /// 程序正常退出时调用（主线程）：正在读的那批文件不算“读的时候崩了”，下次启动照常读。
     func prepareForQuit() {
         quitting.set(true)
+        ContentExtractor.terminateAllHelpers()
         try? FileManager.default.removeItem(at: readingMarker)
     }
 
     private func open() {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if !openDatabase() {
-            // 数据库坏了：索引只是缓存，删掉重建
+        if !openAndPrepare() {
+            // 数据库或表结构已损坏：先关掉所有读写句柄再删文件重建，避免删掉打开中的 WAL。
             Log.app.error("内容索引：数据库打不开或已损坏，重新建立")
-            removeDatabaseFiles()
-            guard openDatabase() else { return }
-        }
-        guard let db = database, preparePathLookup(db),
-              let count = db.prepare("SELECT count(*) FROM docs WHERE text IS NOT NULL"), count.step(),
-              let query = db.prepare("""
-                  SELECT id, mtime, size, text IS NOT NULL FROM docs
-                  WHERE id = (SELECT id FROM doc_keys WHERE key = ? LIMIT 1)
-                  """) else {
+            documentQuery = nil
             database = nil
-            Log.app.error("内容索引：无法读取文档元数据")
-            return
+            searchQueue.sync { self.reader = nil }
+            removeDatabaseFiles()
+            guard openAndPrepare() else {
+                Log.app.error("内容索引：无法读取文档元数据")
+                return
+            }
         }
-        textCount = Int(count.int(0))
-        documentQuery = query
         // 上次读这一批文件时程序退出了（崩溃或被强制结束）。只有一个文件时就是它：记成“没有内容”，
         // 文件改过之后才会再读；有好几个时不知道是哪个，这次一个一个单独读
         let marker = (try? String(contentsOf: readingMarker, encoding: .utf8)) ?? ""
@@ -222,16 +218,37 @@ final class ContentIndex: ObservableObject {
         try? FileManager.default.removeItem(at: readingMarker)
     }
 
+    private func openAndPrepare() -> Bool {
+        guard openDatabase(), let db = database, preparePathLookup(db),
+              let count = db.prepare("SELECT count(*) FROM docs WHERE text IS NOT NULL"), count.step(),
+              let query = db.prepare("""
+                  SELECT id, mtime, size, text IS NOT NULL FROM docs
+                  WHERE id = (SELECT id FROM doc_keys WHERE key = ? LIMIT 1)
+                  """) else {
+            documentQuery = nil
+            database = nil
+            return false
+        }
+        textCount = Int(count.int(0))
+        documentQuery = query
+        return true
+    }
+
     /// 打开数据库，沿用已有的文档表和全文索引。
     private func openDatabase() -> Bool {
-        guard var db = SQLiteDatabase(path: databasePath) else { return false }
-        if db.int("PRAGMA user_version") != Self.schemaVersion && db.int("SELECT count(*) FROM sqlite_master") != 0 {
-            // 旧格式：整个删掉重建
+        var opened = SQLiteDatabase(path: databasePath)
+        guard let initial = opened else { return false }
+        let needsReset = initial.int("PRAGMA user_version") != Self.schemaVersion
+            && initial.int("SELECT count(*) FROM sqlite_master") != 0
+        if needsReset {
+            // 旧格式：先释放已打开的读写连接，再删掉数据库和 WAL 文件重建。
             Log.app.notice("内容索引：格式变了，重新建立")
+            opened = nil
+            searchQueue.sync { self.reader = nil }
             removeDatabaseFiles()
-            guard let fresh = SQLiteDatabase(path: databasePath) else { return false }
-            db = fresh
+            opened = SQLiteDatabase(path: databasePath)
         }
+        guard let db = opened else { return false }
         let ok = db.execute("""
             PRAGMA journal_mode = WAL;
             PRAGMA synchronous = NORMAL;

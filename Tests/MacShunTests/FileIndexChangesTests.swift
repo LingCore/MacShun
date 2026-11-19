@@ -134,4 +134,11 @@ struct FileIndexChangesTests {
         try fm.createSymbolicLink(at: file, withDestinationURL: folder.appendingPathComponent("new.txt"))
         #expect(!unchanged(name))
     }
+
+    @Test func unmountEventsDoNotQueueDirectoryDeletion() {
+        var batch = FileIndexChanges()
+        batch.record("/Volumes/ExternalDisk", flags: UInt32(kFSEventStreamEventFlagUnmount))
+        batch.record("/Volumes/ExternalDisk", flags: UInt32(kFSEventStreamEventFlagUnmount | kFSEventStreamEventFlagMustScanSubDirs))
+        #expect(batch.isEmpty)
+    }
 }

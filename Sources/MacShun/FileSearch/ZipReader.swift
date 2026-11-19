@@ -44,26 +44,32 @@ struct ZipReader {
     }
 
     func read(_ entry: Entry) -> Data? {
-        guard !entry.isEncrypted, entry.size <= Self.maxEntrySize,
+        guard !entry.isEncrypted,
+              entry.size >= 0, entry.size <= Self.maxEntrySize,
+              entry.compressedSize >= 0,
+              entry.localHeaderOffset >= 0, entry.localHeaderOffset <= data.count - 30,
               data.u32(at: entry.localHeaderOffset) == 0x0403_4B50,
               let nameLength = data.u16(at: entry.localHeaderOffset + 26),
               let extraLength = data.u16(at: entry.localHeaderOffset + 28)
         else { return nil }
         let start = entry.localHeaderOffset + 30 + Int(nameLength) + Int(extraLength)
-        guard start >= 0, start + entry.compressedSize <= data.count else { return nil }
+        guard start >= 0, start <= data.count, entry.compressedSize <= data.count - start else { return nil }
         let compressed = data[data.startIndex + start ..< data.startIndex + start + entry.compressedSize]
         switch entry.method {
         case 0:
             return Data(compressed)
         case 8:
             guard entry.size > 0 else { return Data() }
+            guard entry.compressedSize > 0 else { return nil }
             var output = Data(count: entry.size)
-            let written = output.withUnsafeMutableBytes { dst in
-                compressed.withUnsafeBytes { src in
+            let written = output.withUnsafeMutableBytes { dst -> Int in
+                compressed.withUnsafeBytes { src -> Int in
+                    guard let dstBase = dst.bindMemory(to: UInt8.self).baseAddress,
+                          let srcBase = src.bindMemory(to: UInt8.self).baseAddress else { return 0 }
                     // COMPRESSION_ZLIB 就是 zip 用的原始 deflate（不带 zlib 头）
-                    compression_decode_buffer(
-                        dst.bindMemory(to: UInt8.self).baseAddress!, entry.size,
-                        src.bindMemory(to: UInt8.self).baseAddress!, entry.compressedSize,
+                    return compression_decode_buffer(
+                        dstBase, entry.size,
+                        srcBase, entry.compressedSize,
                         nil, COMPRESSION_ZLIB
                     )
                 }

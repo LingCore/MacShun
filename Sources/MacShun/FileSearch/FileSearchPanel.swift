@@ -3,6 +3,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CompactSearchHeights: Equatable {
     var fileTypes: CGFloat = 0
@@ -209,14 +210,14 @@ final class FileSearchController {
     func hide() {
         FrontAppTracker.shared.fileSearchPanelActive.set(false)
         panel.endHandleDrag()
+        cancelFileTypesFade()
+        // 先关闭模型状态（停止在途搜索并拆除 QuickLook），再隐藏窗口；避免窗口先隐掉导致 QLPreviewView 析构顺序异常。
+        model.isShown = false
         if panel.isVisible {
             // orderOut 会保留正在组字的编辑器；下次打开面板应从空查询开始。
             panel.endEditing(for: nil)
             panel.orderOut(nil)
         }
-        cancelFileTypesFade()
-        // 关着时不用跟着文件变化重新搜
-        model.isShown = false
         dialog = nil
     }
 
@@ -918,8 +919,8 @@ final class FileSearchModel: ObservableObject {
     }
     /// 内容搜索已经发出去、结果还没回来
     @Published private(set) var searchingContent = false
-    /// 鼠标停在哪一条上。这一条和选中的那条右边显示按钮
-    @Published var hoveredPath: String?
+    /// 鼠标停在哪一条上（各行自行局部响应悬停，不再触发整个面板重绘）。
+    var hoveredPath: String?
     /// 点了一次“删除”的那一条，等着再点一次“确定删除”（过几秒自动取消）
     @Published private(set) var confirmingDelete: String?
     /// 自测用：显示着的按钮在窗口里的位置（左上角为原点）
@@ -977,7 +978,17 @@ final class FileSearchModel: ObservableObject {
     private var pendingContentSearch: DispatchWorkItem?
     private var contentNeedsRefresh = false
     private var deleteTimeout: DispatchWorkItem?
-    private var icons: [String: NSImage] = [:]
+    private let iconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 800
+        return cache
+    }()
+    private static let typeIconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 256
+        return cache
+    }()
+    private static let iconQueue = DispatchQueue(label: "MacShun.FileSearch.icons", qos: .utility)
     private var subscriptions: Set<AnyCancellable> = []
 
     /// 有内容结果时，文件名结果最多显示几条，免得内容结果被挤到很下面
@@ -1373,7 +1384,9 @@ final class FileSearchModel: ObservableObject {
         activeNameSearch?.set(true)
         activeNameSearch = nil
         pendingContentSearch?.cancel()
-        self.icons.merge(icons) { $1 }
+        for (path, image) in icons {
+            iconCache.setObject(image, forKey: path as NSString)
+        }
         self.rows = results.map(LauncherRow.file)
         selection = 0
     }
@@ -1621,12 +1634,50 @@ final class FileSearchModel: ObservableObject {
         if removingSelected { selection = min(position, max(rows.count - 1, 0)) }
     }
 
-    func icon(for result: FileSearchResult) -> NSImage {
-        if let cached = icons[result.path] { return cached }
-        let image = NSWorkspace.shared.icon(forFile: result.path)
-        if icons.count > 500 { icons.removeAll() }
-        icons[result.path] = image
+    func cachedIcon(for result: FileSearchResult) -> NSImage? {
+        iconCache.object(forKey: result.path as NSString)
+    }
+
+    /// 零磁盘 I/O 的即时类型图标，避免在网络盘或慢速外接盘上滚列表时阻塞主线程。
+    func placeholderIcon(for result: FileSearchResult) -> NSImage {
+        let ext = (result.name as NSString).pathExtension.lowercased()
+        let key: String = if result.isDirectory && ext != "app" {
+            "__folder__"
+        } else if ext.isEmpty {
+            "__data__"
+        } else {
+            "ext:\(ext)"
+        }
+        if let cached = Self.typeIconCache.object(forKey: key as NSString) { return cached }
+        let type: UTType = if result.isDirectory && ext != "app" {
+            .folder
+        } else if !ext.isEmpty, let matched = UTType(filenameExtension: ext) {
+            matched
+        } else {
+            .data
+        }
+        let image = NSWorkspace.shared.icon(for: type)
+        Self.typeIconCache.setObject(image, forKey: key as NSString)
         return image
+    }
+
+    func icon(for result: FileSearchResult) -> NSImage {
+        cachedIcon(for: result) ?? placeholderIcon(for: result)
+    }
+
+    func loadIcon(for result: FileSearchResult, completion: @escaping (NSImage) -> Void) {
+        let path = result.path
+        if let cached = iconCache.object(forKey: path as NSString) {
+            completion(cached)
+            return
+        }
+        Self.iconQueue.async { [weak self] in
+            let image = NSWorkspace.shared.icon(forFile: path)
+            DispatchQueue.main.async {
+                self?.iconCache.setObject(image, forKey: path as NSString)
+                completion(image)
+            }
+        }
     }
 }
 
@@ -1634,8 +1685,11 @@ final class FileSearchModel: ObservableObject {
 
 struct FileSearchView: View {
     @ObservedObject var model: FileSearchModel
-    @ObservedObject var index: FileIndex
-    @ObservedObject var contentIndex: ContentIndex
+    let index: FileIndex
+    let contentIndex: ContentIndex
+
+    /// 仅在自测与单元测试里采集按钮坐标，正式版（.app）省掉每行 GeometryReader + PreferenceKey 开销。
+    static let recordsButtonFrames: Bool = SelfTest.isRequested || Bundle.main.bundleURL.pathExtension != "app"
 
     static let capsuleHeight: CGFloat = 56
     private static let expandedSearchHeight: CGFloat = 54
@@ -1804,7 +1858,9 @@ struct FileSearchView: View {
                     onCancel: { model.cancelSearch() },
                     onTab: model.availableScopes.count > 1 ? { model.cycleScope(reverse: $0) } : nil
                 )
-                if model.folder == nil && model.searchesNames && index.isIndexing { ProgressView().controlSize(.small) }
+                if model.folder == nil && model.searchesNames {
+                    FileSearchIndexingSpinner(index: index)
+                }
                 if model.availableScopes.count > 1 {
                     ScopePicker(selection: model.effectiveScope, scopes: model.availableScopes,
                                 inFolder: !model.includesSystemFeatures, presentation: scopePresentation) { scope in
@@ -1959,10 +2015,11 @@ struct FileSearchView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        let contentStart = model.contentStart
                         Color.clear.frame(height: Self.listPadding).id(ListAnchor.top)
                         if model.showsPinnedFolders { sectionHeader(L("常用项目夹")) }
                         ForEach(Array(model.rows.enumerated()), id: \.element.id) { position, row in
-                            if position == model.contentStart { sectionHeader(L("文件内容")) }
+                            if position == contentStart { sectionHeader(L("文件内容")) }
                             switch row {
                             case .feature(let feature):
                                 SystemFeatureRow(feature: feature, selected: position == model.selection, expanded: expanded) {
@@ -1982,27 +2039,29 @@ struct FileSearchView: View {
                             }
                         }
                         if expanded && model.hasMoreResults {
-                            Color.clear.frame(height: 1)
-                                .accessibilityHidden(true)
-                                .onAppear { model.loadMoreResults(refocus: false) }
-                                .onChange(of: model.isLoadingResults) { _, loading in
-                                    if !loading { model.loadMoreResults(refocus: false) }
-                                }
+                            FileSearchLoadMoreSentinel(model: model)
+                                .id(model.rows.count)
                         }
                     }
                     .padding(.horizontal, Self.listPadding)
                     .padding(.bottom, Self.listPadding)
-                    .onPreferenceChange(RowButtonFrames.self) { model.buttonFrames = $0 }
+                    .onPreferenceChange(RowButtonFrames.self) {
+                        if Self.recordsButtonFrames { model.buttonFrames = $0 }
+                    }
                 }
                 .scrollIndicators(.never)
                 .onChange(of: ScrollRequest(selection: model.selectedRow?.id, position: model.selection,
-                                            viewportHeight: listHeight), initial: true) { _, _ in
+                                            viewportHeight: listHeight), initial: true) { old, new in
                     if expanded {
                         let bodyHeight = max(0, listHeight - 2 * Self.listPadding)
                         model.visiblePageRows = max(1, Int(bodyHeight / Self.expandedRowHeight))
                     }
+                    let minHeight = expanded ? Self.expandedRowHeight : Self.rowHeight + Self.footerHeight
                     // 结果先到、原生面板后变高。不能在折叠高度里滚动，否则首行会留在可视区上方。
-                    guard listHeight >= (expanded ? Self.expandedRowHeight : Self.rowHeight + Self.footerHeight) else { return }
+                    guard new.viewportHeight >= minHeight else { return }
+                    let selectionChanged = old.selection != new.selection || old.position != new.position
+                    let becameVisible = old.viewportHeight < minHeight
+                    guard selectionChanged || becameVisible || !expanded else { return }
                     guard let selected = model.selectedRow else { return }
                     if model.selection == 0 { proxy.scrollTo(ListAnchor.top, anchor: .top) }
                     else { proxy.scrollTo(selected.id) }
@@ -2057,8 +2116,20 @@ struct FileSearchView: View {
     }
 
     private func fileRow(_ result: FileSearchResult, position: Int, compact: Bool, columns: FileResultColumns) -> some View {
-        let row = FileResultRow(model: model, result: result, isSelected: position == model.selection, compact: compact,
-                                columns: columns)
+        let row = FileResultRow(
+            model: model,
+            result: result,
+            isSelected: position == model.selection,
+            confirmingDelete: model.confirmingDelete == result.path,
+            expanded: model.isExpanded,
+            inFileDialog: model.inFileDialog,
+            distinctFolder: model.duplicateFolderLabels[result.path],
+            nameHighlightTerms: model.nameHighlightTerms,
+            folderHighlightTerms: model.folderHighlightTerms,
+            contentHighlightTerms: model.contentHighlightTerms,
+            compact: compact,
+            columns: columns
+        )
         return Group {
             if model.isExpanded {
                 row.onTapGesture(count: 2) {
@@ -2153,14 +2224,14 @@ struct FileSearchView: View {
             if detailed, let result = model.selectedResult, !result.canSearchInside {
                 KeyHint(key: "Ctrl+Enter", action: L("在访达中显示"))
             }
-            if model.searchesContent && [.all, .contents].contains(model.effectiveScope) && contentIndex.pendingCount > 0 {
-                ProgressView().controlSize(.mini).accessibilityLabel(L("正在读取文件内容")).help(L("正在读取文件内容"))
-                if detailed { Text(L("正在读取文件内容")).font(.caption).foregroundStyle(.secondary).fixedSize() }
-            } else if detailed {
-                if model.availableScopes.count > 1 { KeyHint(key: "Tab", action: L("切换范围")) }
-                if model.isExpanded { KeyHint(key: "Esc", action: L("收起")) }
-                else if model.folder == nil { KeyHint(key: "Esc", action: L("关闭")) }
-            }
+            FileSearchFooterContentStatus(
+                contentIndex: contentIndex,
+                searchesContent: model.searchesContent && [.all, .contents].contains(model.effectiveScope),
+                detailed: detailed,
+                hasMultipleScopes: model.availableScopes.count > 1,
+                isExpanded: model.isExpanded,
+                inFolder: model.folder != nil
+            )
         }
     }
 
@@ -2191,6 +2262,79 @@ struct FileSearchView: View {
     }
 
     private var status: some View {
+        FileSearchEmptyStatus(model: model, index: index, contentIndex: contentIndex, statusHeight: Self.statusHeight)
+    }
+}
+
+private enum FileResultColumns: Equatable {
+    case none, folder, folderAndDate, all
+
+    static let headerHeight: CGFloat = 29
+    static let folderWidth: CGFloat = 178
+    static let dateWidth: CGFloat = 132
+    static let sizeWidth: CGFloat = 70
+
+    init(width: CGFloat) {
+        let spacing = FileSearchRowStyle.spacing
+        let leadingArea = 2 * (FileSearchView.listPadding + FileSearchRowStyle.inset)
+            + FileSearchRowStyle.iconSize(expanded: true) + 2 * spacing
+        // Leave room for two lines of filename and a content match before adding metadata columns.
+        let available = width - leadingArea - 220
+        let folder = Self.folderWidth + spacing
+        let date = Self.dateWidth + spacing
+        if available >= folder + date + Self.sizeWidth + spacing { self = .all }
+        else if available >= folder + date { self = .folderAndDate }
+        else if available >= folder { self = .folder }
+        else { self = .none }
+    }
+
+    var showsFolder: Bool { self != .none }
+    var showsDate: Bool { self == .folderAndDate || self == .all }
+    var showsSize: Bool { self == .all }
+}
+
+/// 仅在文件索引运行中时显示的小旋转器，避免索引计数刷新重绘整个搜索面板。
+private struct FileSearchIndexingSpinner: View {
+    @ObservedObject var index: FileIndex
+
+    var body: some View {
+        if index.isIndexing {
+            ProgressView().controlSize(.small)
+        }
+    }
+}
+
+/// 页脚右侧的正文读取进度，局部订阅 ContentIndex。
+private struct FileSearchFooterContentStatus: View {
+    @ObservedObject var contentIndex: ContentIndex
+    let searchesContent: Bool
+    let detailed: Bool
+    let hasMultipleScopes: Bool
+    let isExpanded: Bool
+    let inFolder: Bool
+
+    var body: some View {
+        if searchesContent && contentIndex.pendingCount > 0 {
+            ProgressView().controlSize(.mini).accessibilityLabel(L("正在读取文件内容")).help(L("正在读取文件内容"))
+            if detailed { Text(L("正在读取文件内容")).font(.caption).foregroundStyle(.secondary).fixedSize() }
+        } else if detailed {
+            if hasMultipleScopes { KeyHint(key: "Tab", action: L("切换范围")) }
+            if isExpanded { KeyHint(key: "Esc", action: L("收起")) }
+            else if !inFolder { KeyHint(key: "Esc", action: L("关闭")) }
+        }
+    }
+}
+
+/// 空结果状态栏：仅在无结果时挂载，局部订阅 FileIndex / ContentIndex。
+private struct FileSearchEmptyStatus: View {
+    @ObservedObject var model: FileSearchModel
+    @ObservedObject var index: FileIndex
+    @ObservedObject var contentIndex: ContentIndex
+    let statusHeight: CGFloat
+
+    private var card: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
+
+    var body: some View {
         HStack(spacing: 10) {
             if model.waitingForNames || model.searchingContent {
                 ProgressView().controlSize(.small)
@@ -2240,7 +2384,7 @@ struct FileSearchView: View {
         .multilineTextAlignment(.center)
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: model.isExpanded ? .infinity : nil)
-        .frame(height: model.isExpanded ? nil : Self.statusHeight)
+        .frame(height: model.isExpanded ? nil : statusHeight)
         .background {
             if !model.isExpanded { VisualEffectBackground().clipShape(card) }
         }
@@ -2251,44 +2395,85 @@ struct FileSearchView: View {
     }
 }
 
-private enum FileResultColumns: Equatable {
-    case none, folder, folderAndDate, all
+/// 展开列表底部的自动翻页哨兵：仅在实际处于视口内时才触发继续加载，防止翻页级联。
+private final class LoadMoreSentinelState: ObservableObject {
+    var visible = false
+}
 
-    static let headerHeight: CGFloat = 29
-    static let folderWidth: CGFloat = 178
-    static let dateWidth: CGFloat = 132
-    static let sizeWidth: CGFloat = 70
+private struct FileSearchLoadMoreSentinel: View {
+    @ObservedObject var model: FileSearchModel
+    @StateObject private var state = LoadMoreSentinelState()
 
-    init(width: CGFloat) {
-        let spacing = FileSearchRowStyle.spacing
-        let leadingArea = 2 * (FileSearchView.listPadding + FileSearchRowStyle.inset)
-            + FileSearchRowStyle.iconSize(expanded: true) + 2 * spacing
-        // Leave room for two lines of filename and a content match before adding metadata columns.
-        let available = width - leadingArea - 220
-        let folder = Self.folderWidth + spacing
-        let date = Self.dateWidth + spacing
-        if available >= folder + date + Self.sizeWidth + spacing { self = .all }
-        else if available >= folder + date { self = .folderAndDate }
-        else if available >= folder { self = .folder }
-        else { self = .none }
+    var body: some View {
+        Color.clear.frame(height: 1)
+            .accessibilityHidden(true)
+            .onAppear {
+                state.visible = true
+                model.loadMoreResults(refocus: false)
+            }
+            .onDisappear {
+                state.visible = false
+            }
+            .onChange(of: model.isLoadingResults) { wasLoading, loading in
+                if wasLoading && !loading && state.visible {
+                    model.loadMoreResults(refocus: false)
+                }
+            }
     }
+}
 
-    var showsFolder: Bool { self != .none }
-    var showsDate: Bool { self == .folderAndDate || self == .all }
-    var showsSize: Bool { self == .all }
+/// 单行异步图标：先用零磁盘 I/O 的类型图标占位，后台取真实图标后只刷新这一格。
+@MainActor
+private final class FileIconLoader: ObservableObject {
+    @Published var image: NSImage?
+    private var loadedPath: String?
+
+    func ensureLoaded(model: FileSearchModel, result: FileSearchResult) {
+        guard loadedPath != result.path else { return }
+        loadedPath = result.path
+        if let cached = model.cachedIcon(for: result) {
+            image = cached
+            return
+        }
+        image = nil
+        let targetPath = result.path
+        model.loadIcon(for: result) { [weak self] resolved in
+            guard let self, self.loadedPath == targetPath else { return }
+            self.image = resolved
+        }
+    }
+}
+
+private struct FileResultIcon: View {
+    let model: FileSearchModel
+    let result: FileSearchResult
+    let size: CGFloat
+    @StateObject private var loader = FileIconLoader()
+
+    var body: some View {
+        Image(nsImage: loader.image ?? model.cachedIcon(for: result) ?? model.placeholderIcon(for: result))
+            .resizable()
+            .frame(width: size, height: size)
+            .onAppear { loader.ensureLoaded(model: model, result: result) }
+            .onChange(of: result.path) { _, _ in loader.ensureLoaded(model: model, result: result) }
+    }
 }
 
 private struct FileResultRow: View {
-    @ObservedObject var model: FileSearchModel
+    let model: FileSearchModel
     let result: FileSearchResult
     let isSelected: Bool
+    let confirmingDelete: Bool
+    let expanded: Bool
+    let inFileDialog: Bool
+    let distinctFolder: String?
+    let nameHighlightTerms: [String]
+    let folderHighlightTerms: [String]
+    let contentHighlightTerms: [String]
     let compact: Bool
     let columns: FileResultColumns
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
-
-    private var hovering: Bool { model.hoveredPath == result.path }
-    private var confirmingDelete: Bool { model.confirmingDelete == result.path }
 
     /// 所在的文件夹，个人文件夹写成 ~
     private var fullFolder: String {
@@ -2298,7 +2483,6 @@ private struct FileResultRow: View {
         return parent
     }
 
-    private var distinctFolder: String? { model.duplicateFolderLabels[result.path] }
     private var folder: String { distinctFolder ?? fullFolder }
     private var folderTruncation: Text.TruncationMode { distinctFolder == nil ? .head : .tail }
 
@@ -2315,82 +2499,88 @@ private struct FileResultRow: View {
     }
 
     var body: some View {
-        let expanded = model.isExpanded
         let iconSize = FileSearchRowStyle.iconSize(expanded: expanded)
-        return HStack(spacing: FileSearchRowStyle.spacing) {
-            Image(nsImage: model.icon(for: result))
-                .resizable()
-                .frame(width: iconSize, height: iconSize)
-            if let snippet = result.snippet {
-                // 正文命中显示文件名和摘要。没有独立目录列时才在第一行补位置。
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(result.name)
-                            .font(.system(size: 14))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .layoutPriority(1)
-                        if !columns.showsFolder {
-                            Text(folder)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
+        let folderText = folder
+        let fullFolderText = fullFolder
+        let modifiedText = (columns.showsDate || expanded || distinctFolder != nil) ? modified : nil
+        let sizeText = (columns.showsSize || expanded || distinctFolder != nil) ? size : nil
+        let helpText = (expanded || distinctFolder != nil)
+            ? ([result.path] + [modifiedText, sizeText].compactMap { $0 }).joined(separator: "\n")
+            : ""
+        return HoverReader { hovering in
+            HStack(spacing: FileSearchRowStyle.spacing) {
+                FileResultIcon(model: model, result: result, size: iconSize)
+                if let snippet = result.snippet {
+                    // 正文命中显示文件名和摘要。没有独立目录列时才在第一行补位置。
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(result.name)
+                                .font(.system(size: 14))
                                 .lineLimit(1)
-                                .truncationMode(folderTruncation)
-                                .accessibilityLabel(fullFolder)
+                                .truncationMode(.middle)
+                                .layoutPriority(1)
+                            if !columns.showsFolder {
+                                Text(folderText)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(folderTruncation)
+                                    .accessibilityLabel(fullFolderText)
+                            }
                         }
-                    }
-                    Text(highlighted(snippet, terms: model.contentHighlightTerms, size: 12))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(highlighted(result.name, terms: model.nameHighlightTerms, size: 14))
-                            .font(.system(size: 14))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if result.isHomophone { Text(L("同音")).font(.caption2).foregroundStyle(.secondary) }
-                    }
-                    if !columns.showsFolder {
-                        Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
-                            .font(.system(size: 11))
+                        Text(highlighted(snippet, terms: contentHighlightTerms, size: 12))
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(folderTruncation)
-                            .accessibilityLabel(fullFolder)
+                            .truncationMode(.tail)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(highlighted(result.name, terms: nameHighlightTerms, size: 14))
+                                .font(.system(size: 14))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            if result.isHomophone { Text(L("同音")).font(.caption2).foregroundStyle(.secondary) }
+                        }
+                        if !columns.showsFolder {
+                            Text(highlighted(folderText, terms: folderHighlightTerms, size: 11))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(folderTruncation)
+                                .accessibilityLabel(fullFolderText)
+                        }
                     }
                 }
+                Spacer(minLength: 0)
+                // 选中的、鼠标停着的、等着确认删除的那条才显示，免得每条都是按钮
+                if !expanded && !inFileDialog && (isSelected || hovering || confirmingDelete) {
+                    actions
+                }
+                if columns.showsFolder {
+                    Text(highlighted(folderText, terms: folderHighlightTerms, size: 11))
+                        .frame(width: FileResultColumns.folderWidth, alignment: .leading)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(folderTruncation)
+                        .accessibilityLabel(fullFolderText)
+                }
+                if columns.showsDate {
+                    Text(modifiedText ?? "—").frame(width: FileResultColumns.dateWidth, alignment: .leading)
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                }
+                if columns.showsSize {
+                    Text(sizeText ?? "—").frame(width: FileResultColumns.sizeWidth, alignment: .trailing)
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                }
             }
-            Spacer(minLength: 0)
-            // 选中的、鼠标停着的、等着确认删除的那条才显示，免得每条都是按钮
-            if !expanded && !model.inFileDialog && (isSelected || hovering || confirmingDelete) {
-                actions
-            }
-            if columns.showsFolder {
-                Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
-                    .frame(width: FileResultColumns.folderWidth, alignment: .leading)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(folderTruncation)
-                    .accessibilityLabel(fullFolder)
-            }
-            if columns.showsDate {
-                Text(modified ?? "—").frame(width: FileResultColumns.dateWidth, alignment: .leading)
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
-            }
-            if columns.showsSize {
-                Text(size ?? "—").frame(width: FileResultColumns.sizeWidth, alignment: .trailing)
-                    .font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
-            }
-        }
-        .modifier(FileSearchRowStyle(expanded: expanded, selected: isSelected, hovering: hovering))
-        .help(model.isExpanded || distinctFolder != nil ? ([result.path] + [modified, size].compactMap { $0 }).joined(separator: "\n") : "")
-        .onHover { inside in
-            if inside {
-                model.hoveredPath = result.path
-            } else if model.hoveredPath == result.path {
-                model.hoveredPath = nil
+            .modifier(FileSearchRowStyle(expanded: expanded, selected: isSelected, hovering: hovering))
+            .help(helpText)
+            .onChange(of: hovering) { _, inside in
+                if inside {
+                    model.hoveredPath = result.path
+                } else if model.hoveredPath == result.path {
+                    model.hoveredPath = nil
+                }
             }
         }
     }
@@ -2423,10 +2613,14 @@ private struct FileResultRow: View {
         .buttonStyle(.chip(destructive: destructive))
         .accessibilityLabel(title)
         .help(help)
-        .background(GeometryReader { geo in
-            Color.clear.preference(key: RowButtonFrames.self,
-                                   value: [FileRowButton.Slot(path: result.path, button: kind): geo.frame(in: .global)])
-        })
+        .background {
+            if FileSearchView.recordsButtonFrames {
+                GeometryReader { geo in
+                    Color.clear.preference(key: RowButtonFrames.self,
+                                           value: [FileRowButton.Slot(path: result.path, button: kind): geo.frame(in: .global)])
+                }
+            }
+        }
     }
 
     /// 搜索词在文件名、父目录或正文摘要中的实际命中位置。
@@ -2435,7 +2629,7 @@ private struct FileResultRow: View {
         for term in terms where !term.isEmpty {
             var from = text.startIndex
             while from < text.endIndex, let found = text[from...].range(of: term, options: .caseInsensitive) {
-                text[found].foregroundColor = model.isExpanded ? .accentColor : .primary
+                text[found].foregroundColor = expanded ? .accentColor : .primary
                 text[found].font = .system(size: size, weight: .semibold)
                 from = found.upperBound
             }

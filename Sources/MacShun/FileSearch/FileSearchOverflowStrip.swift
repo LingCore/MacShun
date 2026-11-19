@@ -141,6 +141,8 @@ struct FileSearchOverflowStrip<Content: View>: View {
                 super.init(frame: .zero)
             }
 
+            deinit { disconnect() }
+
             required init?(coder: NSCoder) { nil }
             override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -174,8 +176,8 @@ struct FileSearchOverflowStrip<Content: View>: View {
                 }
                 window.acceptsMouseMovedEvents = true
                 pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown, .leftMouseUp,
-                                                                            .rightMouseDown, .scrollWheel]) { [weak scroller] event in
-                    guard let scroller else { return event }
+                                                                            .rightMouseDown, .scrollWheel]) { [weak scroller, weak window] event in
+                    guard let scroller, window?.isVisible == true else { return event }
                     return scroller.handlePointer(event)
                 }
                 scroller.updateEdges()

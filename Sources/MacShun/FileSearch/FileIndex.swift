@@ -657,6 +657,22 @@ final class FileIndex: ObservableObject {
         self.mountedVolumes = mountedVolumes
     }
 
+    deinit {
+        volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        networkPoll?.invalidate()
+        networkJobs.values.forEach { $0.set(true) }
+        let existing = streams
+        if !existing.isEmpty {
+            watchQueue.async {
+                for stream in existing {
+                    FSEventStreamStop(stream)
+                    FSEventStreamInvalidate(stream)
+                    FSEventStreamRelease(stream)
+                }
+            }
+        }
+    }
+
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
 
     private static let defaultRecentFolders = ["Desktop", "Documents", "Downloads"].map { home + "/" + $0 }
@@ -1257,7 +1273,7 @@ final class FileIndex: ObservableObject {
     static func scanTreesInParallel(_ roots: [String], threads: Int,
                                     previous: (String) -> FolderEntries? = { _ in nil }, isCancelled: () -> Bool,
                                     onBatch: @escaping ([String: FolderEntries]) -> Void) {
-        let lock = NSLock()
+        let condition = NSCondition()
         let explicitRoots = Set(roots)
         var pending = roots
         var busy = 0
@@ -1272,16 +1288,17 @@ final class FileIndex: ObservableObject {
                     entryCount = 0
                     lastFlush = Date()
                 }
-                lock.lock()
-                guard let folder = pending.popLast() else {
-                    let done = busy == 0
-                    lock.unlock()
-                    if done { break }
-                    usleep(500)
-                    continue
+                condition.lock()
+                while pending.isEmpty && busy > 0 && !isCancelled() {
+                    condition.wait(until: Date().addingTimeInterval(0.05))
+                }
+                guard !isCancelled(), let folder = pending.popLast() else {
+                    condition.broadcast()
+                    condition.unlock()
+                    break
                 }
                 busy += 1
-                lock.unlock()
+                condition.unlock()
                 let listed = autoreleasepool {
                     FileSearchDirectory.readDrive(folder, reusing: previous(folder), recordStamp: true, isCancelled: isCancelled)
                 }
@@ -1289,14 +1306,15 @@ final class FileIndex: ObservableObject {
                     local[folder] = listed.entries
                     entryCount += listed.entries.count
                 }
-                lock.lock()
+                condition.lock()
                 if let listed {
                     // 单独收录的子根已在初始队列中，包括不从父根自动进入的目录。
                     if explicitRoots.count == 1 { pending.append(contentsOf: listed.subfolders) }
                     else { pending.append(contentsOf: listed.subfolders.lazy.filter { !explicitRoots.contains($0) }) }
                 }
                 busy -= 1
-                lock.unlock()
+                if !pending.isEmpty || busy == 0 { condition.broadcast() }
+                condition.unlock()
             }
             if !isCancelled(), !local.isEmpty { onBatch(local) }
         }
@@ -1504,19 +1522,29 @@ final class FileIndex: ObservableObject {
             // 在目录事件上核销查询提前显示的变化。创建和删除可能被合并，最终快照数量不变。
             if pendingRecentFolders.update({ $0.remove(folder) }) != nil { touched = true }
             if recursive, folder.hasPrefix("/Volumes/") {
-                rescanDriveSubtree(folder, isCancelled: cancelled)
+                // 外接盘卸载时仅清内存目录，不触发内容索引删库，重新接回时保留正文索引。
+                if !mountedVolumes().contains(where: { $0.contains(folder) }) {
+                    if folders[folder] != nil { touched = true }
+                    removeSubtree(folder)
+                } else {
+                    rescanDriveSubtree(folder, isCancelled: cancelled)
+                }
                 continue
             }
             // 主盘沿用整树替换
+            let nestedRoots = recursive ? scannedRoots.filter { $0 != folder && SearchVolume.contains($0, under: folder) } : []
             if recursive {
                 touched = true
                 removeSubtree(folder)
+                for nested in nestedRoots { removeSubtree(nested) }
             }
             guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder, recordStamp: true, isCancelled: cancelled) }) else {
                 if cancelled() { return }
                 if folders[folder] != nil { touched = true }
-                removeSubtree(folder)   // 文件夹被删了
-                contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
+                removeSubtree(folder)   // 文件夹被删了，或外接卷已弹出
+                if !folder.hasPrefix("/Volumes/") || mountedVolumes().contains(where: { $0.contains(folder) }) {
+                    contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
+                }
                 continue
             }
             // 消失的子文件夹（被删除、改名或移走）：和原来列着的子文件夹比
@@ -1540,7 +1568,7 @@ final class FileIndex: ObservableObject {
             if contentIndex != nil { Self.collectContentFiles(folder, listed.entries, into: &contentFiles) }
             contentScopes.append(ContentIndex.Scope(folder: folder, recursive: recursive))
             var denied: [String] = []
-            for sub in listed.subfolders where folders[sub] == nil {
+            for sub in listed.subfolders + nestedRoots where folders[sub] == nil {
                 var scanned: [String: FolderEntries] = [:]
                 Self.scanTree(sub, into: &scanned, denied: &denied, isCancelled: cancelled)
                 guard !cancelled() else { return }
