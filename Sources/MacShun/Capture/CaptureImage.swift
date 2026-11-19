@@ -78,10 +78,19 @@ struct CaptureImage {
         guard !pixels.isEmpty, let crop = image.cropping(to: pixels) else { return nil }
         if marks.isEmpty, polygon == nil { return crop }
 
-        let colorSpace = crop.colorSpace.flatMap { $0.model == .rgb ? $0 : nil } ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let fallbackSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = crop.colorSpace.flatMap { space -> CGColorSpace? in
+            // 8 位 premultipliedLast 上下文不支持扩展动态范围（HDR/XDR）或不可输出的 RGB 色彩空间。
+            guard space.model == .rgb, space.supportsOutput, !CGColorSpaceUsesExtendedRange(space) else { return nil }
+            return space
+        } ?? fallbackSpace
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
         guard let context = CGContext(data: nil, width: crop.width, height: crop.height,
                                       bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+                                      bitmapInfo: bitmapInfo)
+            ?? CGContext(data: nil, width: crop.width, height: crop.height,
+                         bitsPerComponent: 8, bytesPerRow: 0, space: fallbackSpace,
+                         bitmapInfo: bitmapInfo) else { return nil }
         context.translateBy(x: -pixels.minX, y: pixels.maxY - CGFloat(image.height))
         context.scaleBy(x: CGFloat(image.width) / size.width, y: CGFloat(image.height) / size.height)
         let cropArea = pointRect(pixels)

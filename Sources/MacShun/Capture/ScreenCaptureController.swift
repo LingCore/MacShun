@@ -43,7 +43,9 @@ private final class CapturePanel: NSPanel {
         switch event.type {
         case .keyUp: canvas.releaseDirectionKey(event)
         case .flagsChanged: canvas.updateDirectionModifiers(event)
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown: canvas.restoreSystemCursor()
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            canvas.stopDirectionRepeat()
+            canvas.restoreSystemCursor()
         default: break
         }
         super.sendEvent(event)
@@ -86,6 +88,8 @@ final class ScreenCaptureController: NSObject {
     private var lastRegion: CaptureRegionMemory?
     private var session: UUID?
     private var savePanel: NSSavePanel?
+    private var activatedForSave = false
+    private var isRecognizingText = false
     private var previousApp: NSRunningApplication?
     private var notice: NSPanel?
     private var scrolling: ScrollingCapture?
@@ -116,9 +120,9 @@ final class ScreenCaptureController: NSObject {
         colorFormat = colorDefaults.string(forKey: Self.colorFormatKey).flatMap(CaptureColorFormat.init(rawValue:)) ?? .hex
         self.makeScrollSource = makeScrollSource
         super.init()
-        NotificationCenter.default.addObserver(self, selector: #selector(cancel), name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancel), name: NSWorkspace.willSleepNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancel), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(cancelScreenBoundCapture), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancelScreenBoundCapture), name: NSWorkspace.willSleepNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(cancelScreenBoundCapture), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
     }
 
     func start(_ mode: CaptureMode) {
@@ -266,15 +270,31 @@ final class ScreenCaptureController: NSObject {
         if scrolling != nil { cancel() }
     }
 
+    /// 屏幕参数变化、切换桌面或休眠时，只取消依赖当前冻结屏幕或实时取帧的阶段；
+    /// 保存对话框、已完成的长截图预览/标注窗口、以及后台文字识别不受影响。
+    @objc private func cancelScreenBoundCapture() {
+        guard session != nil else { return }
+        if savePanel != nil || isRecognizingText { return }
+        if let scrolling {
+            if scrolling.isSampling { cancel() }
+            return
+        }
+        cancel()
+    }
+
     @objc func cancel() {
         guard session != nil else { return }
         session = nil
+        isRecognizingText = false
+        let shouldRestoreFocus = activatedForSave
+        activatedForSave = false
         scrolling?.close()
         scrolling = nil
         savePanel?.cancel(nil)
         savePanel = nil
         hidePanels()
         panels.removeAll()
+        if shouldRestoreFocus { restoreFocusAfterSave() }
         previousApp = nil
     }
 
@@ -292,6 +312,7 @@ final class ScreenCaptureController: NSObject {
         panels.removeAll()
         if canvas.mode == .text {
             let count = pasteboard.changeCount
+            isRecognizingText = true
             toast(L("正在识别文字…"))
             Task {
                 let text = await Task.detached(priority: .userInitiated) { ContentExtractor.recognizeText(in: image) }.value
@@ -419,6 +440,7 @@ final class ScreenCaptureController: NSObject {
         date.locale = Locale(identifier: "en_US_POSIX")
         date.dateFormat = "yyyy-MM-dd HH.mm.ss"
         panel.nameFieldStringValue = L("截图 %@.png", date.string(from: Date()))
+        activatedForSave = true
         NSApp.activate()
         panel.begin { [weak self, weak canvas] response in
             guard let self, session == token, let canvas else { return }
@@ -428,14 +450,14 @@ final class ScreenCaptureController: NSObject {
                     guard let data = png(image) else { throw CocoaError(.fileWriteUnknown) }
                     try data.write(to: url, options: .atomic)
                     lastRegion = regionMemory(canvas)
-                    restoreFocusAfterSave()
                     cancel()
                     return
                 } catch {
                     showMessage(L("无法保存截图"), detail: error.localizedDescription)
                 }
             }
-            restoreFocusAfterSave()
+            // 取消保存回到选区时不要先激活原前台应用，以免异步切走焦点令选区快捷键失效；
+            // 焦点会在本次截图结束时由 cancel() 统一还回。
             showPanels(focusing: canvas)
         }
     }
@@ -463,7 +485,8 @@ final class ScreenCaptureController: NSObject {
         let frame = CGRect(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 20,
                            width: size.width, height: size.height).integral
         let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.level = .popUpMenu
+        // 选区面板在 .screenSaver 层，选区期间弹出的错误提示必须浮在其上方才可见。
+        panel.level = panels.isEmpty ? .popUpMenu : NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true

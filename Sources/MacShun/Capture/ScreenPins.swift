@@ -8,18 +8,19 @@ import UniformTypeIdentifiers
 struct PinPicture {
     let png: Data
     let image: NSImage
+    let cgImage: CGImage
     let pixels: CGSize
 
     init?(png: Data) {
         guard let source = CGImageSourceCreateWithData(png as CFData, nil),
               CGImageSourceGetType(source) as String? == UTType.png.identifier,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0,
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              cg.width > 0, cg.height > 0,
               let image = NSImage(data: png) else { return nil }
         self.png = png
         self.image = image
-        pixels = CGSize(width: width, height: height)
+        self.cgImage = cg
+        pixels = CGSize(width: cg.width, height: cg.height)
     }
 
     static func read(_ pasteboard: NSPasteboard) -> PinPicture? {
@@ -31,6 +32,11 @@ struct PinPicture {
             ]
             guard let url = (pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL])?.first,
                   url.isFileURL else { return nil }
+            if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+               let cg = orientedCGImage(from: source),
+               let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
+                return PinPicture(png: data)
+            }
             image = NSImage(contentsOf: url)
         } else {
             image = NSImage(pasteboard: pasteboard)
@@ -38,6 +44,26 @@ struct PinPicture {
         guard let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { return nil }
         return PinPicture(png: data)
+    }
+
+    /// 按 EXIF 方向解码文件图片，避免竖拍照片贴到屏幕后倒转。
+    private static func orientedCGImage(from source: CGImageSource) -> CGImage? {
+        let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let orientation = (props?[kCGImagePropertyOrientation] as? UInt32) ?? 1
+        if orientation == 1 {
+            return CGImageSourceCreateImageAtIndex(source, 0, nil)
+        }
+        let width = (props?[kCGImagePropertyPixelWidth] as? Int) ?? 0
+        let height = (props?[kCGImagePropertyPixelHeight] as? Int) ?? 0
+        var options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        if max(width, height) > 0 {
+            options[kCGImageSourceThumbnailMaxPixelSize] = max(width, height)
+        }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            ?? CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
 }
 
@@ -62,8 +88,9 @@ enum PinGeometry {
 final class ScreenPins: NSObject, NSWindowDelegate {
     static let shared = ScreenPins()
     private(set) var windows: [ScreenPinPanel] = []
-    // 支持 Ctrl+滚轮调透明度时，让鼠标引擎放过发往贴图的滚轮。
+    // 支持 Ctrl+滚轮调透明度时，让鼠标引擎放过发往贴图的滚轮（由主线程维护，避免事件线程调 AppKit）。
     nonisolated static let frames = Locked([Int: CGRect]())
+    nonisolated static let hovered = Locked<Set<Int>>([])
 
     @discardableResult
     func show(_ picture: PinPicture, at selection: CGRect? = nil, pasteboard: NSPasteboard = .general) -> ScreenPinPanel? {
@@ -101,13 +128,20 @@ final class ScreenPins: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let panel = notification.object as? ScreenPinPanel else { return }
-        Self.frames.update { $0.removeValue(forKey: panel.windowNumber) }
+        let number = panel.windowNumber
+        Self.frames.update { $0.removeValue(forKey: number) }
+        Self.hovered.update { $0.remove(number) }
         windows.removeAll { $0 === panel }
     }
 
     private func trackFrame(_ panel: ScreenPinPanel) {
         guard windows.contains(where: { $0 === panel }) else { return }
-        Self.frames.update { $0[panel.windowNumber] = panel.frame }
+        let number = panel.windowNumber
+        Self.frames.update { $0[number] = panel.frame }
+        let underMouse = NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == number
+        Self.hovered.update {
+            if underMouse { $0.insert(number) } else { $0.remove(number) }
+        }
     }
     func windowDidMove(_ notification: Notification) {
         if let panel = notification.object as? ScreenPinPanel { trackFrame(panel) }
@@ -121,15 +155,22 @@ final class ScreenPins: NSObject, NSWindowDelegate {
 final class ScreenPinPanel: NSPanel {
     let picture: PinPicture
     let naturalSize: CGSize
+    let initialZoom: CGFloat
     private let pasteboard: NSPasteboard
     private var savePanel: NSSavePanel?
     private let surface = PinSurface()
     private(set) var zoom: CGFloat
 
+    /// 限制贴图窗口最大后备存储尺寸，防止大图或长截图放大后超过 GPU 纹理上限或暴涨内存。
+    static let maxBackingDimension: CGFloat = 8192
+    static let maxBackingPixels: CGFloat = 32_000_000
+
     init(picture: PinPicture, frame: CGRect, natural: CGSize, pasteboard: NSPasteboard) {
         self.picture = picture
         naturalSize = natural
-        zoom = frame.width / natural.width
+        let startZoom = natural.width > 0 ? frame.width / natural.width : 1
+        initialZoom = startZoom
+        zoom = startZoom
         self.pasteboard = pasteboard
         super.init(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         level = .floating
@@ -142,6 +183,7 @@ final class ScreenPinPanel: NSPanel {
         isOpaque = false
         hasShadow = true
         contentView = surface
+        surface.setPicture(picture.cgImage)
         setFrame(frame, display: false)
         surface.setAccessibilityLabel(title)
     }
@@ -150,9 +192,15 @@ final class ScreenPinPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     func scale(to requested: CGFloat, around point: CGPoint) {
-        // 很长的剪贴板图片初始可低于 10%，避免下一次手势突然跳大。
-        let minimum = min(zoom, 0.1)
-        let value = min(8, max(minimum, requested))
+        // 很长的剪贴板图片初始缩放可能低于 10%，始终允许缩回初始贴合大小。
+        let minimum = min(initialZoom, 0.1)
+        let scaleFactor = max(1, screen?.backingScaleFactor ?? backingScaleFactor)
+        let maxSide = max(naturalSize.width, naturalSize.height)
+        let dimCap = maxSide > 0 ? (Self.maxBackingDimension / scaleFactor) / maxSide : 8
+        let area = naturalSize.width * naturalSize.height
+        let areaCap = area > 0 ? sqrt((Self.maxBackingPixels / (scaleFactor * scaleFactor)) / area) : 8
+        let maximum = max(initialZoom, min(8, min(dimCap, areaCap)))
+        let value = min(maximum, max(minimum, requested))
         let size = CGSize(width: max(1, (naturalSize.width * value).rounded()), height: max(1, (naturalSize.height * value).rounded()))
         zoom = value
         setFrame(PinGeometry.scaled(frame, to: size, around: point), display: true)
@@ -235,6 +283,7 @@ private final class PinCloseButton: CaptureHoverButton {
 @MainActor
 private final class PinSurface: NSView {
     private var panel: ScreenPinPanel? { window as? ScreenPinPanel }
+    private let imageLayer = CALayer()
     private let badge = NSTextField(labelWithString: "")
     private let dismiss = PinCloseButton()
     private var pointerInside = false
@@ -246,6 +295,11 @@ private final class PinSurface: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true
+        imageLayer.contentsGravity = .resize
+        imageLayer.zPosition = -1
+        imageLayer.actions = ["bounds": NSNull(), "position": NSNull(), "contents": NSNull()]
+        layer?.addSublayer(imageLayer)
         badge.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         badge.textColor = .white
         badge.alignment = .center
@@ -270,8 +324,8 @@ private final class PinSurface: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    override func draw(_ dirtyRect: NSRect) {
-        panel?.picture.image.draw(in: bounds, from: .zero, operation: .sourceOver, fraction: 1)
+    func setPicture(_ cgImage: CGImage) {
+        imageLayer.contents = cgImage
     }
 
     func showPercent(_ value: Int, opacity: Bool) {
@@ -288,6 +342,7 @@ private final class PinSurface: NSView {
 
     override func layout() {
         super.layout()
+        imageLayer.frame = bounds
         dismiss.frame = CGRect(x: max(0, bounds.maxX - 34), y: max(0, bounds.maxY - 34), width: 24, height: 24)
         dismiss.isHidden = !pointerInside || bounds.width < 70 || bounds.height < 52
         if !badge.isHidden {
@@ -306,8 +361,22 @@ private final class PinSurface: NSView {
         hoverArea = area
         super.updateTrackingAreas()
     }
-    override func mouseEntered(with event: NSEvent) { pointerInside = true; needsLayout = true }
-    override func mouseExited(with event: NSEvent) { pointerInside = false; needsLayout = true }
+    override func mouseEntered(with event: NSEvent) {
+        pointerInside = true
+        if let number = panel?.windowNumber { ScreenPins.hovered.update { $0.insert(number) } }
+        needsLayout = true
+    }
+    override func mouseExited(with event: NSEvent) {
+        pointerInside = false
+        if let number = panel?.windowNumber { ScreenPins.hovered.update { $0.remove(number) } }
+        needsLayout = true
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, let number = panel?.windowNumber {
+            ScreenPins.hovered.update { $0.remove(number) }
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)

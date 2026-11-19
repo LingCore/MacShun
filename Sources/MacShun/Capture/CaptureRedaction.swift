@@ -21,21 +21,23 @@ enum CaptureRedaction {
 
     /// 返回图片坐标（左下为原点），向外留出余量并对齐实际像素。
     static func recognize(in image: CGImage) throws -> [CGRect] {
-        let request = VNRecognizeTextRequest()
-        // 目标都是 ASCII。快速识别能定位字符，并避免首次编译识别模型拖慢操作。
-        request.recognitionLevel = .fast
-        request.recognitionLanguages = ["en-US"]
-        request.usesLanguageCorrection = false
-        try VNImageRequestHandler(cgImage: image).perform([request])
-        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        return (request.results ?? []).flatMap { observation -> [CGRect] in
-            guard let text = observation.topCandidates(1).first else { return [] }
-            return contactRanges(in: text.string).compactMap { range in
-                let normalized = (try? text.boundingBox(for: range))?.boundingBox ?? observation.boundingBox
-                let box = VNImageRectForNormalizedRect(normalized, image.width, image.height)
-                let margin = max(2, box.height * 0.16)
-                let padded = box.insetBy(dx: -margin, dy: -margin).integral.intersection(bounds)
-                return padded.isEmpty ? nil : padded
+        try autoreleasepool {
+            let request = VNRecognizeTextRequest()
+            // 目标都是 ASCII。快速识别能定位字符，并避免首次编译识别模型拖慢操作。
+            request.recognitionLevel = .fast
+            request.recognitionLanguages = ["en-US"]
+            request.usesLanguageCorrection = false
+            try VNImageRequestHandler(cgImage: image).perform([request])
+            let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            return (request.results ?? []).flatMap { observation -> [CGRect] in
+                guard let text = observation.topCandidates(1).first else { return [] }
+                return contactRanges(in: text.string).compactMap { range in
+                    let normalized = (try? text.boundingBox(for: range))?.boundingBox ?? observation.boundingBox
+                    let box = VNImageRectForNormalizedRect(normalized, image.width, image.height)
+                    let margin = max(2, box.height * 0.16)
+                    let padded = box.insetBy(dx: -margin, dy: -margin).integral.intersection(bounds)
+                    return padded.isEmpty ? nil : padded
+                }
             }
         }
     }

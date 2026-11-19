@@ -527,4 +527,50 @@ struct CaptureTests {
         #expect(inside.alphaComponent > 0.95)
     }
 
+    @Test func extendedRangeRGBColorSpacesRenderAnnotationsAndPolygons() throws {
+        for name in [CGColorSpace.extendedSRGB, CGColorSpace.extendedDisplayP3] {
+            let space = try #require(CGColorSpace(name: name))
+            let info = CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+                | CGImageAlphaInfo.premultipliedLast.rawValue
+            let ctx = try #require(CGContext(data: nil, width: 80, height: 60, bitsPerComponent: 32,
+                                             bytesPerRow: 0, space: space, bitmapInfo: info))
+            ctx.setFillColor(CGColor(colorSpace: space, components: [0.2, 0.5, 0.8, 1])!)
+            ctx.fill(CGRect(x: 0, y: 0, width: 80, height: 60))
+            let image = try #require(ctx.makeImage())
+            let photo = CaptureImage(image: image, size: CGSize(width: 80, height: 60))
+            let mark = CaptureMark(kind: .rectangle, start: CGPoint(x: 10, y: 10), end: CGPoint(x: 60, y: 40))
+            let polygon = try #require(CapturePolygon([CGPoint(x: 5, y: 5), CGPoint(x: 75, y: 5), CGPoint(x: 40, y: 55)]))
+            let rendered = try #require(photo.render(CGRect(x: 0, y: 0, width: 80, height: 60), marks: [mark], polygon: polygon))
+            #expect(rendered.width == 80 && rendered.height == 60)
+        }
+    }
+
+    @MainActor
+    @Test func screenPinClampsExtremeZoomAndAllowsZoomingBackToInitialFit() throws {
+        // 模拟一张很长的截图（100×8000 px），初始缩放低于 0.1，放大需受后备像素上限约束且能缩回初始贴合大小。
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = try #require(CGContext(data: nil, width: 100, height: 8000, bitsPerComponent: 8,
+                                         bytesPerRow: 0, space: space,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(srgbRed: 0.3, green: 0.4, blue: 0.5, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 8000))
+        let cg = try #require(ctx.makeImage())
+        let png = try #require(NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]))
+        let picture = try #require(PinPicture(png: png))
+        let natural = CGSize(width: 50, height: 4000)
+        let initialFrame = CGRect(x: 100, y: 100, width: 4, height: 320) // initialZoom = 0.08 < 0.1
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let panel = ScreenPinPanel(picture: picture, frame: initialFrame, natural: natural, pasteboard: board)
+        defer { panel.close() }
+        #expect(abs(panel.initialZoom - 0.08) < 0.001)
+        let center = CGPoint(x: initialFrame.midX, y: initialFrame.midY)
+        panel.scale(to: 8, around: center)
+        let scaleFactor = max(1, panel.screen?.backingScaleFactor ?? panel.backingScaleFactor)
+        let maxDimension = ScreenPinPanel.maxBackingDimension
+        #expect(max(panel.frame.width, panel.frame.height) * scaleFactor <= maxDimension + scaleFactor)
+        panel.scale(to: 0.08, around: center)
+        #expect(abs(panel.zoom - 0.08) < 0.001)
+    }
+
 }

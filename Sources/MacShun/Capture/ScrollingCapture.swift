@@ -18,7 +18,7 @@ private actor ScrollAssembly {
     }
 
     func finish() -> (CGImage, Data)? {
-        guard let image = stitcher.result() else { return nil }
+        guard let image = stitcher.takeResult() else { return nil }
         guard let png = Self.encode(image) else { return nil }
         return (image, png)
     }
@@ -62,6 +62,9 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
     private var source: ScrollCaptureSource?
     private var finishDelay: Task<Void, Never>?
     private var originalApp: NSRunningApplication?
+
+    /// 仍在实时采样阶段（尚未进入可跨桌面移动的预览/标注窗口）。
+    var isSampling: Bool { preview == nil }
 
     init(region: ScrollCaptureRegion, clipboard: CaptureClipboard, onClose: @escaping () -> Void) {
         self.region = region

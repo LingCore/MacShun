@@ -49,6 +49,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     private let hint = NSView()
     private let hintLabel = NSTextField(wrappingLabelWithString: "")
     private let selectionHint: String
+    private var overlayView: CaptureOverlayView?
     private var tracking: NSTrackingArea?
     private let loupe: CaptureLoupe?
     private let keyboardCursorScale: CGFloat
@@ -136,7 +137,12 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         dimensions.isHidden = true
         if isDocument { selection = photo.bounds }
         else {
-            if loupe != nil { wantsLayer = true }
+            wantsLayer = true
+            let overlay = CaptureOverlayView(canvas: self)
+            overlay.frame = bounds
+            overlay.autoresizingMask = [.width, .height]
+            overlayView = overlay
+            addSubview(overlay)
             addSubview(hint)
             addSubview(dimensions)
             addSubview(toolbar)
@@ -155,6 +161,27 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     deinit { redactionScan?.cancel() }
+
+    override var wantsUpdateLayer: Bool { !isDocument }
+
+    override func updateLayer() {
+        guard !isDocument, let layer else { return }
+        if layer.contents as AnyObject? !== photo.image {
+            layer.contents = photo.image
+            layer.contentsGravity = .resize
+        }
+    }
+
+    override var needsDisplay: Bool {
+        didSet {
+            if needsDisplay { overlayView?.needsDisplay = true }
+        }
+    }
+
+    override func setNeedsDisplay(_ invalidRect: NSRect) {
+        super.setNeedsDisplay(invalidRect)
+        overlayView?.setNeedsDisplay(invalidRect)
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -207,46 +234,49 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             toolbar.setFrameOrigin(CGPoint(x: floor(bounds.midX - toolbar.frame.width / 2),
                                            y: max(6, bounds.maxY - toolbar.frame.height - 16)))
         } else if !isDocument, !placingAnchors, let rect = selection {
-            toolbar.fit(within: bounds.width - 12)
-            let size = toolbar.frame.size, gap: CGFloat = 10
-            let x = max(6, min(rect.maxX - size.width, bounds.maxX - size.width - 6))
-            var y = rect.minY - size.height - gap
-            if y < 6 { y = min(rect.maxY + gap, bounds.maxY - size.height - 6) }
-            var origin = CGPoint(x: x.rounded(), y: y.rounded())
-            let annotationVertices = (editableLine?.editableNodes ?? selectedAnnotation?.editableNodes)?.filter {
-                CaptureLineShape.clamped($0, in: rect) == $0
-            } ?? []
-            let vertices = (editableSelectionPolygon?.vertices ?? []) + annotationVertices
-            let vertexTargets = vertices.map {
-                CGRect(x: $0.x - 8, y: $0.y - 8, width: 16, height: 16)
-            }
-            if !toolbar.isHidden, vertexTargets.contains(where: { $0.intersects(CGRect(origin: origin, size: size)) }) {
-                let right = max(6, bounds.maxX - size.width - 6).rounded()
-                let top = max(6, bounds.maxY - size.height - 6).rounded()
-                let middle = ((6 + top) / 2).rounded()
-                let gaps = vertexTargets.flatMap {
-                    [floor($0.minY - size.height - 1), ceil($0.maxY + 1)]
-                }.filter { (6...top).contains($0) }
-                let alternatives = ([origin.y, 6, top, middle] + gaps).lazy.flatMap { y in
-                    [origin.x, 6, right].map { CGPoint(x: $0, y: y) }
+            var vertexTargets: [CGRect] = []
+            if !toolbar.isHidden {
+                toolbar.fit(within: bounds.width - 12)
+                let size = toolbar.frame.size, gap: CGFloat = 10
+                let x = max(6, min(rect.maxX - size.width, bounds.maxX - size.width - 6))
+                var y = rect.minY - size.height - gap
+                if y < 6 { y = min(rect.maxY + gap, bounds.maxY - size.height - 6) }
+                var origin = CGPoint(x: x.rounded(), y: y.rounded())
+                let annotationVertices = (editableLine?.editableNodes ?? selectedAnnotation?.editableNodes)?.filter {
+                    CaptureLineShape.clamped($0, in: rect) == $0
+                } ?? []
+                let vertices = (editableSelectionPolygon?.vertices ?? []) + annotationVertices
+                vertexTargets = vertices.map {
+                    CGRect(x: $0.x - 8, y: $0.y - 8, width: 16, height: 16)
                 }
-                if let free = alternatives.first(where: { p in
-                    !vertexTargets.contains { $0.intersects(CGRect(origin: p, size: size)) }
-                }) { origin = free }
-            }
-            if case .ready(let boxes) = redaction,
-               boxes.contains(where: { $0.intersects(CGRect(origin: origin, size: size)) }) {
-                let left = max(6, min(rect.minX, bounds.maxX - size.width - 6)).rounded()
-                let bottom = max(6, rect.minY - size.height - gap).rounded()
-                let top = min(rect.maxY + gap, bounds.maxY - size.height - 6).rounded()
-                let alternatives = [CGPoint(x: left, y: y.rounded()), CGPoint(x: origin.x, y: bottom),
-                                    CGPoint(x: left, y: bottom), CGPoint(x: origin.x, y: top), CGPoint(x: left, y: top)]
-                if let free = alternatives.first(where: { p in !boxes.contains { $0.intersects(CGRect(origin: p, size: size)) } }) {
-                    origin = free
+                if vertexTargets.contains(where: { $0.intersects(CGRect(origin: origin, size: size)) }) {
+                    let right = max(6, bounds.maxX - size.width - 6).rounded()
+                    let top = max(6, bounds.maxY - size.height - 6).rounded()
+                    let middle = ((6 + top) / 2).rounded()
+                    let gaps = vertexTargets.flatMap {
+                        [floor($0.minY - size.height - 1), ceil($0.maxY + 1)]
+                    }.filter { (6...top).contains($0) }
+                    let alternatives = ([origin.y, 6, top, middle] + gaps).lazy.flatMap { y in
+                        [origin.x, 6, right].map { CGPoint(x: $0, y: y) }
+                    }
+                    if let free = alternatives.first(where: { p in
+                        !vertexTargets.contains { $0.intersects(CGRect(origin: p, size: size)) }
+                    }) { origin = free }
                 }
+                if case .ready(let boxes) = redaction,
+                   boxes.contains(where: { $0.intersects(CGRect(origin: origin, size: size)) }) {
+                    let left = max(6, min(rect.minX, bounds.maxX - size.width - 6)).rounded()
+                    let bottom = max(6, rect.minY - size.height - gap).rounded()
+                    let top = min(rect.maxY + gap, bounds.maxY - size.height - 6).rounded()
+                    let alternatives = [CGPoint(x: left, y: y.rounded()), CGPoint(x: origin.x, y: bottom),
+                                        CGPoint(x: left, y: bottom), CGPoint(x: origin.x, y: top), CGPoint(x: left, y: top)]
+                    if let free = alternatives.first(where: { p in !boxes.contains { $0.intersects(CGRect(origin: p, size: size)) } }) {
+                        origin = free
+                    }
+                }
+                toolbar.setFrameOrigin(origin)
+                toolbar.setPrimaryRowOnTop(origin.y < rect.minY)
             }
-            toolbar.setFrameOrigin(origin)
-            toolbar.setPrimaryRowOnTop(origin.y < rect.minY)
             let px = photo.pixelRect(rect)
             dimensions.stringValue = "\(Int(px.width)) × \(Int(px.height)) px"
             dimensions.sizeToFit()
@@ -257,7 +287,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
                 labelOrigins.append(CGPoint(x: rect.minX + 6, y: rect.maxY - h - 6))
                 labelOrigins.append(CGPoint(x: rect.minX + 6, y: rect.minY + 6))
             }
-            let obstacles = toolbar.visibleCardFrames.map { $0.insetBy(dx: -4, dy: -4) } + vertexTargets
+            let obstacles = (toolbar.isHidden ? [] : toolbar.visibleCardFrames.map { $0.insetBy(dx: -4, dy: -4) }) + vertexTargets
             let labelSize = CGSize(width: w, height: h)
             if let frame = labelOrigins.map({ CGRect(origin: $0, size: labelSize).integral }).first(where: {
                 let frame = $0
@@ -320,6 +350,10 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         if isDocument, let tile = photo.image.cropping(to: pixels) {
             ctx.draw(tile, in: photo.pointRect(pixels))
         } else { ctx.draw(photo.image, in: bounds) }
+        drawOverlay(in: ctx, dirtyRect: dirtyRect)
+    }
+
+    fileprivate func drawOverlay(in ctx: CGContext, dirtyRect: NSRect) {
         let area = anchorPoints == nil || isPlacingPolygonMark ? selection ?? hovered : nil
         ctx.saveGState()
         ctx.addRect(bounds)
@@ -775,6 +809,8 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         case .lettering(let lettering, let format):
             guard style != activeAnnotationStyle else { return }
             if let input = textInput, var mark = editingMark {
+                // 先同步实时编辑中的文字，再改对齐方式，避免按编辑前的旧文字宽度把文本框压窄。
+                if mark.kind == .text { mark.text = input.string }
                 mark.applyLettering(lettering, text: format)
                 editingMark = mark
                 if editingIndex == nil, let format {
@@ -872,7 +908,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if heldDirection?.originalPolygon != nil { stopDirectionRepeat() }
+        stopDirectionRepeat()
         onChooseDisplay?()
         guard finishText(commit: true) else { return }
         window?.makeKey()
@@ -1431,7 +1467,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     }
 
     private func perform(_ action: CaptureToolbar.Action) {
-        if heldDirection?.originalPolygon != nil { stopDirectionRepeat() }
+        stopDirectionRepeat()
         if case .cancel = action, editingMark?.kind == .number {
             finishText(commit: false)
         } else if !finishText(commit: true) {
@@ -1613,7 +1649,8 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             let link = window.displayLink(target: self, selector: #selector(directionFrame(_:)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 60, preferred: 60)
             directionLink = link
-            link.add(to: .main, forMode: .common)
+            // 仅在 .default 模式运行，打开工具栏弹出菜单（.eventTracking）时不会持续空转。
+            link.add(to: .main, forMode: .default)
         } else { stopDirectionRepeat() }
         return true
     }
@@ -1683,5 +1720,27 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             let step = shift ? 10 : 1
             onNudgePointer?(dx * step, dy * step)
         }
+    }
+}
+
+/// 透明叠加层：仅绘制遮罩、选区与标注，底图由 CaptureCanvas 的静态 GPU 图层直接合成。
+@MainActor
+private final class CaptureOverlayView: NSView {
+    private weak var canvas: CaptureCanvas?
+
+    init(canvas: CaptureCanvas) {
+        self.canvas = canvas
+        super.init(frame: canvas.bounds)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isOpaque: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        canvas?.drawOverlay(in: ctx, dirtyRect: dirtyRect)
     }
 }

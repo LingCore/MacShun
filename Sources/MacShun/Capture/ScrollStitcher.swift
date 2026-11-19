@@ -258,6 +258,18 @@ struct ScrollStitcher {
     func result() -> CGImage? {
         var data = prefix
         data.append(previous.pixels[(start * width * 4)...])
+        return makeImage(from: data)
+    }
+
+    /// 移出内部前缀缓冲生成最终图像，避免长图收尾时再做一次整图 CoW 拷贝。
+    mutating func takeResult() -> CGImage? {
+        var data = Data()
+        swap(&data, &prefix)
+        data.append(previous.pixels[(start * width * 4)...])
+        return makeImage(from: data)
+    }
+
+    private func makeImage(from data: Data) -> CGImage? {
         guard let provider = CGDataProvider(data: data as CFData) else { return nil }
         return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
                        space: Self.colorSpace, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),

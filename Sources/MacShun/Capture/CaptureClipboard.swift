@@ -7,10 +7,11 @@ struct CaptureClipboard {
     static let general = CaptureClipboard(pasteboard: .general)
 
     let pasteboard: NSPasteboard
-    private let copiedChangeCount = Locked<Int?>(nil)
+    private let tracker: Tracker
 
     init(pasteboard: NSPasteboard) {
         self.pasteboard = pasteboard
+        self.tracker = Tracker(pasteboard: pasteboard)
     }
 
     func copy(_ png: Data) -> Bool {
@@ -18,12 +19,67 @@ struct CaptureClipboard {
         guard item.setData(png, forType: .png) else { return false }
         let changeCount = pasteboard.clearContents()
         guard pasteboard.writeObjects([item]) else { return false }
-        copiedChangeCount.set(changeCount)
+        tracker.markCopied(changeCount)
         return true
     }
 
+    /// 供主线程调用（例如剪贴板监听或应用切换时）同步最新变化计数。
+    func refreshIfNeeded() {
+        tracker.refreshIfNeeded()
+    }
+
     var containsScreenshot: Bool {
-        guard let copiedChangeCount = copiedChangeCount.get() else { return false }
-        return pasteboard.changeCount == copiedChangeCount
+        tracker.containsScreenshot
+    }
+
+    private final class Tracker: @unchecked Sendable {
+        let pasteboard: NSPasteboard
+        let copiedChangeCount = Locked<Int?>(nil)
+        private var timer: Timer?
+
+        init(pasteboard: NSPasteboard) {
+            self.pasteboard = pasteboard
+        }
+
+        deinit {
+            timer?.invalidate()
+        }
+
+        func markCopied(_ changeCount: Int) {
+            copiedChangeCount.set(changeCount)
+            guard pasteboard === NSPasteboard.general else { return }
+            let startTimer = { [weak self] in
+                guard let self else { return }
+                self.timer?.invalidate()
+                self.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                    self?.refreshIfNeeded()
+                }
+            }
+            if Thread.isMainThread { startTimer() } else { DispatchQueue.main.async(execute: startTimer) }
+        }
+
+        func refreshIfNeeded() {
+            guard Thread.isMainThread, let copied = copiedChangeCount.get() else { return }
+            if pasteboard.changeCount != copied {
+                copiedChangeCount.set(nil)
+                timer?.invalidate()
+                timer = nil
+            }
+        }
+
+        var containsScreenshot: Bool {
+            guard let copied = copiedChangeCount.get() else { return false }
+            if Thread.isMainThread {
+                let matches = pasteboard.changeCount == copied
+                if !matches {
+                    copiedChangeCount.set(nil)
+                    timer?.invalidate()
+                    timer = nil
+                }
+                return matches
+            }
+            // 事件拦截线程禁止调用 AppKit 的 NSPasteboard.changeCount，直接读取主线程维护的状态。
+            return true
+        }
     }
 }
