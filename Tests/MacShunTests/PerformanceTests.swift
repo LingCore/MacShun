@@ -120,7 +120,7 @@ struct PerformanceTests {
     @Test @MainActor func barKeepsWidthWhenValuesChange() {
         let loaded = PerformanceSnapshot(cpu: 100, gpu: 0, memory: MemoryUsage(used: 100, total: 100), temperature: 110)
         let variants: [(PerformanceMenuBarStyle, Bool, CGFloat)] = [
-            (.text, true, 206), (.icons, true, 81), (.icons, false, 102), (.trend, true, 163), (.trend, false, 175),
+            (.text, true, 206), (.icons, true, 86), (.icons, false, 109), (.trend, true, 163), (.trend, false, 175),
         ]
         for (style, combined, width) in variants {
             var config = PerformanceConfig()

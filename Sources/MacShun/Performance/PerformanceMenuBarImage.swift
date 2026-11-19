@@ -24,8 +24,8 @@ enum PerformanceMenuBarImage {
 
         let combined = configuration.canCombineProcessors && configuration.combineProcessors
         let columns = chartColumns(for: metrics, style: style, combined: combined)
-        let gap: CGFloat = style == .icons ? 4 : 6
-        let leading: CGFloat = 22
+        let gap: CGFloat = 6
+        let leading: CGFloat = style == .icons ? 23 : 22
         let width = columns.reduce(leading) { $0 + $1.width } + CGFloat(columns.count - 1) * gap
         let image = NSImage(size: NSSize(width: width, height: 22), flipped: true) { _ in
             brand.draw(in: NSRect(x: 0, y: 2, width: 18, height: 18), from: .zero,
