@@ -39,6 +39,43 @@ struct ClipboardImageTests {
         try #require(condition())
     }
 
+    @Test func finderFileReferencesRoundTripInOrderWithoutCopyingContents() async throws {
+        _ = NSApplication.shared
+        let dir = folder()
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let first = dir.appendingPathComponent("装配.step")
+        let second = dir.appendingPathComponent("notes.txt")
+        try Data("part".utf8).write(to: first)
+        try Data("notes".utf8).write(to: second)
+        let urls = [first, second].map(\.standardizedFileURL)
+
+        #expect(board.writeObjects(urls.map { $0 as NSURL }))
+        let capture = try #require(ClipboardWatcher.capture(from: board, recordImages: false))
+        #expect(capture.kind == .files && capture.fileURLs == urls)
+        let history = dir.appendingPathComponent("history")
+        let store = ClipboardStore(directory: history)
+        store.add(capture, maxItems: 10)
+        store.saveNow()
+        let reopened = ClipboardStore(directory: history)
+        let item = try #require(reopened.search("zp", filter: .files).first)
+        #expect(item.fileURLs == urls)
+        #expect(reopened.search("notes", filter: .text).isEmpty)
+
+        board.clearContents()
+        board.setString("keep until files are ready", forType: .string)
+        let controller = ClipboardController(configStore: ConfigStore(), store: reopened, pasteboard: board)
+        controller.paste(item)
+        try await waitUntil {
+            let restored = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+            return restored?.map(\.standardizedFileURL) == urls
+        }
+        #expect(await ClipboardController.filesAvailable(urls))
+        try FileManager.default.removeItem(at: second)
+        #expect(await !ClipboardController.filesAvailable(urls))
+    }
+
     @Test func tiffIsImmediatelyPasteableAndMergesWithAnExistingPNGAtCapacity() async throws {
         let dir = folder(), board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: dir) }

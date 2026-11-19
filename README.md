@@ -47,9 +47,10 @@
 
 - Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。单击选中，双击或按 **Enter** 粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
 - 面板优先贴着文字光标或 Mac顺 的文件搜索框打开，找不到文字光标时跟随鼠标。面板可以向上或向下展开，搜索框始终在靠近打开位置的一侧。
-- **分类、预览和粘贴**。按文字、链接、图片或已固定筛选。点眼睛图标或按 **⌘Y** 预览，点眼睛旁的回车箭头直接粘贴。按 **⇧Enter** 粘贴纯文本，按 **⌘⇧C** 只复制。
+- **分类、预览和粘贴**。按文字、链接、图片、文件或已固定筛选。悬停可快速看内容，点眼睛或按 **⌘Y** 打开侧边预览。预览里选中文字后，按 **Enter** 可直接粘贴选段。点列表里的回车箭头可粘贴整条。
+- **数字键快贴**。按住 **Option** 查看可见条目的编号，按 **Option+1～9** 直接粘贴对应项。按 **⇧Enter** 粘贴纯文本，按 **⌘⇧C** 只复制。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
-- 记录文字和图片，常用的内容可以固定并优先显示。在搜索栏右侧点「全部清除」并确认，即可清除未固定的记录。
+- 记录文字、图片和 Finder 复制的文件。可按文件名搜索并重新粘贴一组文件，文件移动、删除或暂时不可用时会提示。常用内容可以固定并优先显示。在搜索栏右侧点「全部清除」并确认，即可清除未固定的记录。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
 - **按图中文字找图片**：已记录的截图和图片会在本机后台识别，旧历史也会补上。按 Win+V 输入图里的文字或拼音，按 Enter 粘贴原图，按 F3 将它贴到屏幕。
 - 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
@@ -271,9 +272,10 @@ When you open Settings, Software Update, or File Search, the window opens on the
 
 - Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Click to select, then double-click or press **Return** to paste. In the file search bar, the selected text goes into the query.
 - The panel opens next to the text caret or the MacShun file search bar, with the pointer as a fallback. It can open above or below, and its search field stays closest to where it opened.
-- **Filter, preview, and paste.** Filter by text, links, images, or pinned items. Click the eye icon or press **⌘Y** to preview. Click the return arrow beside the eye to paste directly. Press **Shift+Return** to paste plain text or **⌘⇧C** to copy.
+- **Filter, preview, and paste.** Filter by text, links, images, files, or pinned items. Hover for a quick look, or click the eye or press **⌘Y** to open the side preview. Select text in the preview and press **Return** to paste the selection. Click the return arrow on a row to paste the whole entry.
+- **Quick paste.** Hold **Option** to see the numbers for visible entries, then press **Option+1–9** to paste one. Press **Shift+Return** to paste plain text or **⌘⇧C** to copy.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
-- Stores text and images. Pin frequently used items to show them first. Choose **Clear All** on the right side of the search bar and confirm to clear unpinned history.
+- Stores text, images, and files copied in Finder. Find files by name and paste them together again. MacShun reports files that have moved, been deleted, or are temporarily unavailable. Pin frequently used items to show them first. Choose **Clear All** on the right side of the search bar and confirm to clear unpinned history.
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.

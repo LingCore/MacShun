@@ -85,10 +85,16 @@ final class ClipboardWatcher {
         guard let item = pasteboard.pasteboardItems?.first else { return nil }
         let types = Set(pasteboard.types?.map(\.rawValue) ?? [])
         if !types.isDisjoint(with: ignoredTypes) { return nil }
-        // 在 Finder 里复制文件时剪贴板里是文件，Windows 的剪贴板历史也不记录文件。
-        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) { return nil }
-
         let source = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) {
+            let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+            let files = urls.map(\.standardizedFileURL)
+            guard !files.isEmpty, files.count == pasteboard.pasteboardItems?.count else { return nil }
+            let paths = Data(files.map(\.path).joined(separator: "\0").utf8)
+            guard paths.count <= maxTextBytes else { return nil }
+            return ClipboardCapture(kind: .files, text: nil, fileURLs: files,
+                                    fingerprint: ClipboardStore.fingerprint([Data("files".utf8), paths]), sourceApp: source)
+        }
 
         if let text = item.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let utf8 = Data(text.utf8)

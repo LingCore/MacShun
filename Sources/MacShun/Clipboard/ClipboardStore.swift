@@ -9,6 +9,7 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     enum Kind: String, Codable {
         case text
         case image
+        case files
     }
 
     var id: UUID
@@ -23,6 +24,8 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var imageFile: String?
     var imageWidth: Int?
     var imageHeight: Int?
+    /// 本机文件引用。旧历史没有这一项。
+    var fileURLs: [URL]?
     /// 内容的指纹，用来去重。
     var fingerprint: String
     /// TIFF 转为 PNG 后，仍可从原剪贴板数据直接去重。
@@ -32,6 +35,10 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var pinned: Bool
     /// 从哪个应用复制的
     var sourceApp: String?
+
+    var fileNames: [String] {
+        (fileURLs ?? []).map { $0.lastPathComponent.isEmpty ? $0.path : $0.lastPathComponent }
+    }
 
     var isWebLink: Bool {
         guard kind == .text, let text else { return false }
@@ -44,7 +51,7 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
 }
 
 enum ClipboardFilter: CaseIterable {
-    case all, text, links, images, pinned
+    case all, text, links, images, files, pinned
 
     var title: String {
         switch self {
@@ -52,6 +59,7 @@ enum ClipboardFilter: CaseIterable {
         case .text: L("文字")
         case .links: L("链接")
         case .images: L("图片")
+        case .files: L("文件")
         case .pinned: L("已固定")
         }
     }
@@ -62,6 +70,7 @@ enum ClipboardFilter: CaseIterable {
         case .text: item.kind == .text && !item.isWebLink
         case .links: item.isWebLink
         case .images: item.kind == .image
+        case .files: item.kind == .files
         case .pinned: item.pinned
         }
     }
@@ -76,6 +85,7 @@ struct ClipboardCapture {
     var png: Data?
     var tiff: Data?
     var imageSize: CGSize?
+    var fileURLs: [URL]?
     var fingerprint: String
     var sourceApp: String?
 }
@@ -135,7 +145,8 @@ final class ClipboardStore: ObservableObject {
         guard !q.isEmpty else { return sorted }
         let term = PinyinIndex.Query(q)
         return sorted.filter { item in
-            guard let text = item.imageText ?? item.text, !text.isEmpty else { return false }
+            let searchable = item.kind == .files ? item.fileNames.joined(separator: "\n") : item.imageText ?? item.text
+            guard let text = searchable, !text.isEmpty else { return false }
             if item.kind == .image && text.localizedCaseInsensitiveContains(q) { return true }
             if let cached = indexes[item.id] { return cached.matches(term) }
             if term.matchesText(text.lowercased()) { return true }
@@ -189,7 +200,7 @@ final class ClipboardStore: ObservableObject {
         let id = UUID()
         var item = ClipboardItem(
             id: id, kind: capture.kind, text: capture.text, extraFiles: [:],
-            imageFile: nil, imageWidth: nil, imageHeight: nil,
+            imageFile: nil, imageWidth: nil, imageHeight: nil, fileURLs: capture.fileURLs,
             fingerprint: capture.fingerprint, created: now, lastUsed: now,
             pinned: false, sourceApp: capture.sourceApp
         )

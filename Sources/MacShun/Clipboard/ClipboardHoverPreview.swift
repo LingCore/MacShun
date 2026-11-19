@@ -74,6 +74,9 @@ struct ClipboardHoverCard: View {
                     .lineLimit(8)
             case .image:
                 ClipboardImageView(url: imageURL, cache: cache)
+            case .files:
+                Text(item.fileNames.prefix(8).joined(separator: "\n"))
+                    .lineLimit(8)
             }
         }
         .font(.callout)

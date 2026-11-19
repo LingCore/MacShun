@@ -21,6 +21,7 @@ final class ClipboardController {
     private var keyMonitor: Any?
     private var pasteTarget: ClipboardPasteTarget?
     private var pendingPaste: UUID?
+    private var fileAction: Task<Void, Never>?
     private var previewOffset: CGFloat?
     private lazy var hoverPreview = ClipboardHoverPreview()
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
@@ -67,7 +68,7 @@ final class ClipboardController {
     struct Host {
         /// 面板所贴靠的搜索栏（AppKit 坐标）
         let anchor: NSRect
-        /// 选中的文字（图片是 nil）
+        /// 选中的文字（非文字条目是 nil）
         let insert: (String?) -> Void
         /// 按 Esc 或再按 Win+V 关掉
         let back: () -> Void
@@ -108,6 +109,8 @@ final class ClipboardController {
 
     /// 关掉。从搜索框打开的，告诉它面板没了（点了别处、在设置里关掉了剪贴板历史），它自己决定接着用还是一起关
     func hide() {
+        fileAction?.cancel()
+        fileAction = nil
         model.hoveredID = nil
         hoverPreview.cancel()
         let host = self.host
@@ -137,10 +140,10 @@ final class ClipboardController {
             host.insert(text)
             return
         }
-        guard write(item) else {
-            model.showFeedback(L("未能写入剪贴板"))
-            return
-        }
+        prepareWrite(item) { [weak self] in self?.pasteWrittenItem(item) }
+    }
+
+    private func pasteWrittenItem(_ item: ClipboardItem) {
         let target = pasteTarget
         let count = pasteboard.changeCount
         hide()
@@ -161,7 +164,40 @@ final class ClipboardController {
     }
 
     private func copy(_ item: ClipboardItem) {
-        model.showFeedback(write(item) ? L("已复制") : L("未能写入剪贴板"))
+        prepareWrite(item) { [weak self] in self?.model.showFeedback(L("已复制")) }
+    }
+
+    /// 文件引用可能指向慢速或断开的磁盘。等待检查时保留面板和现有剪贴板。
+    private func prepareWrite(_ item: ClipboardItem, completed: @escaping () -> Void) {
+        fileAction?.cancel()
+        fileAction = nil
+        guard item.kind == .files else {
+            if write(item) { completed() }
+            else { model.showFeedback(L("未能写入剪贴板")) }
+            return
+        }
+        let urls = item.fileURLs ?? []
+        let changeCount = pasteboard.changeCount
+        model.showFeedback(L("正在检查文件…"))
+        fileAction = Task { [weak self] in
+            let available = await Self.filesAvailable(urls)
+            guard let self, !Task.isCancelled else { return }
+            fileAction = nil
+            guard store.items.contains(where: { $0.id == item.id }) else { return }
+            guard available else { model.showFeedback(L("部分文件已移动、删除或暂不可用")); return }
+            guard pasteboard.changeCount == changeCount else {
+                model.showFeedback(L("剪贴板已更改，请重试"))
+                return
+            }
+            if replacePasteboard(with: urls.map { $0 as NSURL }) { completed() }
+            else { model.showFeedback(L("未能写入剪贴板")) }
+        }
+    }
+
+    static func filesAvailable(_ urls: [URL]) async -> Bool {
+        await Task.detached(priority: .userInitiated) {
+            !urls.isEmpty && urls.allSatisfy { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) }
+        }.value
     }
 
     /// 写进剪贴板。图片文件丢失等原因写不了时返回 false，这时不能再粘贴，否则会贴出剪贴板里原有的东西。
@@ -185,9 +221,15 @@ final class ClipboardController {
                 pbItem.setData(data, forType: .png)
                 if let tiff = NSImage(data: data)?.tiffRepresentation { pbItem.setData(tiff, forType: .tiff) }
             }
+        case .files:
+            return false
         }
+        return replacePasteboard(with: [pbItem])
+    }
+
+    private func replacePasteboard(with objects: [NSPasteboardWriting]) -> Bool {
         pasteboard.clearContents()
-        guard pasteboard.writeObjects([pbItem]) else { return false }
+        guard pasteboard.writeObjects(objects) else { return false }
         watcher.noteOwnWrite()
         return true
     }

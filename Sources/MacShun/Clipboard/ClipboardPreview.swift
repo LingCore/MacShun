@@ -7,6 +7,7 @@ struct ClipboardPreview: View {
     @ObservedObject var model: ClipboardPanelModel
     let item: ClipboardItem
     let showsFeedback: Bool
+    @StateObject private var files = FileStatus()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -23,6 +24,11 @@ struct ClipboardPreview: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: item.fileURLs) {
+            guard item.kind == .files else { return }
+            let available = await ClipboardController.filesAvailable(item.fileURLs ?? [])
+            if !Task.isCancelled { files.unavailable = !available }
+        }
     }
 
     private var header: some View {
@@ -76,6 +82,21 @@ struct ClipboardPreview: View {
             excerpt(item.text ?? "")
                 .padding(10)
                 .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+        case .files:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if files.unavailable {
+                        Label(L("部分文件已移动、删除或暂不可用"), systemImage: "exclamationmark.triangle")
+                            .font(.callout)
+                    }
+                    ForEach(Array(item.fileNames.enumerated()), id: \.offset) { _, name in
+                        Text(name).textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(10)
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
         }
     }
 
@@ -106,6 +127,10 @@ struct ClipboardPreview: View {
             .buttonStyle(.borderedProminent)
         }
         .controlSize(.regular)
+    }
+
+    private final class FileStatus: ObservableObject {
+        @Published var unavailable = false
     }
 }
 

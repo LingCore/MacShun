@@ -178,6 +178,10 @@
 "文件搜索框只能粘贴文字" = "File Search accepts text only";
 "预览仅显示开头，仍可粘贴完整内容" = "Preview shows the beginning. You can still paste the full text.";
 "粘贴选中文字" = "Paste Selection";
+"%ld 个文件" = "%ld files";
+"正在检查文件…" = "Checking files…";
+"部分文件已移动、删除或暂不可用" = "Some files have been moved, deleted, or are temporarily unavailable.";
+"剪贴板已更改，请重试" = "Clipboard changed. Try again.";
 
 /* Expanded file search */
 "展开搜索面板" = "Expand Search Panel";

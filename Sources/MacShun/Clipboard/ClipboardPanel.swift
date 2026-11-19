@@ -640,7 +640,8 @@ private struct ClipboardRow: View {
                 .fill(Color.primary.opacity(0.07))
                 .frame(width: 24, height: 24)
                 .overlay {
-                    Image(systemName: item.kind == .image ? "photo" : item.isWebLink ? "link" : "text.alignleft")
+                    Image(systemName: item.kind == .files ? "doc.on.doc"
+                          : item.kind == .image ? "photo" : item.isWebLink ? "link" : "text.alignleft")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -670,6 +671,11 @@ private struct ClipboardRow: View {
                }) ?? text.split(whereSeparator: \.isNewline).first {
                 Text(String(line)).font(.caption).lineLimit(1).truncationMode(.tail)
             }
+        case .files:
+            Text(item.fileNames.joined(separator: "、"))
+                .font(.system(size: 13))
+                .lineLimit(2)
+                .truncationMode(.tail)
         }
     }
 
@@ -699,6 +705,7 @@ private struct ClipboardRow: View {
         if item.kind == .image, let w = item.imageWidth, let h = item.imageHeight {
             parts.append(L("图片 %@×%@", "\(w)", "\(h)"))
         }
+        if item.kind == .files { parts.append(L("%ld 个文件", item.fileURLs?.count ?? 0)) }
         if let app = item.sourceApp { parts.append(AppInfo.name(app)) }
         let now = Date()
         parts.append(now.timeIntervalSince(item.lastUsed) < 60 ? L("刚刚") :
@@ -738,7 +745,7 @@ private struct ClipboardRow: View {
         if item.kind == .image {
             Button(L("复制图中文字")) { model.copyImageText(item) }
             Button(L("贴到屏幕")) { model.onFloat(item) }
-        } else {
+        } else if item.kind == .text {
             Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
         }
         Divider()
