@@ -50,6 +50,10 @@ final class ClipboardPanelModel: ObservableObject {
     @Published var filter: ClipboardFilter = .all {
         didSet { if filter != oldValue { resetResults() } }
     }
+    @Published var sourceApp: String? {
+        didSet { if sourceApp != oldValue { resetResults() } }
+    }
+    @Published private(set) var sourceApps: [String] = []
     @Published private(set) var results: [ClipboardItem] = []
     @Published private(set) var isPreviewOpen = false
     @Published private(set) var opensAbove = false
@@ -101,6 +105,7 @@ final class ClipboardPanelModel: ObservableObject {
         noteDraft = ""
         self.opensAbove = opensAbove
         filter = .all
+        sourceApp = nil
         query = ""
         selection = 0
         hoveredID = nil
@@ -118,7 +123,7 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     /// 只在完整历史中提供“全部清除”，避免被误解为只清除筛选结果。
-    var canClear: Bool { filter == .all && query.isEmpty && store.items.contains { !$0.pinned } }
+    var canClear: Bool { filter == .all && sourceApp == nil && query.isEmpty && store.items.contains { !$0.pinned } }
 
     /// 全部清除：点两下才清，免得误点。固定的条目保留（和 Windows 一样）
     func clearTapped() {
@@ -143,7 +148,12 @@ final class ClipboardPanelModel: ObservableObject {
 
     func refresh(keepingSelection: Bool = false) {
         let previous = selectedItem
-        results = store.search(query, filter: filter)
+        results = store.search(query, filter: filter, sourceApp: sourceApp)
+        let sources = Set(store.items.compactMap(\.sourceApp)).sorted {
+            let order = AppInfo.name($0).localizedStandardCompare(AppInfo.name($1))
+            return order == .orderedSame ? $0 < $1 : order == .orderedAscending
+        }
+        if sourceApps != sources { sourceApps = sources }
         if keepingSelection, let previous,
            let index = results.firstIndex(where: { $0.id == previous.id || $0.tiffFingerprint == previous.fingerprint }) {
             selection = index
@@ -354,15 +364,18 @@ struct ClipboardPanelView: View {
     }
 
     private var searchBar: some View {
-        Group {
-            if model.isEditingNote { noteEditor }
-            else { searchControls }
+        GeometryReader { geometry in
+            Group {
+                if model.isEditingNote { noteEditor }
+                else { searchControls(showsCount: geometry.size.width >= 305) }
+            }
+            .frame(maxHeight: .infinity)
         }
         .padding(.horizontal, 16)
         .frame(height: Self.searchBarHeight)
     }
 
-    private var searchControls: some View {
+    private func searchControls(showsCount: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 16, weight: .medium))
@@ -376,8 +389,9 @@ struct ClipboardPanelView: View {
                 onCancel: { model.cancel() }
             )
             .help(L("搜索剪贴板，支持拼音和首字母"))
+            if !model.sourceApps.isEmpty || model.sourceApp != nil { sourceMenu }
             // 等着确认清除时，按钮变宽，条数先不显示
-            if !model.results.isEmpty && !model.confirmingClear {
+            if showsCount && !model.results.isEmpty && !model.confirmingClear {
                 Text(L("%ld 条", model.results.count))
                     .font(.caption)
                     .monospacedDigit()
@@ -407,6 +421,31 @@ struct ClipboardPanelView: View {
             RowButton(symbol: "checkmark", help: L("保存备注")) { model.saveNote() }
             RowButton(symbol: "xmark", help: L("取消")) { model.cancelNote() }
         }
+    }
+
+    private var sourceMenu: some View {
+        let title = L("按来源应用筛选")
+        let active = model.sourceApp != nil
+        return Menu {
+            Picker(title, selection: $model.sourceApp) {
+                Text(L("所有来源")).tag(nil as String?)
+                ForEach(model.sourceApps, id: \.self) { source in
+                    Text(AppInfo.name(source)).tag(Optional(source))
+                }
+            }
+            .labelsHidden()
+        } label: {
+            Image(systemName: active ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 24, height: 24)
+                .foregroundStyle(active ? Color.accentColor : .secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.sourceApp.map { L("仅显示 %@ 的记录", AppInfo.name($0)) } ?? title)
+        .accessibilityLabel(title)
+        .accessibilityValue(model.sourceApp.map(AppInfo.name) ?? L("所有来源"))
     }
 
     private var filters: some View {
@@ -536,7 +575,7 @@ struct ClipboardPanelView: View {
     }
 
     private var emptyState: some View {
-        let emptyHistory = model.query.isEmpty && model.filter == .all
+        let emptyHistory = model.query.isEmpty && model.filter == .all && model.sourceApp == nil
         return VStack(spacing: 8) {
             Image(systemName: emptyHistory ? "doc.on.clipboard" : "magnifyingglass")
                 .font(.system(size: 30, weight: .light))

@@ -140,8 +140,8 @@ final class ClipboardStore: ObservableObject {
         return Array(sorted.prefix(pinnedCount + limit))
     }
 
-    func search(_ query: String, filter: ClipboardFilter = .all) -> [ClipboardItem] {
-        let sorted = sortedItems.filter(filter.includes)
+    func search(_ query: String, filter: ClipboardFilter = .all, sourceApp: String? = nil) -> [ClipboardItem] {
+        let sorted = sortedItems.filter { filter.includes($0) && (sourceApp == nil || $0.sourceApp == sourceApp) }
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return sorted }
         let term = PinyinIndex.Query(q)

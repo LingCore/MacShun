@@ -49,7 +49,7 @@
 - 面板优先贴着文字光标或 Mac顺 的文件搜索框打开，找不到文字光标时跟随鼠标。面板可以向上或向下展开，搜索框始终在靠近打开位置的一侧。
 - **分类、预览和粘贴**。按文字、链接、图片、文件或已固定筛选。悬停可快速看内容，点眼睛或按 **⌘Y** 打开侧边预览。预览里选中文字后，按 **Enter** 可直接粘贴选段。点列表里的回车箭头可粘贴整条。
 - **数字键快贴**。按住 **Option** 查看可见条目的编号，按 **Option+1～9** 直接粘贴对应项。按 **⇧Enter** 粘贴纯文本，按 **⌘⇧C** 只复制。
-- **备注**。右键条目可添加或编辑备注，备注也能用拼音搜。
+- **备注和来源筛选**。右键条目可添加或编辑备注，备注也能用拼音搜。用搜索栏的来源筛选按钮，可把搜索限定到某个应用。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
 - 记录文字、图片和 Finder 复制的文件。可按文件名搜索并重新粘贴一组文件，文件移动、删除或暂时不可用时会提示。常用内容可以固定并优先显示。在搜索栏右侧点「全部清除」并确认，即可清除未固定的记录。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
@@ -275,7 +275,7 @@ When you open Settings, Software Update, or File Search, the window opens on the
 - The panel opens next to the text caret or the MacShun file search bar, with the pointer as a fallback. It can open above or below, and its search field stays closest to where it opened.
 - **Filter, preview, and paste.** Filter by text, links, images, files, or pinned items. Hover for a quick look, or click the eye or press **⌘Y** to open the side preview. Select text in the preview and press **Return** to paste the selection. Click the return arrow on a row to paste the whole entry.
 - **Quick paste.** Hold **Option** to see the numbers for visible entries, then press **Option+1–9** to paste one. Press **Shift+Return** to paste plain text or **⌘⇧C** to copy.
-- **Notes.** Right-click an entry to add or edit a note. Notes are searchable by text and pinyin.
+- **Notes and source filters.** Right-click an entry to add or edit a note. Notes are searchable by text and pinyin. Use the source filter in the search bar to narrow results to one app.
 - **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
 - Stores text, images, and files copied in Finder. Find files by name and paste them together again. MacShun reports files that have moved, been deleted, or are temporarily unavailable. Pin frequently used items to show them first. Choose **Clear All** on the right side of the search bar and confirm to clear unpinned history.
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.

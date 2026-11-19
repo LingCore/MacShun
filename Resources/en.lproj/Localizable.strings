@@ -180,6 +180,9 @@
 "保存备注" = "Save Note";
 "添加备注…" = "Add Note…";
 "编辑备注…" = "Edit Note…";
+"按来源应用筛选" = "Filter by Source App";
+"所有来源" = "All Sources";
+"仅显示 %@ 的记录" = "Showing entries from %@";
 "预览仅显示开头，仍可粘贴完整内容" = "Preview shows the beginning. You can still paste the full text.";
 "粘贴选中文字" = "Paste Selection";
 "%ld 个文件" = "%ld files";
