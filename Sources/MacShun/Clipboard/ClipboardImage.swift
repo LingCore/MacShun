@@ -66,6 +66,10 @@ final class ClipboardImageCache {
         })
     }
 
+    func cached(_ url: URL) -> NSImage? {
+        cache.object(forKey: url.deletingPathExtension() as NSURL)
+    }
+
     func load(_ url: URL) async -> NSImage? {
         // TIFF 归档后路径会变，条目 UUID 和图像内容相同。
         let key = url.deletingPathExtension()
@@ -123,8 +127,9 @@ struct ClipboardImageView: View {
     @StateObject private var state = ClipboardImageState()
 
     var body: some View {
+        let resolved = state.image ?? url.flatMap { cache.cached($0) }
         ZStack {
-            if let image = state.image {
+            if let image = resolved {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: preview ? .fit : .fill)
@@ -140,6 +145,10 @@ struct ClipboardImageView: View {
             guard let url else {
                 state.image = nil
                 state.failed = true
+                return
+            }
+            if let cached = cache.cached(url) {
+                state.image = cached
                 return
             }
             let image = await cache.load(url)

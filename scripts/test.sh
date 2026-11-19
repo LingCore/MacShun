@@ -33,7 +33,7 @@ if [[ $# -gt 0 ]]; then
 else
     # 这些套件共享 AppKit 的进程级窗口、焦点和事件循环状态，分别运行。
     # 不跳过任何用例；剩余纯逻辑测试仍在同一进程并行运行。
-    UI_SUITES=(CaptureTests CaptureColorShortcutTests CaptureAnnotationTests ScrollStitcherTests ClipboardImageTests SearchCompositionTests FileSearchLayoutTests FolderScopeTests)
+    UI_SUITES=(CaptureTests CaptureColorShortcutTests CaptureAnnotationTests ScrollStitcherTests ClipboardImageTests ClipboardScrollingTests SearchCompositionTests FileSearchLayoutTests FolderScopeTests)
     UI_PATTERN="$(IFS='|'; echo "${UI_SUITES[*]}")"
     run_tests --skip "$UI_PATTERN"
     for suite in "${UI_SUITES[@]}"; do

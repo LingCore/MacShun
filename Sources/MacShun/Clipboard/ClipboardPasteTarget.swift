@@ -7,6 +7,7 @@ import ApplicationServices
 @MainActor
 struct ClipboardPasteTarget {
     let pid: pid_t
+    private let isLocal: Bool
     private let localWindow: Int?
     private let application: AXUIElement?
     private let window: AXUIElement?
@@ -15,11 +16,13 @@ struct ClipboardPasteTarget {
     init(pid: pid_t) {
         self.pid = pid
         if pid == ProcessInfo.processInfo.processIdentifier {
+            isLocal = true
             localWindow = NSApp.keyWindow?.windowNumber
             application = nil
             window = nil
             input = nil
         } else if Permissions.accessibility {
+            isLocal = false
             localWindow = nil
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.15)
@@ -28,6 +31,7 @@ struct ClipboardPasteTarget {
             let focused: AXUIElement? = app.value(kAXFocusedUIElementAttribute)
             input = focused.flatMap { FocusInspector.focusKind(of: $0) == .text ? $0 : nil }
         } else {
+            isLocal = false
             localWindow = nil
             application = nil
             window = nil
@@ -37,7 +41,10 @@ struct ClipboardPasteTarget {
 
     var isCurrent: Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return false }
-        if let localWindow { return NSApp.keyWindow?.windowNumber == localWindow }
+        if isLocal {
+            guard let localWindow else { return false }
+            return NSApp.keyWindow?.windowNumber == localWindow
+        }
         guard let application else { return true }
         return Self.stillFocused(window, in: application, attribute: kAXFocusedWindowAttribute)
             && Self.stillFocused(input, in: application, attribute: kAXFocusedUIElementAttribute)

@@ -64,18 +64,32 @@ final class ClipboardPanelModel: ObservableObject {
         didSet { if selection != oldValue { previewSelection = nil } }
     }
     /// 鼠标停在哪一条上
-    @Published var hoveredID: UUID? {
-        didSet { if hoveredID != oldValue { onHoverChange(hoveredID) } }
+    var hoveredID: UUID? {
+        get { rowState.hoveredID }
+        set {
+            guard newValue != rowState.hoveredID else { return }
+            rowState.hoveredID = newValue
+            onHoverChange(newValue)
+        }
     }
     @Published var showsQuickPasteNumbers = false
-    @Published private(set) var visibleRowIDs: Set<UUID> = []
     @Published private(set) var previewSelection: String?
     @Published private(set) var batchIDs: [UUID] = []
     @Published private var noteItem: ClipboardItem?
     @Published var noteDraft = ""
-    /// 每次打开面板时加一，搜索框据此重新获得焦点。
+    /// 每次打开面板或关闭预览/备注时加一，搜索框据此重新获得焦点。
     @Published private(set) var focusToken = 0
+    /// 仅在打开面板时加一，列表据此重置滚动到边缘（关闭预览/备注不重置滚动位置）。
+    @Published private(set) var showToken = 0
 
+    /// 滚动时的可见行和悬停只刷新行视图，避免重新布局整个面板。
+    @MainActor
+    final class RowState: ObservableObject {
+        @Published fileprivate(set) var visibleIDs: Set<UUID> = []
+        @Published fileprivate(set) var hoveredID: UUID?
+    }
+
+    let rowState = RowState()
     let store: ClipboardStore
     private let pasteboard: NSPasteboard
     var onPaste: (ClipboardItem) -> Void = { _ in }
@@ -116,6 +130,7 @@ final class ClipboardPanelModel: ObservableObject {
         cancelClear()
         refresh()
         thumbnails.prepareForOpening(selectedItem.flatMap { store.imageURL(for: $0) })
+        showToken += 1
         focusToken += 1
     }
 
@@ -179,6 +194,7 @@ final class ClipboardPanelModel: ObservableObject {
 
     func move(_ delta: Int) {
         guard !results.isEmpty else { return }
+        hoveredID = nil
         selection = min(max(selection + (opensAbove ? -delta : delta), 0), results.count - 1)
     }
 
@@ -195,15 +211,15 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     func updateVisibleRows(_ ids: Set<UUID>) {
-        if visibleRowIDs != ids { visibleRowIDs = ids }
+        if rowState.visibleIDs != ids { rowState.visibleIDs = ids }
     }
 
     private var quickPasteRows: [ClipboardItem] {
-        Array(results.lazy.filter { self.visibleRowIDs.contains($0.id) }.prefix(9))
+        Array(results.lazy.filter { self.rowState.visibleIDs.contains($0.id) }.prefix(9))
     }
 
     func quickPasteNumber(for id: UUID) -> Int? {
-        guard showsQuickPasteNumbers, !isEditingNote else { return nil }
+        guard showsQuickPasteNumbers, !isEditingNote, rowState.visibleIDs.contains(id) else { return nil }
         return quickPasteRows.firstIndex { $0.id == id }.map { $0 + 1 }
     }
 
@@ -332,7 +348,8 @@ final class ClipboardPanelModel: ObservableObject {
         textCopy = Task {
             let value = await store.recognizedText(for: item.id)
             guard !Task.isCancelled else { return }
-            guard store.items.contains(where: { $0.id == item.id }), let value, !value.isEmpty else {
+            guard store.items.contains(where: { $0.id == item.id || $0.tiffFingerprint == item.fingerprint }),
+                  let value, !value.isEmpty else {
                 copyFeedback = L("图片里没有可复制的文字")
                 return
             }
@@ -369,7 +386,6 @@ struct ClipboardPanelView: View {
         }
         .frame(idealWidth: ClipboardPanel.size.width, idealHeight: ClipboardPanel.size.height)
         .background(VisualEffectBackground())
-        .onPreferenceChange(VisibleClipboardRows.self) { model.updateVisibleRows($0) }
     }
 
     private var history: some View {
@@ -384,9 +400,8 @@ struct ClipboardPanelView: View {
             if model.results.isEmpty {
                 emptyState
             } else {
-                list.id(model.opensAbove)
-                    .disabled(model.isEditingNote)
-                    .allowsHitTesting(!model.isEditingNote)
+                ClipboardHistoryList(model: model, isDisabled: model.isEditingNote)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider().opacity(0.6)
             if model.opensAbove {
@@ -518,97 +533,6 @@ struct ClipboardPanelView: View {
         .help(L("清除没固定的记录，固定的保留"))
     }
 
-    private var list: some View {
-        enum ListEdge { case nearest }
-        let nearestEdge: UnitPoint = model.opensAbove ? .bottom : .top
-        let edge = Color.clear.frame(height: 0).id(ListEdge.nearest).accessibilityHidden(true)
-        let rows = Array(model.results.enumerated())
-        let initialRowCount = 8
-        return ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    if !model.opensAbove { edge }
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        if model.opensAbove {
-                            ForEach(Array(rows.dropFirst(initialRowCount).reversed()), id: \.element.id) { index, item in
-                                historyRow(item, at: index)
-                            }
-                        } else {
-                            ForEach(rows, id: \.element.id) { index, item in
-                                historyRow(item, at: index)
-                            }
-                        }
-                    }
-                    if model.opensAbove {
-                        // 先测出靠近搜索框的几项，向上展开时可以直接定位到列表底端。
-                        VStack(alignment: .leading, spacing: 1) {
-                            ForEach(Array(rows.prefix(initialRowCount).reversed()), id: \.element.id) { index, item in
-                                historyRow(item, at: index)
-                            }
-                        }
-                        edge
-                    }
-                }
-            }
-            .contentMargins(8, for: .scrollContent)
-            .defaultScrollAnchor(nearestEdge)
-            .scrollIndicators(.never)
-            .onChange(of: model.selectedItem?.id) { _, id in
-                if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
-                else if let id { proxy.scrollTo(id) }
-            }
-            .onChange(of: model.focusToken) {
-                // Reopening can resize the native panel as SwiftUI lays out the list.
-                // Wait for the new viewport before restoring the edge near the search field.
-                DispatchQueue.main.async {
-                    if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
-                }
-            }
-            .onAppear {
-                guard model.opensAbove else { return }
-                DispatchQueue.main.async {
-                    if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
-                }
-            }
-        }
-    }
-
-    private func historyRow(_ item: ClipboardItem, at index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            if !model.opensAbove { groupHeading(at: index) }
-            ClipboardRow(model: model, item: item, isSelected: index == model.selection)
-                .background(GeometryReader { geometry in
-                    let frame = geometry.frame(in: .scrollView)
-                    let viewport = CGRect(origin: .zero, size: geometry.bounds(of: .scrollView)?.size ?? .zero)
-                    let visible = frame.height > 0 && viewport.intersection(frame).height >= frame.height / 2
-                    Color.clear.preference(key: VisibleClipboardRows.self, value: visible ? [item.id] : [])
-                })
-            if model.opensAbove { groupHeading(at: index) }
-        }
-        .id(item.id)
-    }
-
-    @ViewBuilder
-    private func groupHeading(at index: Int) -> some View {
-        if model.filter != .pinned, let title = groupTitle(at: index) {
-            Text(title)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(model.opensAbove ? .bottom : .top, index == 0 ? 2 : 10)
-                .padding(model.opensAbove ? .top : .bottom, 4)
-        }
-    }
-
-    /// 有固定的条目时分成“已固定”和“最近”两组（固定的排在前面）。
-    private func groupTitle(at index: Int) -> String? {
-        let results = model.results
-        guard results.first?.pinned == true else { return nil }
-        if index == 0 { return L("已固定") }
-        if !results[index].pinned && results[index - 1].pinned { return L("最近") }
-        return nil
-    }
-
     private var emptyState: some View {
         let emptyHistory = model.query.isEmpty && model.filter == .all && model.sourceApp == nil
         return VStack(spacing: 8) {
@@ -677,14 +601,6 @@ struct ClipboardPanelView: View {
     }
 }
 
-private struct VisibleClipboardRows: PreferenceKey {
-    static let defaultValue: Set<UUID> = []
-
-    static func reduce(value: inout Set<UUID>, nextValue: () -> Set<UUID>) {
-        value.formUnion(nextValue())
-    }
-}
-
 /// 底部的按键提示，按键画成键帽的样子。
 struct KeyHint: View {
     let key: String
@@ -709,13 +625,16 @@ struct KeyHint: View {
     }
 }
 
-private struct ClipboardRow: View {
-    @ObservedObject var model: ClipboardPanelModel
+struct ClipboardRow: View {
+    let model: ClipboardPanelModel
     let item: ClipboardItem
+    let previewText: String
+    let matchedImageLine: String?
     let isSelected: Bool
-
-    private var hovering: Bool { model.hoveredID == item.id }
-    private var batchNumber: Int? { model.batchIDs.firstIndex(of: item.id).map { $0 + 1 } }
+    let isHovered: Bool
+    let badgeNumber: Int?
+    let badgeIsQuickPaste: Bool
+    let isBatchSelected: Bool
 
     private static let timeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -727,15 +646,14 @@ private struct ClipboardRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             ZStack {
-                let showsQuickNumbers = model.showsQuickPasteNumbers && !model.isEditingNote
-                if let number = showsQuickNumbers ? model.quickPasteNumber(for: item.id) : batchNumber {
+                if let number = badgeNumber {
                     Text("\(number)")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.65)
                         .frame(width: 24, height: 24)
-                        .background((showsQuickNumbers ? Color.primary : Color.accentColor).opacity(0.12),
+                        .background((badgeIsQuickPaste ? Color.primary : Color.accentColor).opacity(0.12),
                                     in: RoundedRectangle(cornerRadius: 6))
                         .accessibilityHidden(true)
                 } else {
@@ -753,7 +671,7 @@ private struct ClipboardRow: View {
                 HStack(spacing: 6) {
                     meta
                     Spacer(minLength: 0)
-                    if hovering || isSelected { actions }
+                    if isHovered || isSelected { actions }
                 }
                 // 操作放在来源行，鼠标经过时正文保持原有换行，下一条也不会跳动。
                 .frame(minHeight: 24)
@@ -773,20 +691,13 @@ private struct ClipboardRow: View {
         .highPriorityGesture(TapGesture().modifiers(.command).onEnded { model.toggleBatch(item) })
         .contextMenu { rowMenu }
         .accessibilityAction(named: Text(L("粘贴"))) { model.onPaste(item) }
-        .accessibilityAddTraits(isSelected || batchNumber != nil ? .isSelected : [])
-        .onHover { inside in
-            if inside {
-                model.hoveredID = item.id
-            } else if model.hoveredID == item.id {
-                model.hoveredID = nil
-            }
-        }
+        .accessibilityAddTraits(isSelected || isBatchSelected ? .isSelected : [])
     }
 
     private var rowFill: Color {
         if isSelected { return Color.accentColor.opacity(0.22) }
-        if batchNumber != nil { return Color.accentColor.opacity(0.10) }
-        if hovering { return Color.primary.opacity(0.05) }
+        if isBatchSelected { return Color.accentColor.opacity(0.10) }
+        if isHovered { return Color.primary.opacity(0.05) }
         return .clear
     }
 
@@ -815,26 +726,24 @@ private struct ClipboardRow: View {
     private var content: some View {
         switch item.kind {
         case .text:
-            Text(preview(item.text ?? ""))
+            Text(previewText)
                 .font(.system(size: 13))
                 .lineLimit(2)
                 .truncationMode(.tail)
         case .image:
+            let size = Self.thumbnailSize(for: item)
             ClipboardImageView(url: model.store.imageURL(for: item), cache: model.thumbnails)
-                .frame(width: thumbnailSize.width, height: thumbnailSize.height)
+                .frame(width: size.width, height: size.height)
                 .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
                         .strokeBorder(Color.primary.opacity(0.1))
                 }
-            if !model.query.isEmpty, let text = item.imageText,
-               let line = text.split(whereSeparator: \.isNewline).first(where: {
-                   $0.localizedCaseInsensitiveContains(model.query)
-               }) ?? text.split(whereSeparator: \.isNewline).first {
-                Text(String(line)).font(.caption).lineLimit(1).truncationMode(.tail)
+            if let matchedImageLine {
+                Text(matchedImageLine).font(.caption).lineLimit(1).truncationMode(.tail)
             }
         case .files:
-            Text(item.fileNames.joined(separator: "、"))
+            Text(previewText)
                 .font(.system(size: 13))
                 .lineLimit(2)
                 .truncationMode(.tail)
@@ -842,7 +751,7 @@ private struct ClipboardRow: View {
     }
 
     /// 缩略图最高 72、最宽 220，保持原来的比例。
-    private var thumbnailSize: CGSize {
+    static func thumbnailSize(for item: ClipboardItem) -> CGSize {
         let w = CGFloat(max(item.imageWidth ?? 72, 1)), h = CGFloat(max(item.imageHeight ?? 72, 1))
         let scale = min(72 / h, 220 / w, 1)
         return CGSize(width: max(w * scale, 24), height: max(h * scale, 24))
@@ -909,7 +818,7 @@ private struct ClipboardRow: View {
             Button(L("贴到屏幕")) { model.onFloat(item) }
         } else if item.kind == .text {
             Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
-            Button(batchNumber == nil ? L("加入合并粘贴") : L("从合并粘贴移除")) { model.toggleBatch(item) }
+            Button(!isBatchSelected ? L("加入合并粘贴") : L("从合并粘贴移除")) { model.toggleBatch(item) }
         }
         Divider()
         Button(item.note == nil ? L("添加备注…") : L("编辑备注…")) { model.beginNote(item) }
@@ -918,7 +827,7 @@ private struct ClipboardRow: View {
     }
 
     /// 预览只显示一段：去掉首尾空白，连续的空白和换行合成一个空格。
-    private func preview(_ text: String) -> String {
+    static func preview(_ text: String) -> String {
         let head = text.prefix(400)
         return head.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }

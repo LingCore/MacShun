@@ -21,6 +21,7 @@ final class ClipboardController {
     private var keyMonitor: Any?
     private var pasteTarget: ClipboardPasteTarget?
     private var pendingPaste: UUID?
+    private var tiffProvider: LazyTIFFProvider?
     private var fileAction: Task<Void, Never>?
     private var previewOffset: CGFloat?
     private lazy var hoverPreview = ClipboardHoverPreview()
@@ -131,6 +132,7 @@ final class ClipboardController {
         removeKeyMonitor()
         FrontAppTracker.shared.clipboardPanelActive.set(false)
         if panel.isVisible {
+            pendingPaste = nil
             model.cancelTextCopy()
             panel.endEditing(for: nil)
             panel.orderOut(nil)
@@ -212,13 +214,20 @@ final class ClipboardController {
 
     static func filesAvailable(_ urls: [URL]) async -> Bool {
         await Task.detached(priority: .userInitiated) {
-            !urls.isEmpty && urls.allSatisfy { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) }
+            guard !urls.isEmpty else { return false }
+            let fm = FileManager.default
+            for url in urls {
+                if Task.isCancelled { return false }
+                guard url.isFileURL, fm.fileExists(atPath: url.path) else { return false }
+            }
+            return true
         }.value
     }
 
     /// 写进剪贴板。图片文件丢失等原因写不了时返回 false，这时不能再粘贴，否则会贴出剪贴板里原有的东西。
     private func write(_ item: ClipboardItem) -> Bool {
         let pbItem = NSPasteboardItem()
+        tiffProvider = nil
         switch item.kind {
         case .text:
             pbItem.setString(item.text ?? "", forType: .string)
@@ -235,7 +244,10 @@ final class ClipboardController {
                 if let png = ClipboardImage.png(fromTIFF: data) { pbItem.setData(png, forType: .png) }
             } else {
                 pbItem.setData(data, forType: .png)
-                if let tiff = NSImage(data: data)?.tiffRepresentation { pbItem.setData(tiff, forType: .tiff) }
+                // 按需生成 TIFF，避免粘贴高分辨率 PNG 时在主线程同步展开数十 MB 位图。
+                let provider = LazyTIFFProvider(png: data)
+                tiffProvider = provider
+                pbItem.setDataProvider(provider, forTypes: [.tiff])
             }
         case .files:
             return false
@@ -466,5 +478,19 @@ enum CaretLocator {
               rect.minX.isFinite, rect.maxX.isFinite, rect.minY.isFinite, rect.maxY.isFinite, rect.height > 0
         else { return nil }
         return rect
+    }
+}
+
+/// 仅在目标应用显式请求 TIFF 格式时才从 PNG 展开位图。
+private final class LazyTIFFProvider: NSObject, NSPasteboardItemDataProvider {
+    private let png: Data
+
+    init(png: Data) {
+        self.png = png
+    }
+
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        guard type == .tiff, let tiff = NSImage(data: png)?.tiffRepresentation else { return }
+        item.setData(tiff, forType: .tiff)
     }
 }

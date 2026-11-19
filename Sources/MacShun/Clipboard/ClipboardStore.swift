@@ -42,7 +42,7 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     }
 
     var isWebLink: Bool {
-        guard kind == .text, let text else { return false }
+        guard kind == .text, let text, text.utf8.count <= 4096 else { return false }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.contains(where: \.isWhitespace), let url = URL(string: value),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
@@ -107,6 +107,7 @@ final class ClipboardStore: ObservableObject {
     private var failedImages: Set<UUID> = []
     private var pendingReads: [UUID: Task<String?, Never>] = [:]
     private let ocrQueue = DispatchQueue(label: "MacShun.ClipboardImageText", qos: .utility)
+    private let saveQueue = DispatchQueue(label: "MacShun.ClipboardStore.save", qos: .utility)
     private var maxUnpinnedItems: Int?
     private var archivingTIFF = false
     private var failedArchives = Set<UUID>()
@@ -274,6 +275,10 @@ final class ClipboardStore: ObservableObject {
                 }
                 existing.tiffFingerprint = current.fingerprint
                 existing.pinned = existing.pinned || current.pinned
+                if existing.imageText == nil, let recognized = current.imageText {
+                    existing.imageText = recognized
+                    indexes[existing.id] = nil
+                }
                 if let note = current.note, note != existing.note {
                     existing.note = [existing.note, note].compactMap { $0 }.joined(separator: " / ")
                     indexes[existing.id] = nil
@@ -339,19 +344,21 @@ final class ClipboardStore: ObservableObject {
         if let text = item.imageText { return text }
         if let task = pendingReads[id] { return await task.value }
         guard let url = imageURL(for: item) else { return nil }
+        let originalFingerprint = item.fingerprint
         let task = Task { [readImageText, ocrQueue] () -> String? in
             let text: String? = await withCheckedContinuation { continuation in
                 ocrQueue.async { continuation.resume(returning: readImageText(url)) }
             }
             pendingReads[id] = nil
             if replacedFiles.contains(url.lastPathComponent) { scheduleSave() }
-            guard let i = items.firstIndex(where: { $0.id == id }) else { return nil }
+            guard let i = items.firstIndex(where: { $0.id == id || $0.tiffFingerprint == originalFingerprint }) else { return nil }
+            let targetID = items[i].id
             if recognizesImages {
                 if let text {
-                    indexes[id] = nil
+                    indexes[targetID] = nil
                     items[i].imageText = text
                     scheduleSave()
-                } else { failedImages.insert(id) }
+                } else { failedImages.insert(targetID) }
             }
             return text
         }
@@ -475,31 +482,53 @@ final class ClipboardStore: ObservableObject {
         saveScheduled = true
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
-            self?.saveScheduled = false
-            self?.saveNow()
+            guard let self, self.saveScheduled else { return }
+            self.saveScheduled = false
+            self.enqueueSave(sync: false)
         }
     }
 
     func saveNow() {
-        do {
-            try createPrivateDirectory(directory)
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            // ISO 8601 清单保留到秒。同秒复制或再次使用的条目按实际先后落盘。
-            let data = try encoder.encode(items.sorted { $0.lastUsed > $1.lastUsed })
-            try data.write(to: historyFile, options: .atomic)
-            let readingTIFFs = Set(pendingReads.keys.map { $0.uuidString + ".tiff" })
-            for name in replacedFiles.subtracting(readingTIFFs) {
-                try? FileManager.default.removeItem(at: blobDirectory.appendingPathComponent(name))
-                replacedFiles.remove(name)
+        saveScheduled = false
+        enqueueSave(sync: true)
+    }
+
+    private func enqueueSave(sync: Bool) {
+        // ISO 8601 清单保留到秒。同秒复制或再次使用的条目按实际先后落盘。
+        let snapshot = items.sorted { $0.lastUsed > $1.lastUsed }
+        let readingTIFFs = Set(pendingReads.keys.map { $0.uuidString + ".tiff" })
+        let removable = replacedFiles.subtracting(readingTIFFs)
+        replacedFiles.subtract(removable)
+        let dir = directory
+        let file = historyFile
+        let blobs = blobDirectory
+        let writeBlock: @Sendable () -> Void = {
+            do {
+                try Self.createPrivateDirectory(dir)
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                let data = try encoder.encode(snapshot)
+                try data.write(to: file, options: .atomic)
+                for name in removable {
+                    try? FileManager.default.removeItem(at: blobs.appendingPathComponent(name))
+                }
+            } catch {
+                Log.clipboard.error("保存剪贴板历史失败：\(error.localizedDescription, privacy: .public)")
             }
-        } catch {
-            Log.clipboard.error("保存剪贴板历史失败：\(error.localizedDescription, privacy: .public)")
+        }
+        if sync {
+            saveQueue.sync(execute: writeBlock)
+        } else {
+            saveQueue.async(execute: writeBlock)
         }
     }
 
     /// 目录只允许当前用户读写。
     private func createPrivateDirectory(_ url: URL) throws {
+        try Self.createPrivateDirectory(url)
+    }
+
+    private nonisolated static func createPrivateDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(
             at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )

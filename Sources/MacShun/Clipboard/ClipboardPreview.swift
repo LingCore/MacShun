@@ -84,7 +84,7 @@ struct ClipboardPreview: View {
                 .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
         case .files:
             ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
+                LazyVStack(alignment: .leading, spacing: 6) {
                     if files.unavailable {
                         Label(L("部分文件已移动、删除或暂不可用"), systemImage: "exclamationmark.triangle")
                             .font(.callout)
@@ -172,18 +172,22 @@ private struct ClipboardPreviewText: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.onSelection = onSelection
         guard let view = scroll.documentView as? ClipboardPreviewTextView, view.string != text else { return }
+        context.coordinator.isUpdating = true
         view.string = text
         view.font = .systemFont(ofSize: NSFont.systemFontSize)
         view.textColor = .labelColor
         view.setSelectedRange(NSRange(location: 0, length: 0))
+        context.coordinator.isUpdating = false
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var onSelection: (String?) -> Void
+        var isUpdating = false
 
         init(onSelection: @escaping (String?) -> Void) { self.onSelection = onSelection }
 
         func textViewDidChangeSelection(_ notification: Notification) {
+            guard !isUpdating else { return }
             let view = notification.object as? ClipboardPreviewTextView
             onSelection(view?.selectedText)
         }

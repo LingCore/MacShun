@@ -71,6 +71,7 @@ final class ClipboardWatcher {
         let count = pasteboard.changeCount
         guard count != lastChangeCount else { return }
         lastChangeCount = count
+        if pasteboard === NSPasteboard.general { CaptureClipboard.general.refreshIfNeeded() }
         if count == ownChangeCount { return }
 
         let cfg = config()
@@ -96,9 +97,11 @@ final class ClipboardWatcher {
                                     fingerprint: ClipboardStore.fingerprint([Data("files".utf8), paths]), sourceApp: source)
         }
 
-        if let text = item.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let text = item.string(forType: .string) {
+            // 先按 UTF-8 长度和首个非空白字符过滤，避免对超大剪贴板文本做整串拷贝或 trim。
+            guard text.utf8.count <= maxTextBytes,
+                  text.contains(where: { !$0.isWhitespace && !$0.isNewline }) else { return nil }
             let utf8 = Data(text.utf8)
-            guard utf8.count <= maxTextBytes else { return nil }
             var extras: [String: Data] = [:]
             for type in [NSPasteboard.PasteboardType.rtf, .html] {
                 if let data = item.data(forType: type), data.count <= maxExtraBytes {
