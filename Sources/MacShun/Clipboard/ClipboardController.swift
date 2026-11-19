@@ -24,6 +24,7 @@ final class ClipboardController {
     private var fileAction: Task<Void, Never>?
     private var previewOffset: CGFloat?
     private lazy var hoverPreview = ClipboardHoverPreview()
+    private(set) var isRecordingPaused = false
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
     private var host: Host?
 
@@ -40,13 +41,24 @@ final class ClipboardController {
     func applyConfig() {
         let cfg = configStore.config.clipboard
         store.setImageRecognition(enabled: cfg.enabled && cfg.recordImages)
+        updateRecording()
         if cfg.enabled {
-            watcher.start()
             store.trim(maxItems: cfg.maxItems)
         } else {
-            watcher.stop()
             hide()
         }
+    }
+
+    func toggleRecordingPause() {
+        guard configStore.config.clipboard.enabled else { return }
+        isRecordingPaused.toggle()
+        model.recordingPaused = isRecordingPaused
+        updateRecording()
+    }
+
+    private func updateRecording() {
+        if configStore.config.clipboard.enabled && !isRecordingPaused { watcher.start() }
+        else { watcher.stop() }
     }
 
     var isVisible: Bool { panel.isVisible }

@@ -56,6 +56,7 @@
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
 - **按图中文字找图片**：已记录的截图和图片会在本机后台识别，旧历史也会补上。按 Win+V 输入图里的文字或拼音，按 Enter 粘贴原图，按 F3 将它贴到屏幕。
 - 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
+- 从菜单栏「暂停剪贴板记录」可暂时停止收录，已有历史仍能搜索和粘贴。恢复后从下一次复制开始记录。
 
 <p align="center">
   <picture>
@@ -283,6 +284,7 @@ When you open Settings, Software Update, or File Search, the window opens on the
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.
+- Choose **Pause Clipboard Recording** from the menu bar to pause new entries. Existing history stays available for search and paste. After resuming, recording starts with the next copy.
 
 <p align="center">
   <picture>

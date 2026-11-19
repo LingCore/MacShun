@@ -54,6 +54,7 @@ final class ClipboardPanelModel: ObservableObject {
         didSet { if sourceApp != oldValue { resetResults() } }
     }
     @Published private(set) var sourceApps: [String] = []
+    @Published var recordingPaused = false
     @Published private(set) var results: [ClipboardItem] = []
     @Published private(set) var isPreviewOpen = false
     @Published private(set) var opensAbove = false
@@ -639,6 +640,11 @@ struct ClipboardPanelView: View {
                 Text(L("已选 %ld 条", model.batchIDs.count))
                     .font(.callout)
                     .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else if model.recordingPaused {
+                Label(L("记录已暂停"), systemImage: "pause.circle")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else if model.selectedItem != nil {

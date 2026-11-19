@@ -8,6 +8,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let configStore: ConfigStore
     private let state: AppState
+    private let clipboard: ClipboardController
     private let openSettings: () -> Void
     private let openPerformance: () -> Void
     private let performance = PerformanceMonitor.shared
@@ -16,11 +17,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let capture: (CaptureMode) -> Void
     private var subscriptions: Set<AnyCancellable> = []
 
-    init(configStore: ConfigStore, state: AppState, openSettings: @escaping () -> Void,
+    init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController, openSettings: @escaping () -> Void,
          openPerformance: @escaping () -> Void, openClipboard: @escaping () -> Void,
          capture: @escaping (CaptureMode) -> Void) {
         self.configStore = configStore
         self.state = state
+        self.clipboard = clipboard
         self.openSettings = openSettings
         self.openPerformance = openPerformance
         self.openClipboard = openClipboard
@@ -68,7 +70,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         button.setAccessibilityValue(values.joined(separator: ", "))
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         let cfg = configStore.config
 
@@ -98,6 +100,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let history = action(L("打开剪贴板历史"), #selector(showClipboard), symbol: "clock.arrow.circlepath")
         history.isEnabled = cfg.clipboard.enabled
         menu.addItem(history)
+        if cfg.clipboard.enabled {
+            let paused = clipboard.isRecordingPaused
+            menu.addItem(action(paused ? L("恢复剪贴板记录") : L("暂停剪贴板记录"),
+                                #selector(toggleClipboardPause), symbol: paused ? "play.circle" : "pause.circle"))
+        }
         menu.addItem(action(CaptureMode.image.title, #selector(startCapture), symbol: "viewfinder"))
         menu.addItem(action(CaptureMode.text.title, #selector(readText), symbol: "text.viewfinder"))
         menu.addItem(action(L("贴出剪贴板图片"), #selector(pinClipboard), symbol: "macwindow.on.rectangle"))
@@ -128,6 +135,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func toggleKeyboard() { configStore.config.keyboard.enabled.toggle() }
     @objc private func toggleMouse() { configStore.config.mouse.enabled.toggle() }
     @objc private func toggleClipboard() { configStore.config.clipboard.enabled.toggle() }
+    @MainActor @objc private func toggleClipboardPause() { clipboard.toggleRecordingPause() }
     @objc private func startCapture() { capture(.image) }
     @MainActor @objc private func pinClipboard() { ScreenPins.shared.showClipboard() }
     @MainActor @objc private func closePins() { ScreenPins.shared.closeAll() }

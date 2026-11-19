@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         settingsWindow = SettingsWindowController(configStore: configStore, state: state, clipboard: clipboard)
         statusMenu = StatusMenu(
-            configStore: configStore, state: state,
+            configStore: configStore, state: state, clipboard: clipboard,
             openSettings: { [weak self] in self?.settingsWindow.show() },
             openPerformance: { [weak self] in self?.settingsWindow.show(tab: .performance) },
             openClipboard: { [weak self] in self?.showClipboard() },

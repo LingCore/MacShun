@@ -189,6 +189,9 @@
 "加入合并粘贴" = "Add to Combined Paste";
 "从合并粘贴移除" = "Remove from Combined Paste";
 "合并内容太长，请减少选择的条目" = "Combined text is too long. Select fewer entries.";
+"记录已暂停" = "Recording Paused";
+"恢复剪贴板记录" = "Resume Clipboard Recording";
+"暂停剪贴板记录" = "Pause Clipboard Recording";
 "预览仅显示开头，仍可粘贴完整内容" = "Preview shows the beginning. You can still paste the full text.";
 "粘贴选中文字" = "Paste Selection";
 "%ld 个文件" = "%ld files";

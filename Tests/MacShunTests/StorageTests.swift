@@ -80,6 +80,36 @@ struct ClipboardStoreTests {
         reopened.saveNow()
     }
 
+    @Test func resumingRecordingDoesNotBackfillPausedCopies() {
+        let dir = tempDirectory()
+        let board = NSPasteboard.withUniqueName()
+        defer {
+            board.releaseGlobally()
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let store = ClipboardStore(directory: dir)
+        let watcher = ClipboardWatcher(store: store, pasteboard: board, config: ClipboardConfig.init)
+        defer { watcher.stop(); store.saveNow() }
+
+        watcher.start()
+        board.clearContents()
+        board.setString("before pause", forType: .string)
+        watcher.recordPendingChange()
+        watcher.stop()
+        board.clearContents()
+        board.setString("during pause", forType: .string)
+        watcher.recordPendingChange()
+        #expect(store.items.map(\.text) == ["before pause"])
+
+        watcher.start()
+        watcher.recordPendingChange()
+        #expect(store.items.map(\.text) == ["before pause"])
+        board.clearContents()
+        board.setString("after resume", forType: .string)
+        watcher.recordPendingChange()
+        #expect(store.sortedItems.map(\.text) == ["after resume", "before pause"])
+    }
+
     @Test func categoryFiltersComposeWithSearchAndKeepExplicitSelection() throws {
         let dir = tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

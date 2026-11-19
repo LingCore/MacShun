@@ -75,7 +75,7 @@ final class ClipboardWatcher {
 
         let cfg = config()
         // 没有“始终允许”读取剪贴板时不读，否则每次复制都会弹出系统询问。
-        guard cfg.enabled, PasteboardAccess.status == .allowed else { return }
+        guard cfg.enabled, pasteboard.name != .general || PasteboardAccess.status == .allowed else { return }
         guard let capture = Self.capture(from: pasteboard, recordImages: cfg.recordImages) else { return }
         guard pasteboard.changeCount == count else { return }
         store.add(capture, maxItems: cfg.maxItems)
