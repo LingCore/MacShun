@@ -14,7 +14,7 @@ final class ClipboardController {
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
     private var keyMonitor: Any?
-    private var pasteTarget: pid_t?
+    private var pasteTarget: ClipboardPasteTarget?
     private var pendingPaste: UUID?
     private var previewOffset: CGFloat?
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
@@ -77,7 +77,9 @@ final class ClipboardController {
             panel.makeKeyAndOrderFront(nil)
             return
         }
-        pasteTarget = host == nil ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+        pasteTarget = host == nil
+            ? NSWorkspace.shared.frontmostApplication.map { ClipboardPasteTarget(pid: $0.processIdentifier) }
+            : nil
         let placement = placement(at: pointer, beside: host?.anchor)
         watcher.recordPendingChange()
         model.prepareForShow(opensAbove: placement.opensAbove)
@@ -142,8 +144,8 @@ final class ClipboardController {
             Synthetic.afterModifiersReleased {
                 guard let self, self.pendingPaste == request else { return }
                 self.pendingPaste = nil
-                guard self.pasteboard.changeCount == count,
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == target else { return }
+                guard self.pasteboard.changeCount == count, target.isCurrent,
+                      self.pasteboard.changeCount == count else { return }
                 Synthetic.tap(KeyStroke(KeyCode.v, .maskCommand))
             }
         }
