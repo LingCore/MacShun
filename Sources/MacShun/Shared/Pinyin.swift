@@ -107,7 +107,7 @@ enum Pinyin {
     /// 一个汉字的拼音，不带声调，小写。ü 写成 v（和输入法的习惯一致）。
     static func syllable(for ch: Character) -> String {
         if let override = charOverrides[ch] { return override }
-        if let cached = cache.get()[ch] { return cached }
+        if let cached = cache.withLock({ $0[ch] }) { return cached }
         let s = NSMutableString(string: String(ch))
         CFStringTransform(s, nil, kCFStringTransformMandarinLatin, false)
         var latin = (s as String).lowercased()

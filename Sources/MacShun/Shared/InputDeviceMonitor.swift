@@ -42,8 +42,13 @@ final class InputDeviceMonitor {
     private var configured = false
     private var opened = false
 
+    /// 设备缺少产品名时用于生成稳定标识的占位名（不随界面语言变化）。
+    static let unnamedKeyComponent = "unknown"
+
     /// 最近一次有输入的设备。任何线程都可以读。
     let lastActive = Locked<InputDevice?>(nil)
+    /// 仅连接了唯一一台设备时直接记住它，任何线程都可无分配读取。
+    private let singleDevice = Locked<InputDevice?>(nil)
 
     /// 设备列表变化时在主线程上调用。第二个参数是这次运行中有过输入的设备标识。
     var onDevicesChanged: (([InputDevice], Set<String>) -> Void)?
@@ -90,9 +95,7 @@ final class InputDeviceMonitor {
 
     /// 只有一个设备时不用猜。一个设备可能有好几个接口，按标识去重。
     var activeDevice: InputDevice? {
-        let unique = Set(devices.values)
-        if unique.count == 1 { return unique.first }
-        return lastActive.get()
+        singleDevice.get() ?? lastActive.get()
     }
 
     var activeKey: String? { activeDevice?.key }
@@ -136,14 +139,31 @@ final class InputDeviceMonitor {
     private func added(_ device: IOHIDDevice) {
         guard let info = Self.describe(device), include(info) else { return }
         devices[device] = info
+        updateSingleDevice()
         Log.app.notice("\(self.label, privacy: .public)已连接：\(info.name, privacy: .public)")
         notify()
     }
 
     private func removed(_ device: IOHIDDevice) {
         guard let info = devices.removeValue(forKey: device) else { return }
+        updateSingleDevice()
         if lastActive.get()?.key == info.key { lastActive.set(nil) }
         notify()
+    }
+
+    private func updateSingleDevice() {
+        var only: InputDevice?
+        for device in devices.values {
+            if let existing = only {
+                if existing != device {
+                    singleDevice.set(nil)
+                    return
+                }
+            } else {
+                only = device
+            }
+        }
+        singleDevice.set(only)
     }
 
     private func input(_ value: IOHIDValue) {
@@ -160,11 +180,13 @@ final class InputDeviceMonitor {
     }
 
     static func describe(_ device: IOHIDDevice) -> InputDevice? {
-        let name = (IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String) ?? L("未知设备")
+        let rawName = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String
+        let name = rawName ?? L("未知设备")
+        let keyName = rawName ?? unnamedKeyComponent
         let vendor = (IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int) ?? 0
         let product = (IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int) ?? 0
         return InputDevice(
-            key: InputDevice.makeKey(vendorID: vendor, productID: product, name: name),
+            key: InputDevice.makeKey(vendorID: vendor, productID: product, name: keyName),
             name: name, vendorID: vendor, productID: product
         )
     }

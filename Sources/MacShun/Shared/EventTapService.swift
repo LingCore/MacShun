@@ -14,6 +14,7 @@ final class EventTapService {
     private var thread: Thread?
     private var runLoop: CFRunLoop?
     private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
     private let ready = DispatchSemaphore(value: 0)
 
     /// 拦截是否已经成功建立。没有辅助功能权限时会失败。
@@ -41,10 +42,12 @@ final class EventTapService {
         var created = false
         let done = DispatchSemaphore(value: 0)
         CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) { [weak self] in
-            if let self {
-                created = self.tap != nil || self.createTap()
-                self.mouse.devices.start(on: CFRunLoopGetCurrent())
-                self.keyboard.devices.start(on: CFRunLoopGetCurrent())
+            autoreleasepool {
+                if let self {
+                    created = self.ensureTapActive()
+                    self.mouse.devices.start(on: CFRunLoopGetCurrent())
+                    self.keyboard.devices.start(on: CFRunLoopGetCurrent())
+                }
             }
             done.signal()
         }
@@ -61,6 +64,35 @@ final class EventTapService {
         CFRunLoopAddTimer(runLoop, keepAlive, .commonModes)
         ready.signal()
         CFRunLoopRun()
+    }
+
+    /// 在拦截线程上调用：校验现有拦截端口是否仍有效并处于启用状态，失效则重建。
+    private func ensureTapActive() -> Bool {
+        if let tap {
+            if CFMachPortIsValid(tap) {
+                if !CGEvent.tapIsEnabled(tap: tap) {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+                if CGEvent.tapIsEnabled(tap: tap) {
+                    return true
+                }
+            }
+            invalidateTap()
+        }
+        return createTap()
+    }
+
+    /// 在拦截线程上调用。
+    private func invalidateTap() {
+        if let tapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), tapSource, .commonModes)
+            self.tapSource = nil
+        }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            self.tap = nil
+        }
     }
 
     /// 在拦截线程上调用。
@@ -81,6 +113,7 @@ final class EventTapService {
         }
         self.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        self.tapSource = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         Log.app.notice("事件拦截已启动")
@@ -91,6 +124,7 @@ final class EventTapService {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             keyboard.reset(proxy: proxy)
+            mouse.reset()
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             Log.app.notice("事件拦截被系统暂停，已重新启用")
             return Unmanaged.passUnretained(event)
@@ -105,7 +139,13 @@ final class EventTapService {
         switch type {
         case .keyDown, .keyUp, .flagsChanged:
             return keyboard.handle(type: type, event: event, proxy: proxy)
-        case .scrollWheel, .otherMouseDown, .otherMouseUp:
+        case .scrollWheel:
+            keyboard.cancelDoubleControl()
+            return mouse.handle(type: type, event: event, proxy: proxy)
+        case .otherMouseDown:
+            keyboard.cancelDoubleControl()
+            return mouse.handle(type: type, event: event, proxy: proxy)
+        case .otherMouseUp:
             return mouse.handle(type: type, event: event, proxy: proxy)
         default:
             return Unmanaged.passUnretained(event)
@@ -117,6 +157,8 @@ private func eventTapCallback(
     proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
     guard let userInfo else { return Unmanaged.passUnretained(event) }
-    let service = Unmanaged<EventTapService>.fromOpaque(userInfo).takeUnretainedValue()
-    return service.handle(proxy: proxy, type: type, event: event)
+    return autoreleasepool {
+        let service = Unmanaged<EventTapService>.fromOpaque(userInfo).takeUnretainedValue()
+        return service.handle(proxy: proxy, type: type, event: event)
+    }
 }

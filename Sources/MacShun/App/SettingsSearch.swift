@@ -28,6 +28,21 @@ struct SettingsItem: Identifiable {
     let title: String
     /// 额外的搜索词：同义词、英文、快捷键，不显示
     let keywords: String
+    private let lowerTitles: [String]
+    private let titlePinyin: PinyinIndex
+    private let lowerKeywords: String
+    private let keywordsPinyin: PinyinIndex
+
+    init(id: ID, tab: SettingsTab, title: String, keywords: String) {
+        self.id = id
+        self.tab = tab
+        self.title = title
+        self.keywords = keywords
+        self.lowerTitles = [title.lowercased(), Self.english(title).lowercased()]
+        self.titlePinyin = PinyinIndex(text: title)
+        self.lowerKeywords = keywords.lowercased()
+        self.keywordsPinyin = PinyinIndex(text: keywords)
+    }
 
     var localizedTitle: String { L(title) }
 
@@ -35,11 +50,11 @@ struct SettingsItem: Identifiable {
     func score(_ query: String) -> Int {
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return 0 }
-        let titles = [title, Self.english(title)].map { $0.lowercased() }
-        if titles.contains(where: { $0.hasPrefix(q) }) { return 4 }
-        if titles.contains(where: { $0.contains(q) }) { return 3 }
-        if PinyinIndex(text: title).matches(q) { return 2 }
-        if keywords.lowercased().contains(q) || PinyinIndex(text: keywords).matches(q) { return 1 }
+        if lowerTitles.contains(where: { $0.hasPrefix(q) }) { return 4 }
+        if lowerTitles.contains(where: { $0.contains(q) }) { return 3 }
+        let term = PinyinIndex.Query(q)
+        if titlePinyin.matches(term) { return 2 }
+        if lowerKeywords.contains(q) || keywordsPinyin.matches(term) { return 1 }
         return 0
     }
 
@@ -263,7 +278,13 @@ struct SettingsSearchField: NSViewRepresentable {
 
     func updateNSView(_ field: NSSearchField, context: Context) {
         context.coordinator.parent = self
-        field.applySearchQuery(selection.query)
+        let programmatic = selection.query != context.coordinator.lastSyncedText
+        if programmatic {
+            context.coordinator.lastSyncedText = selection.query
+        }
+        context.coordinator.isApplyingQuery = true
+        field.applySearchQuery(selection.query, force: programmatic)
+        context.coordinator.isApplyingQuery = false
         if field.isBezeled == warm {
             field.isBezeled = !warm
             field.drawsBackground = !warm
@@ -274,12 +295,19 @@ struct SettingsSearchField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: SettingsSearchField
+        var lastSyncedText: String
+        var isApplyingQuery = false
 
-        init(_ parent: SettingsSearchField) { self.parent = parent }
+        init(_ parent: SettingsSearchField) {
+            self.parent = parent
+            self.lastSyncedText = parent.selection.query
+        }
 
         func controlTextDidChange(_ note: Notification) {
-            guard let field = note.object as? NSSearchField, let query = field.committedSearchQuery,
-                  query != parent.selection.query else { return }
+            guard !isApplyingQuery,
+                  let field = note.object as? NSSearchField, let query = field.committedSearchQuery else { return }
+            lastSyncedText = query
+            guard query != parent.selection.query else { return }
             parent.selection.query = query
         }
 

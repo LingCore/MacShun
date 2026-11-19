@@ -41,10 +41,13 @@ final class MouseEngine {
         // 触控板、妙控鼠标是连续滚动，交给系统自己的设置。
         guard event.getIntegerValueField(.scrollWheelEventIsContinuous) == 0 else { return pass }
 
-        let pins = ScreenPins.frames.get()
-        if !pins.isEmpty, pins.values.contains(where: { $0.contains(event.unflippedLocation) }),
-           pins[NSWindow.windowNumber(at: event.unflippedLocation, belowWindowWithWindowNumber: 0)] != nil {
-            return pass
+        let hoveredPins = ScreenPins.hovered.get()
+        if !hoveredPins.isEmpty {
+            let pins = ScreenPins.frames.get()
+            let location = event.unflippedLocation
+            if hoveredPins.contains(where: { pins[$0]?.contains(location) == true }) {
+                return pass
+            }
         }
 
         let inverted = NSEvent(cgEvent: event)?.isDirectionInvertedFromDevice ?? false
@@ -131,6 +134,12 @@ final class MouseEngine {
         }
         swallowedButtons.insert(button)
         return nil
+    }
+
+    /// 拦截被系统暂停后调用：之前记下的侧键按下状态已不可靠，清空以免误吞后续松开事件。
+    func reset() {
+        swallowedButtons.removeAll()
+        rewrittenButtons.removeAll()
     }
 
     private func isExcluded(_ cfg: AppConfig) -> Bool {

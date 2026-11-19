@@ -23,10 +23,16 @@ final class Locked<Value>: @unchecked Sendable {
         lock.unlock()
     }
 
-    @discardableResult
-    func update<R>(_ body: (inout Value) -> R) -> R {
+    func withLock<R>(_ body: (Value) throws -> R) rethrows -> R {
         lock.lock()
         defer { lock.unlock() }
-        return body(&value)
+        return try body(value)
+    }
+
+    @discardableResult
+    func update<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
     }
 }

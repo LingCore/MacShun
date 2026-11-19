@@ -9,7 +9,19 @@ extension NSTextField {
         return editor.hasMarkedText() ? nil : editor.string
     }
 
-    func applySearchQuery(_ query: String) {
+    func applySearchQuery(_ query: String, force: Bool = false) {
+        if force {
+            if let editor = currentEditor() as? NSTextView {
+                if editor.hasMarkedText() { editor.unmarkText() }
+                if editor.string != query {
+                    stringValue = query
+                    editor.selectedRange = NSRange(location: (query as NSString).length, length: 0)
+                }
+            } else if stringValue != query {
+                stringValue = query
+            }
+            return
+        }
         guard let current = committedSearchQuery, current != query else { return }
         stringValue = query
     }
@@ -46,7 +58,7 @@ struct SearchField: NSViewRepresentable {
 
     func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.parent = self
-        field.applySearchQuery(text)
+        context.coordinator.syncFromBinding(in: field)
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
@@ -60,13 +72,41 @@ struct SearchField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: SearchField
         var lastFocusToken = -1
+        var lastSyncedText: String
+        var isApplyingQuery = false
+        private var driftCheckScheduled = false
 
-        init(_ parent: SearchField) { self.parent = parent }
+        init(_ parent: SearchField) {
+            self.parent = parent
+            self.lastSyncedText = parent.text
+        }
+
+        func syncFromBinding(in field: NSTextField) {
+            let query = parent.text
+            let programmatic = query != lastSyncedText
+            if programmatic {
+                lastSyncedText = query
+            }
+            isApplyingQuery = true
+            field.applySearchQuery(query, force: programmatic)
+            isApplyingQuery = false
+        }
 
         func controlTextDidChange(_ note: Notification) {
-            guard let field = note.object as? NSTextField, let query = field.committedSearchQuery,
-                  query != parent.text else { return }
+            guard !isApplyingQuery,
+                  let field = note.object as? NSTextField, let query = field.committedSearchQuery else { return }
+            lastSyncedText = query
+            guard query != parent.text else { return }
             parent.text = query
+            // 若外部在同一帧把绑定改回旧值，SwiftUI 可能跳过 updateNSView；下一轮主循环补查一次绑定实时值。
+            guard !driftCheckScheduled else { return }
+            driftCheckScheduled = true
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard let self else { return }
+                self.driftCheckScheduled = false
+                guard let field, self.parent.text != self.lastSyncedText else { return }
+                self.syncFromBinding(in: field)
+            }
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {

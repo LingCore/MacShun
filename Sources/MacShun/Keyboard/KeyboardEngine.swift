@@ -26,10 +26,18 @@ final class KeyboardEngine {
     private var switcherOpen = false
     /// 打开切换器时 Alt 键对应的修饰键。之后按这个判断 Alt 是否松开，不受布局随后变化的影响。
     private var switcherAltFlag: CGEventFlags = .maskAlternate
-    /// Finder 里按 Ctrl+X 之后剪贴板的变化计数，用来判断随后的 Ctrl+V 是不是“移动”。
-    private let finderCutChangeCount = Locked<Int?>(nil)
+    /// Finder 剪切状态（仅在主线程访问，避免事件线程读 NSPasteboard）。
+    private var finderCutGeneration = 0
+    private var finderCutPending: (generation: Int, before: Int, startedAt: TimeInterval)?
+    private var finderCutChangeCount: Int?
+    private var finderCutPollWork: DispatchWorkItem?
     /// 连按两下 Ctrl 呼出文件搜索（F1）
     private var doubleControl = DoubleTapDetector()
+
+    /// 滚轮缩放或鼠标按键打断连按 Ctrl，避免 Ctrl+滚轮误呼出文件搜索。
+    func cancelDoubleControl() {
+        _ = doubleControl.feed(.other, at: 0)
+    }
 
     init(config: Locked<AppConfig>, environment: FrontAppTracker, onCommand: @escaping (SystemCommand) -> Void) {
         self.config = config
@@ -110,7 +118,7 @@ final class KeyboardEngine {
 
         // 选区面板处理自己的键；热键本身的松键仍由上面的 handleKeyUp 配对。
         if environment.captureActive.get() {
-            if isRepeat, activeKeys[keyCode] != nil { return nil }
+            if isRepeat, let previous = activeKeys[keyCode], previous != .pass { return nil }
             return Unmanaged.passUnretained(event)
         }
 
@@ -120,8 +128,16 @@ final class KeyboardEngine {
             return Unmanaged.passUnretained(event)
         }
 
-        // 从按法学习键盘的 Win/Mac 模式。
-        if cfg.autoDetectLayout && learningEnabled.get() && !isRepeat,
+        let clipboardPanelActive = environment.clipboardPanelActive.get()
+        let fileSearchPanelActive = environment.fileSearchPanelActive.get()
+        let searchPanelActive = clipboardPanelActive || fileSearchPanelActive
+        let panelActive = searchPanelActive || environment.snapAssistActive.get()
+        let frontApp = environment.current.get()
+        let frontAppKind = AppCatalog.kind(of: frontApp, userExcluded: cfg.excludedApps)
+
+        // 从按法学习外部键盘的 Win/Mac 模式（键盘功能关闭、苹果自带/妙控键盘或排除应用内不学习）。
+        if cfg.enabled && cfg.autoDetectLayout && learningEnabled.get() && !isRepeat
+            && device?.isApple != true && (panelActive || frontAppKind != .excluded),
            let learned = inference.observe(keyCode: keyCode, flags: event.flags, current: layout, device: device?.key) {
             layout = learned
             record(learned, for: device)
@@ -137,24 +153,21 @@ final class KeyboardEngine {
             action = .command(keyCode == KeyCode.escape ? .cancelScrollingCapture : .finishScrollingCapture)
         } else {
             let context: KeyContext
-            let clipboardPanelActive = environment.clipboardPanelActive.get()
-            let fileSearchPanelActive = environment.fileSearchPanelActive.get()
-            let searchPanelActive = clipboardPanelActive || fileSearchPanelActive
-            if searchPanelActive || environment.snapAssistActive.get() {
+            if panelActive {
                 // 剪贴板面板、文件搜索框或贴靠助手开着时，按键在本程序的面板里，不按后面那个应用的规则处理。
                 context = KeyContext(
                     appKind: .normal,
                     clipboardEnabled: config.get().clipboard.enabled,
+                    inputSourceID: environment.inputSourceID.get(),
                     searchPanelActive: searchPanelActive,
                     fileSearchPanelActive: fileSearchPanelActive && !clipboardPanelActive,
                     windowShortcuts: config.get().window.enabled,
                     focus: { .text }
                 )
             } else {
-                let app = environment.current.get()
                 context = KeyContext(
-                    appKind: AppCatalog.kind(of: app, userExcluded: cfg.excludedApps),
-                    isBrowser: AppCatalog.isBrowser(app),
+                    appKind: frontAppKind,
+                    isBrowser: AppCatalog.isBrowser(frontApp),
                     clipboardEnabled: config.get().clipboard.enabled,
                     inputSourceID: environment.inputSourceID.get(),
                     windowShortcuts: config.get().window.enabled,
@@ -167,11 +180,17 @@ final class KeyboardEngine {
 
         switch action {
         case .pass:
-            activeKeys.removeValue(forKey: keyCode)
+            activeKeys[keyCode] = .pass
+            if keyCode == KeyCode.c && event.flags.contains(.maskCommand) {
+                DispatchQueue.main.async { [weak self] in self?.cancelFinderCutOnMain() }
+            }
             return Unmanaged.passUnretained(event)
 
         case .send(let stroke):
             activeKeys[keyCode] = action
+            if stroke == KeyStroke(KeyCode.c, .maskCommand) {
+                DispatchQueue.main.async { [weak self] in self?.cancelFinderCutOnMain() }
+            }
             send(stroke, down: true, original: event, physicalKey: keyCode, proxy: proxy)
             return nil
 
@@ -192,28 +211,20 @@ final class KeyboardEngine {
 
         case .finderCut:
             activeKeys[keyCode] = action
-            let before = NSPasteboard.general.changeCount
-            send(KeyStroke(KeyCode.c, .maskCommand), down: true, original: event, physicalKey: keyCode, proxy: proxy)
-            if !isRepeat { rememberFinderCut(changeCountBefore: before) }
+            if !isRepeat {
+                DispatchQueue.main.async { [weak self] in self?.performFinderCutOnMain() }
+            }
             return nil
 
         case .finderPaste:
             activeKeys[keyCode] = action
-            let pasteboardCount = NSPasteboard.general.changeCount
-            let isMove = finderCutChangeCount.update { cut -> Bool in
-                defer { if !isRepeat { cut = nil } }
-                return cut == pasteboardCount
-            }
-            let stroke = isMove
-                ? KeyStroke(KeyCode.v, [.maskCommand, .maskAlternate])
-                : KeyStroke(KeyCode.v, .maskCommand)
-            send(stroke, down: true, original: event, physicalKey: keyCode, proxy: proxy)
+            DispatchQueue.main.async { [weak self] in self?.performFinderPasteOnMain(isRepeat: isRepeat) }
             return nil
         }
     }
 
     private func handleKeyUp(keyCode: CGKeyCode, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
-        guard activeKeys.removeValue(forKey: keyCode) != nil else {
+        guard let action = activeKeys.removeValue(forKey: keyCode), action != .pass else {
             return Unmanaged.passUnretained(event)
         }
         if let stroke = sentStrokes.removeValue(forKey: keyCode) {
@@ -298,16 +309,85 @@ final class KeyboardEngine {
         return result
     }
 
-    // MARK: - Finder 剪切
+    // MARK: - Finder 剪切（主线程）
+
+    private func cancelFinderCutOnMain() {
+        finderCutGeneration += 1
+        finderCutPollWork?.cancel()
+        finderCutPollWork = nil
+        finderCutPending = nil
+        finderCutChangeCount = nil
+    }
 
     /// 记下 Ctrl+X 之后的剪贴板计数。如果 ⌘C 没有复制到东西（例如没选中文件），计数不变，就不算剪切，
     /// 否则随后的 Ctrl+V 会把更早复制的文件“移动”过来。
-    private func rememberFinderCut(changeCountBefore before: Int) {
-        // Finder 处理完 ⌘C 后剪贴板计数才会变，稍等一下再看。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [finderCutChangeCount] in
-            let now = NSPasteboard.general.changeCount
-            finderCutChangeCount.set(now != before ? now : nil)
+    private func performFinderCutOnMain() {
+        cancelFinderCutOnMain()
+        let generation = finderCutGeneration
+        let before = NSPasteboard.general.changeCount
+        finderCutPending = (generation, before, ProcessInfo.processInfo.systemUptime)
+        Synthetic.tap(KeyStroke(KeyCode.c, .maskCommand))
+        pollFinderCutOnMain(generation: generation, before: before, remainingDelays: [0.04, 0.08, 0.18, 0.30])
+    }
+
+    private func pollFinderCutOnMain(generation: Int, before: Int, remainingDelays: [TimeInterval]) {
+        guard let delay = remainingDelays.first else {
+            if finderCutGeneration == generation {
+                finderCutPending = nil
+                finderCutPollWork = nil
+            }
+            return
         }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.finderCutGeneration == generation else { return }
+            let now = NSPasteboard.general.changeCount
+            if now != before {
+                self.finderCutChangeCount = now
+                self.finderCutPending = nil
+                self.finderCutPollWork = nil
+            } else {
+                self.pollFinderCutOnMain(generation: generation, before: before, remainingDelays: Array(remainingDelays.dropFirst()))
+            }
+        }
+        finderCutPollWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func performFinderPasteOnMain(isRepeat: Bool, waitRemaining: Int = 4) {
+        if isRepeat {
+            cancelFinderCutOnMain()
+            Synthetic.tap(KeyStroke(KeyCode.v, .maskCommand))
+            return
+        }
+        let now = NSPasteboard.general.changeCount
+        if let pending = finderCutPending,
+           now == pending.before,
+           waitRemaining > 0,
+           ProcessInfo.processInfo.systemUptime - pending.startedAt < 0.15 {
+            let expectedGeneration = pending.generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+                guard let self else { return }
+                if self.finderCutGeneration == expectedGeneration {
+                    self.performFinderPasteOnMain(isRepeat: false, waitRemaining: waitRemaining - 1)
+                } else {
+                    Synthetic.tap(KeyStroke(KeyCode.v, .maskCommand))
+                }
+            }
+            return
+        }
+        let isMove: Bool
+        if let cut = finderCutChangeCount, cut == now {
+            isMove = true
+        } else if let pending = finderCutPending, now != pending.before {
+            isMove = true
+        } else {
+            isMove = false
+        }
+        cancelFinderCutOnMain()
+        let stroke = isMove
+            ? KeyStroke(KeyCode.v, [.maskCommand, .maskAlternate])
+            : KeyStroke(KeyCode.v, .maskCommand)
+        Synthetic.tap(stroke)
     }
 
     // MARK: - 发送

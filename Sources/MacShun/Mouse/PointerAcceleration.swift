@@ -71,13 +71,15 @@ final class PointerAccelerationController {
         return result
     }
 
-    /// “系统设置 → 鼠标 → 跟踪速度”的值。读不到时返回 nil，不去动它。
+    /// “系统设置 → 鼠标 → 跟踪速度”的值。读不到或值无效（如 -1）时返回 nil，不去动它。
     func systemSpeed() -> Double? {
         if let value = UserDefaults.standard.object(forKey: "com.apple.mouse.scaling") as? NSNumber {
-            return value.doubleValue
+            let speed = value.doubleValue
+            if speed.isFinite, speed >= 0 { return speed }
         }
         guard let value = IOHIDEventSystemClientCopyProperty(client, Self.speedKey) as? NSNumber else { return nil }
-        return Double(value.int32Value) / 65536
+        let speed = Double(value.int32Value) / 65536
+        return (speed.isFinite && speed >= 0) ? speed : nil
     }
 
     /// 值不一样时才设置，避免反复让系统重建加速设置。
@@ -97,9 +99,10 @@ final class PointerAccelerationController {
         }
     }
 
-    /// HID 属性里的小数用 16.16 定点数表示。
+    /// HID 属性里的小数用 16.16 定点数表示。钳制到安全范围，避免异常值导致 Int32 溢出。
     private static func fixed(_ value: Double) -> Int32 {
-        Int32((value * 65536).rounded())
+        let clamped = value.isFinite ? min(max(value, 0), 100) : 0
+        return Int32((clamped * 65536).rounded())
     }
 
     /// 系统设置里关掉了“指针加速”时为 true。
@@ -123,7 +126,7 @@ final class PointerAccelerationController {
     }
 
     private func deviceKey(_ service: IOHIDServiceClient) -> String? {
-        let name = stringProperty(service, kIOHIDProductKey) ?? L("未知鼠标")
+        let name = stringProperty(service, kIOHIDProductKey) ?? InputDeviceMonitor.unnamedKeyComponent
         let vendor = intProperty(service, kIOHIDVendorIDKey) ?? 0
         let product = intProperty(service, kIOHIDProductIDKey) ?? 0
         return InputDevice.makeKey(vendorID: vendor, productID: product, name: name)

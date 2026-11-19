@@ -47,6 +47,7 @@ final class FrontAppTracker {
 
     private func update(_ app: NSRunningApplication?) {
         current.set(AppIdentity(bundleID: app?.bundleIdentifier, name: app?.localizedName))
+        CaptureClipboard.general.refreshIfNeeded()
     }
 
     private func updateInputSource() {

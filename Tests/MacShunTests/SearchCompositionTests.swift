@@ -62,6 +62,15 @@ struct SearchCompositionTests {
         #expect(editor.string.isEmpty)
         editor.insertText("jtb", replacementRange: insertion)
         #expect(selection.query == "jtb")
+
+        // 组字过程中被程序清空或替换查询时，必须取消组字并同步新查询。
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: insertion)
+        #expect(editor.hasMarkedText())
+        selection.query = ""
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(!editor.hasMarkedText())
+        #expect(editor.string.isEmpty)
+        #expect(selection.query.isEmpty)
     }
 
     private func findField(in view: NSView) -> NSTextField? {

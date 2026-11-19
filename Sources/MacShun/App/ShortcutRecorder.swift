@@ -23,13 +23,31 @@ struct ShortcutRecorder: NSViewRepresentable {
 }
 
 final class ShortcutRecorderButton: NSButton {
+    /// 当前正在录制的按钮（同一时刻最多一个），防止切换焦点时旧按钮覆盖新按钮的录制标志。
+    private static weak var activeRecorder: ShortcutRecorderButton?
+
     var shortcut: WinShortcut? { didSet { if oldValue != shortcut { updateTitle() } } }
     var validationMessage: ((WinShortcut) -> String?)?
     var onRecord: (WinShortcut) -> Void = { _ in }
+    private var windowObservers: [NSObjectProtocol] = []
+
+    override var isEnabled: Bool {
+        didSet { if !isEnabled { stopRecording() } }
+    }
 
     private var recording = false {
         didSet {
-            FrontAppTracker.shared.recordingShortcut.set(recording)
+            guard recording != oldValue else { return }
+            if recording {
+                if let previous = Self.activeRecorder, previous !== self {
+                    previous.stopRecording()
+                }
+                Self.activeRecorder = self
+                FrontAppTracker.shared.recordingShortcut.set(true)
+            } else if Self.activeRecorder === self {
+                Self.activeRecorder = nil
+                FrontAppTracker.shared.recordingShortcut.set(false)
+            }
             updateTitle()
         }
     }
@@ -44,17 +62,30 @@ final class ShortcutRecorderButton: NSButton {
         updateTitle()
     }
 
+    deinit {
+        removeWindowObservers()
+        if recording {
+            if Self.activeRecorder === self {
+                Self.activeRecorder = nil
+                FrontAppTracker.shared.recordingShortcut.set(false)
+            }
+        }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var acceptsFirstResponder: Bool { true }
 
     @objc private func startRecording() {
+        guard isEnabled, let window else { return }
+        if window.firstResponder !== self {
+            guard window.makeFirstResponder(self) else { return }
+        }
         recording = true
-        window?.makeFirstResponder(self)
     }
 
-    private func stopRecording() {
+    func stopRecording() {
         if recording { recording = false }
     }
 
@@ -98,8 +129,33 @@ final class ShortcutRecorderButton: NSButton {
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        removeWindowObservers()
         if newWindow == nil { stopRecording() }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeWindowObservers()
+        guard let window else { return }
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            NSWindow.didResignKeyNotification,
+            NSWindow.willCloseNotification,
+            NSWindow.willMiniaturizeNotification,
+        ]
+        windowObservers = names.map { name in
+            center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                self?.stopRecording()
+            }
+        }
+    }
+
+    private func removeWindowObservers() {
+        for observer in windowObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        windowObservers.removeAll()
     }
 
     private func updateTitle() {

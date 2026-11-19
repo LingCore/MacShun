@@ -4,8 +4,24 @@ import Foundation
 
 /// 当前在前台的应用。
 struct AppIdentity: Equatable {
-    var bundleID: String?
-    var name: String?
+    var bundleID: String? {
+        didSet { isRemoteOrVM = AppCatalog.computeIsRemoteOrVM(bundleID: bundleID, name: name) }
+    }
+    var name: String? {
+        didSet { isRemoteOrVM = AppCatalog.computeIsRemoteOrVM(bundleID: bundleID, name: name) }
+    }
+    /// 预计算结果，避免事件拦截线程每次按键都做十余次本地化字符串扫描。
+    private(set) var isRemoteOrVM: Bool
+
+    init(bundleID: String? = nil, name: String? = nil) {
+        self.bundleID = bundleID
+        self.name = name
+        self.isRemoteOrVM = AppCatalog.computeIsRemoteOrVM(bundleID: bundleID, name: name)
+    }
+
+    static func == (lhs: AppIdentity, rhs: AppIdentity) -> Bool {
+        lhs.bundleID == rhs.bundleID && lhs.name == rhs.name
+    }
 }
 
 /// 应用的类别，决定按键怎么改写。
@@ -123,11 +139,15 @@ enum AppCatalog {
     ]
 
     static func isRemoteOrVM(_ app: AppIdentity) -> Bool {
-        if let id = app.bundleID {
+        app.isRemoteOrVM
+    }
+
+    fileprivate static func computeIsRemoteOrVM(bundleID: String?, name: String?) -> Bool {
+        if let id = bundleID {
             if remoteAndVM.contains(id) { return true }
             if remoteAndVMPrefixes.contains(where: { id.hasPrefix($0) }) { return true }
         }
-        if let name = app.name {
+        if let name {
             if remoteAndVMExactNames.contains(name) { return true }
             if remoteAndVMNameKeywords.contains(where: { name.localizedCaseInsensitiveContains($0) }) { return true }
         }
