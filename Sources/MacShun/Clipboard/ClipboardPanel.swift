@@ -69,6 +69,7 @@ final class ClipboardPanelModel: ObservableObject {
     @Published var showsQuickPasteNumbers = false
     @Published private(set) var visibleRowIDs: Set<UUID> = []
     @Published private(set) var previewSelection: String?
+    @Published private(set) var batchIDs: [UUID] = []
     @Published private var noteItem: ClipboardItem?
     @Published var noteDraft = ""
     /// 每次打开面板时加一，搜索框据此重新获得焦点。
@@ -77,6 +78,7 @@ final class ClipboardPanelModel: ObservableObject {
     let store: ClipboardStore
     private let pasteboard: NSPasteboard
     var onPaste: (ClipboardItem) -> Void = { _ in }
+    var onPasteBatch: ([ClipboardItem]) -> Void = { _ in }
     var onCopy: (ClipboardItem) -> Void = { _ in }
     var onPreviewChange: (Bool) -> Void = { _ in }
     var onHoverChange: (UUID?) -> Void = { _ in }
@@ -103,6 +105,7 @@ final class ClipboardPanelModel: ObservableObject {
         setPreviewOpen(false)
         noteItem = nil
         noteDraft = ""
+        clearBatch()
         self.opensAbove = opensAbove
         filter = .all
         sourceApp = nil
@@ -154,6 +157,11 @@ final class ClipboardPanelModel: ObservableObject {
             return order == .orderedSame ? $0 < $1 : order == .orderedAscending
         }
         if sourceApps != sources { sourceApps = sources }
+        if !batchIDs.isEmpty {
+            let available = Set(store.items.map(\.id))
+            let remaining = batchIDs.filter(available.contains)
+            if batchIDs != remaining { batchIDs = remaining }
+        }
         if keepingSelection, let previous,
            let index = results.firstIndex(where: { $0.id == previous.id || $0.tiffFingerprint == previous.fingerprint }) {
             selection = index
@@ -224,13 +232,39 @@ final class ClipboardPanelModel: ObservableObject {
         } else if isPreviewOpen {
             setPreviewOpen(false)
             focusToken += 1
+        } else if !batchIDs.isEmpty {
+            clearBatch()
         } else {
             onClose()
         }
     }
 
     func pasteSelected() {
-        if let item = selectedItem { onPaste(item) }
+        if batchIDs.isEmpty {
+            if let item = selectedItem { onPaste(item) }
+        } else {
+            let items = Dictionary(uniqueKeysWithValues: store.items.map { ($0.id, $0) })
+            let selected = batchIDs.compactMap { items[$0] }
+            guard selected.count == batchIDs.count else {
+                refresh(keepingSelection: true)
+                return
+            }
+            if selected.count == 1, let item = selected.first {
+                pasteAsPlainText(item)
+            } else {
+                onPasteBatch(selected)
+            }
+        }
+    }
+
+    func toggleBatch(_ item: ClipboardItem) {
+        guard item.kind == .text, item.text != nil else { return }
+        if let index = batchIDs.firstIndex(of: item.id) { batchIDs.remove(at: index) }
+        else { batchIDs.append(item.id) }
+    }
+
+    func clearBatch() {
+        if !batchIDs.isEmpty { batchIDs = [] }
     }
 
     var isEditingNote: Bool { noteItem != nil }
@@ -601,6 +635,12 @@ struct ClipboardPanelView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .help(feedback)
+            } else if !model.batchIDs.isEmpty {
+                Text(L("已选 %ld 条", model.batchIDs.count))
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             } else if model.selectedItem != nil {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 10) {
@@ -611,15 +651,18 @@ struct ClipboardPanelView: View {
                 }
             }
             Spacer(minLength: 0)
-            if !model.isEditingNote && !model.isPreviewOpen {
+            if !model.isEditingNote && !model.batchIDs.isEmpty {
+                RowButton(symbol: "xmark", help: L("清除合并选择")) { model.clearBatch() }
+            }
+            if !model.isEditingNote && (!model.isPreviewOpen || !model.batchIDs.isEmpty) {
                 Button { model.pasteSelected() } label: {
-                    Label(L("粘贴"), systemImage: "return")
+                    Label(model.batchIDs.isEmpty ? L("粘贴") : L("合并粘贴"), systemImage: "return")
                         .font(.callout.weight(.medium))
                         .padding(.horizontal, 9)
                         .frame(minHeight: 24)
                 }
                 .buttonStyle(.chip())
-                .disabled(model.selectedItem == nil)
+                .disabled(model.selectedItem == nil && model.batchIDs.isEmpty)
             }
         }
         .frame(minHeight: 24)
@@ -666,6 +709,7 @@ private struct ClipboardRow: View {
     let isSelected: Bool
 
     private var hovering: Bool { model.hoveredID == item.id }
+    private var batchNumber: Int? { model.batchIDs.firstIndex(of: item.id).map { $0 + 1 } }
 
     private static let timeFormatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -677,11 +721,16 @@ private struct ClipboardRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             ZStack {
-                if let number = model.quickPasteNumber(for: item.id) {
+                let showsQuickNumbers = model.showsQuickPasteNumbers && !model.isEditingNote
+                if let number = showsQuickNumbers ? model.quickPasteNumber(for: item.id) : batchNumber {
                     Text("\(number)")
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
                         .frame(width: 24, height: 24)
-                        .background(Color.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                        .background((showsQuickNumbers ? Color.primary : Color.accentColor).opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 6))
                         .accessibilityHidden(true)
                 } else {
                     sourceIcon
@@ -715,9 +764,10 @@ private struct ClipboardRow: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.onPaste(item) }
         .onTapGesture { model.select(item) }
+        .highPriorityGesture(TapGesture().modifiers(.command).onEnded { model.toggleBatch(item) })
         .contextMenu { rowMenu }
         .accessibilityAction(named: Text(L("粘贴"))) { model.onPaste(item) }
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAddTraits(isSelected || batchNumber != nil ? .isSelected : [])
         .onHover { inside in
             if inside {
                 model.hoveredID = item.id
@@ -729,6 +779,7 @@ private struct ClipboardRow: View {
 
     private var rowFill: Color {
         if isSelected { return Color.accentColor.opacity(0.22) }
+        if batchNumber != nil { return Color.accentColor.opacity(0.10) }
         if hovering { return Color.primary.opacity(0.05) }
         return .clear
     }
@@ -852,6 +903,7 @@ private struct ClipboardRow: View {
             Button(L("贴到屏幕")) { model.onFloat(item) }
         } else if item.kind == .text {
             Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
+            Button(batchNumber == nil ? L("加入合并粘贴") : L("从合并粘贴移除")) { model.toggleBatch(item) }
         }
         Divider()
         Button(item.note == nil ? L("添加备注…") : L("编辑备注…")) { model.beginNote(item) }

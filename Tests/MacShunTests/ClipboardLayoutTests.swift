@@ -117,4 +117,40 @@ struct ClipboardLayoutTests {
         model.pastePreview(item)
         #expect(pasted == item)
     }
+
+    @Test @MainActor func batchKeepsClickOrderAcrossSourceFiltersAndSkipsDeletedEntries() throws {
+        let configuration = ConfigStore(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let board = NSPasteboard.withUniqueName()
+        let store = ClipboardStore(directory: directory)
+        defer {
+            store.saveNow()
+            board.releaseGlobally()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        store.add(.init(kind: .text, text: "Alpha", fingerprint: "a", sourceApp: "com.apple.TextEdit"), maxItems: 10)
+        store.add(.init(kind: .text, text: "Beta", fingerprint: "b", sourceApp: "com.apple.Notes"), maxItems: 10)
+        store.add(.init(kind: .text, text: "Gamma", fingerprint: "c", sourceApp: "com.apple.TextEdit"), maxItems: 10)
+        let model = ClipboardPanelModel(store: store, pasteboard: board)
+        let controller = ClipboardController(configStore: configuration, store: store, pasteboard: board)
+        model.prepareForShow()
+        let first = try #require(store.search("Alpha").first)
+        let omitted = try #require(store.search("Gamma").first)
+        model.sourceApp = "com.apple.Notes"
+        let second = try #require(model.results.first)
+        #expect(model.results.count == 1)
+        #expect(!model.canClear)
+        model.toggleBatch(second)
+        model.sourceApp = "com.apple.TextEdit"
+        model.toggleBatch(omitted)
+        model.toggleBatch(first)
+        store.delete(omitted.id)
+        model.refresh()
+
+        model.onPasteBatch = { controller.pasteBatch($0) }
+        model.pasteSelected()
+        #expect(board.string(forType: .string) == "Beta\nAlpha")
+        #expect(model.batchIDs == [second.id, first.id])
+        #expect(store.items.compactMap(\.text).sorted() == ["Alpha", "Beta"])
+    }
 }

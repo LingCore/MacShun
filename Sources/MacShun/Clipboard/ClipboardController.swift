@@ -129,6 +129,10 @@ final class ClipboardController {
 
     /// 把选中的条目放进剪贴板，再模拟 ⌘V 粘贴到原来的应用里。
     func paste(_ item: ClipboardItem) {
+        paste(item, usedIDs: [item.id])
+    }
+
+    private func paste(_ item: ClipboardItem, usedIDs: [UUID]) {
         if let host {
             guard item.kind == .text, let text = item.text else {
                 model.showFeedback(L("文件搜索框只能粘贴文字"))
@@ -136,18 +140,18 @@ final class ClipboardController {
             }
             self.host = nil
             hide()
-            store.markUsed(item.id)
+            store.markUsed(usedIDs)
             host.insert(text)
             return
         }
-        prepareWrite(item) { [weak self] in self?.pasteWrittenItem(item) }
+        prepareWrite(item) { [weak self] in self?.pasteWrittenItems(usedIDs) }
     }
 
-    private func pasteWrittenItem(_ item: ClipboardItem) {
+    private func pasteWrittenItems(_ usedIDs: [UUID]) {
         let target = pasteTarget
         let count = pasteboard.changeCount
         hide()
-        store.markUsed(item.id)
+        store.markUsed(usedIDs)
         guard pasteboard.name == .general, let target, Permissions.accessibility else { return }
         let request = UUID()
         pendingPaste = request
@@ -239,6 +243,7 @@ final class ClipboardController {
     private func makeModel() -> ClipboardPanelModel {
         let model = ClipboardPanelModel(store: store, pasteboard: pasteboard)
         model.onPaste = { [weak self] item in self?.paste(item) }
+        model.onPasteBatch = { [weak self] items in self?.pasteBatch(items) }
         model.onCopy = { [weak self] item in self?.copy(item) }
         model.onPreviewChange = { [weak self] open in self?.resizeForPreview(open) }
         model.onHoverChange = { [weak self] id in self?.updateHoverPreview(id) }
@@ -255,6 +260,22 @@ final class ClipboardController {
         }
         model.onClose = { [weak self] in self?.close() }
         return model
+    }
+
+    func pasteBatch(_ items: [ClipboardItem]) {
+        guard var combined = items.first else { return }
+        let parts = items.compactMap(\.text)
+        var remaining = ClipboardWatcher.maxTextBytes - (parts.count - 1)
+        for part in parts {
+            remaining -= part.utf8.count
+            if remaining < 0 {
+                model.showFeedback(L("合并内容太长，请减少选择的条目"))
+                return
+            }
+        }
+        combined.text = parts.joined(separator: "\n")
+        combined.extraFiles = [:]
+        paste(combined, usedIDs: items.map(\.id))
     }
 
     private func makePanel() -> ClipboardPanel {

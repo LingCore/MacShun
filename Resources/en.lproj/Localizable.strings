@@ -183,6 +183,12 @@
 "按来源应用筛选" = "Filter by Source App";
 "所有来源" = "All Sources";
 "仅显示 %@ 的记录" = "Showing entries from %@";
+"已选 %ld 条" = "%ld selected";
+"清除合并选择" = "Clear Selection";
+"合并粘贴" = "Paste Together";
+"加入合并粘贴" = "Add to Combined Paste";
+"从合并粘贴移除" = "Remove from Combined Paste";
+"合并内容太长，请减少选择的条目" = "Combined text is too long. Select fewer entries.";
 "预览仅显示开头，仍可粘贴完整内容" = "Preview shows the beginning. You can still paste the full text.";
 "粘贴选中文字" = "Paste Selection";
 "%ld 个文件" = "%ld files";

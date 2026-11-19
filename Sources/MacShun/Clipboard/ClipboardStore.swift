@@ -359,9 +359,16 @@ final class ClipboardStore: ObservableObject {
         return await task.value
     }
 
-    func markUsed(_ id: UUID, now: Date = Date()) {
-        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
-        items[i].lastUsed = now
+    func markUsed(_ ids: [UUID], now: Date = Date()) {
+        let ids = Set(ids)
+        var updated = items
+        var changed = false
+        for index in updated.indices where ids.contains(updated[index].id) && updated[index].lastUsed != now {
+            updated[index].lastUsed = now
+            changed = true
+        }
+        guard changed else { return }
+        items = updated
         scheduleSave()
     }
 
