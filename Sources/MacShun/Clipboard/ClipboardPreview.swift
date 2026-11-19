@@ -51,15 +51,9 @@ struct ClipboardPreview: View {
         ScrollView {
             if item.kind == .image {
                 VStack(alignment: .leading, spacing: 10) {
-                    if let image = model.previewImage(for: item) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: 240)
-                            .accessibilityLabel(L("图片"))
-                    } else {
-                        Text(L("图片不可用")).foregroundStyle(.secondary)
-                    }
+                    ClipboardImageView(url: model.store.imageURL(for: item), cache: model.previews)
+                        .aspectRatio(CGFloat(max(item.imageWidth ?? 1, 1)) / CGFloat(max(item.imageHeight ?? 1, 1)), contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 240)
                     if let width = item.imageWidth, let height = item.imageHeight {
                         Text(L("图片 %@×%@", "\(width)", "\(height)"))
                             .font(.caption)

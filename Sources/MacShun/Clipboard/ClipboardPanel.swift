@@ -2,7 +2,6 @@
 
 import AppKit
 import Combine
-import ImageIO
 import SwiftUI
 
 /// 剪贴板历史面板（C1）。不会把本程序切到前台，原来的应用保持在前台，选中后直接粘贴到它里面。
@@ -53,6 +52,7 @@ final class ClipboardPanelModel: ObservableObject {
     }
     @Published private(set) var results: [ClipboardItem] = []
     @Published private(set) var isPreviewOpen = false
+    @Published private(set) var opensAbove = false
     /// 点了一次“全部清除”，等着再点一次确认（过几秒自动取消）
     @Published private(set) var confirmingClear = false
     @Published var selection = 0
@@ -71,8 +71,8 @@ final class ClipboardPanelModel: ObservableObject {
     private var textCopy: Task<Void, Never>?
     var onFloat: (ClipboardItem) -> Void = { _ in }
 
-    private var thumbnails: [UUID: NSImage] = [:]
-    private var previewThumbnail: (id: UUID, image: NSImage)?
+    let thumbnails = ClipboardImageCache(size: .row)
+    let previews = ClipboardImageCache(size: .preview)
     private var subscription: AnyCancellable?
     private var clearTimeout: DispatchWorkItem?
 
@@ -84,15 +84,17 @@ final class ClipboardPanelModel: ObservableObject {
             .sink { [weak self] _ in self?.refresh(keepingSelection: true) }
     }
 
-    func prepareForShow() {
+    func prepareForShow(opensAbove: Bool = false) {
         cancelTextCopy()
         setPreviewOpen(false)
+        self.opensAbove = opensAbove
         filter = .all
         query = ""
         selection = 0
         hoveredID = nil
         cancelClear()
         refresh()
+        thumbnails.prepareForOpening(selectedItem.flatMap { store.imageURL(for: $0) })
         focusToken += 1
     }
 
@@ -128,13 +130,13 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     func refresh(keepingSelection: Bool = false) {
-        let previous = keepingSelection ? selectedItem?.id : nil
+        let previous = keepingSelection ? selectedItem : nil
         results = store.search(query, filter: filter)
-        if let previous, let index = results.firstIndex(where: { $0.id == previous }) { selection = index }
+        if let previous, let index = results.firstIndex(where: { $0.id == previous.id || $0.tiffFingerprint == previous.fingerprint }) {
+            selection = index
+        }
         if selection >= results.count { selection = max(results.count - 1, 0) }
         if results.isEmpty { setPreviewOpen(false) }
-        let ids = Set(store.items.map(\.id))
-        thumbnails = thumbnails.filter { ids.contains($0.key) }
     }
 
     var selectedItem: ClipboardItem? {
@@ -143,7 +145,7 @@ final class ClipboardPanelModel: ObservableObject {
 
     func move(_ delta: Int) {
         guard !results.isEmpty else { return }
-        selection = min(max(selection + delta, 0), results.count - 1)
+        selection = min(max(selection + (opensAbove ? -delta : delta), 0), results.count - 1)
     }
 
     func select(_ item: ClipboardItem) {
@@ -153,7 +155,6 @@ final class ClipboardPanelModel: ObservableObject {
     func setPreviewOpen(_ open: Bool) {
         guard open != isPreviewOpen, !open || selectedItem != nil else { return }
         isPreviewOpen = open
-        if !open { previewThumbnail = nil }
         onPreviewChange(open)
     }
 
@@ -181,8 +182,11 @@ final class ClipboardPanelModel: ObservableObject {
         if let item = selectedItem { store.togglePin(item.id) }
     }
 
-    func deleteSelected() {
-        if let item = selectedItem { store.delete(item.id) }
+    func handleDeleteShortcut(_ key: CGKeyCode, modifiers: NSEvent.ModifierFlags, isRepeat: Bool) -> Bool {
+        // ⌥⌦（含 Windows 布局转来的 Ctrl+Delete）交给编辑器向右删词。
+        guard modifiers == .command, key == KeyCode.forwardDelete || key == KeyCode.backspace else { return false }
+        if !isRepeat, let item = selectedItem { store.delete(item.id) }
+        return true
     }
 
     func cancelTextCopy() {
@@ -216,39 +220,13 @@ final class ClipboardPanelModel: ObservableObject {
         }
     }
 
-    /// 缩略图，按需生成并缓存。
-    func thumbnail(for item: ClipboardItem) -> NSImage? {
-        if let cached = thumbnails[item.id] { return cached }
-        let image = loadImage(for: item, maxPixelSize: 400)
-        thumbnails[item.id] = image
-        return image
-    }
-
-    func previewImage(for item: ClipboardItem) -> NSImage? {
-        if let cached = previewThumbnail, cached.id == item.id { return cached.image }
-        guard let image = loadImage(for: item, maxPixelSize: 1024) else { return nil }
-        previewThumbnail = (item.id, image)
-        return image
-    }
-
-    private func loadImage(for item: ClipboardItem, maxPixelSize: Int) -> NSImage? {
-        guard let url = store.imageURL(for: item),
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil)
-        else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-        ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-    }
 }
 
 // MARK: - 界面
 
 struct ClipboardPanelView: View {
     @ObservedObject var model: ClipboardPanelModel
+    static let searchBarHeight: CGFloat = 50
 
     var body: some View {
         GeometryReader { geometry in
@@ -270,8 +248,12 @@ struct ClipboardPanelView: View {
 
     private var history: some View {
         VStack(spacing: 0) {
-            searchBar
-            filters
+            if model.opensAbove {
+                footer
+            } else {
+                searchBar
+                filters
+            }
             Divider().opacity(0.6)
             if model.results.isEmpty {
                 emptyState
@@ -279,7 +261,12 @@ struct ClipboardPanelView: View {
                 list
             }
             Divider().opacity(0.6)
-            footer
+            if model.opensAbove {
+                filters
+                searchBar
+            } else {
+                footer
+            }
         }
     }
 
@@ -310,10 +297,21 @@ struct ClipboardPanelView: View {
             }
         }
         .padding(.horizontal, 16)
-        .frame(height: 50)
+        .frame(height: Self.searchBarHeight)
     }
 
     private var filters: some View {
+        ViewThatFits(in: .horizontal) {
+            filterPicker
+            filterPicker.controlSize(.small)
+            filterPicker.controlSize(.mini)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16)
+        .padding(model.opensAbove ? .top : .bottom, 9)
+    }
+
+    private var filterPicker: some View {
         Picker(L("筛选"), selection: $model.filter) {
             ForEach(ClipboardFilter.allCases, id: \.self) { filter in
                 Text(filter.title).tag(filter)
@@ -321,12 +319,9 @@ struct ClipboardPanelView: View {
         }
         .labelsHidden()
         .pickerStyle(.segmented)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 9)
     }
 
-    /// 右上角的“全部清除”，和 Windows 的剪贴板历史一样的位置。点一下变红，再点一下才清
+    /// 搜索栏右侧的“全部清除”。点一下变红，再点一下才清
     private var clearButton: some View {
         let confirming = model.confirmingClear
         return Button { model.clearTapped() } label: {
@@ -341,28 +336,68 @@ struct ClipboardPanelView: View {
     }
 
     private var list: some View {
-        ScrollViewReader { proxy in
+        enum ListEdge { case nearest }
+        let nearestEdge: UnitPoint = model.opensAbove ? .bottom : .top
+        let edge = Color.clear.frame(height: 0).id(ListEdge.nearest).accessibilityHidden(true)
+        let rows = Array(model.results.enumerated())
+        let initialRowCount = 8
+        return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(model.results.enumerated()), id: \.element.id) { index, item in
-                        if model.filter != .pinned, let title = groupTitle(at: index) {
-                            Text(title)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 10)
-                                .padding(.top, index == 0 ? 2 : 10)
-                                .padding(.bottom, 4)
+                VStack(spacing: 0) {
+                    if !model.opensAbove { edge }
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        if model.opensAbove {
+                            ForEach(Array(rows.dropFirst(initialRowCount).reversed()), id: \.element.id) { index, item in
+                                historyRow(item, at: index)
+                            }
+                        } else {
+                            ForEach(rows, id: \.element.id) { index, item in
+                                historyRow(item, at: index)
+                            }
                         }
-                        ClipboardRow(model: model, item: item, isSelected: index == model.selection)
-                            .id(item.id)
+                    }
+                    if model.opensAbove {
+                        // 先测出靠近搜索框的几项，向上展开时可以直接定位到列表底端。
+                        VStack(alignment: .leading, spacing: 1) {
+                            ForEach(Array(rows.prefix(initialRowCount).reversed()), id: \.element.id) { index, item in
+                                historyRow(item, at: index)
+                            }
+                        }
+                        edge
                     }
                 }
-                .padding(8)
             }
+            .contentMargins(8, for: .scrollContent)
+            .defaultScrollAnchor(nearestEdge)
             .scrollIndicators(.never)
-            .onChange(of: model.selectedItem?.id, initial: true) { _, id in
-                if let id { proxy.scrollTo(id) }
+            .onChange(of: model.selectedItem?.id) { _, id in
+                if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
+                else if let id { proxy.scrollTo(id) }
             }
+            .onChange(of: model.focusToken) {
+                if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
+            }
+        }
+    }
+
+    private func historyRow(_ item: ClipboardItem, at index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            if !model.opensAbove { groupHeading(at: index) }
+            ClipboardRow(model: model, item: item, isSelected: index == model.selection)
+            if model.opensAbove { groupHeading(at: index) }
+        }
+        .id(item.id)
+    }
+
+    @ViewBuilder
+    private func groupHeading(at index: Int) -> some View {
+        if model.filter != .pinned, let title = groupTitle(at: index) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(model.opensAbove ? .bottom : .top, index == 0 ? 2 : 10)
+                .padding(model.opensAbove ? .top : .bottom, 4)
         }
     }
 
@@ -539,19 +574,13 @@ private struct ClipboardRow: View {
                 .lineLimit(2)
                 .truncationMode(.tail)
         case .image:
-            if let image = model.thumbnail(for: item) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: thumbnailSize(image).width, height: thumbnailSize(image).height)
-                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.1))
-                    )
-            } else {
-                Text(L("图片")).font(.system(size: 13))
-            }
+            ClipboardImageView(url: model.store.imageURL(for: item), cache: model.thumbnails)
+                .frame(width: thumbnailSize.width, height: thumbnailSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.1))
+                }
             if !model.query.isEmpty, let text = item.imageText,
                let line = text.split(whereSeparator: \.isNewline).first(where: {
                    $0.localizedCaseInsensitiveContains(model.query)
@@ -562,8 +591,8 @@ private struct ClipboardRow: View {
     }
 
     /// 缩略图最高 72、最宽 220，保持原来的比例。
-    private func thumbnailSize(_ image: NSImage) -> CGSize {
-        let w = max(image.size.width, 1), h = max(image.size.height, 1)
+    private var thumbnailSize: CGSize {
+        let w = CGFloat(max(item.imageWidth ?? 72, 1)), h = CGFloat(max(item.imageHeight ?? 72, 1))
         let scale = min(72 / h, 220 / w, 1)
         return CGSize(width: max(w * scale, 24), height: max(h * scale, 24))
     }
@@ -600,7 +629,7 @@ private struct ClipboardRow: View {
                 model.select(item)
                 model.setPreviewOpen(true)
             }
-            RowButton(symbol: "doc.on.doc", help: L("复制")) { model.onCopy(item) }
+            RowButton(symbol: "return", help: L("粘贴")) { model.onPaste(item) }
             RowButton(symbol: item.pinned ? "pin.slash" : "pin", help: item.pinned ? L("取消固定") : L("固定")) {
                 model.store.togglePin(item.id)
             }

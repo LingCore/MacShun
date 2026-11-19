@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+import AppKit
 import Foundation
 import Testing
 @testable import MacShun
@@ -88,6 +89,26 @@ struct ClipboardStoreTests {
         #expect(model.results.map(\.kind) == [.image])
     }
 
+    @Test func wordDeletionAndKeyRepeatKeepClipboardHistory() {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ClipboardStore(directory: dir)
+        store.add(text("first note"), maxItems: 10)
+        store.add(text("second note"), maxItems: 10)
+        let model = ClipboardPanelModel(store: store)
+        model.query = "note"
+        for modifiers: NSEvent.ModifierFlags in [.option, .control, [.option, .shift], .shift, []] {
+            let handled = model.handleDeleteShortcut(KeyCode.forwardDelete, modifiers: modifiers, isRepeat: false)
+            #expect(!handled)
+        }
+        #expect(store.items.count == 2)
+        let handled = model.handleDeleteShortcut(KeyCode.backspace, modifiers: .command, isRepeat: false)
+        #expect(handled && store.items.count == 1)
+        model.refresh()
+        let repeatHandled = model.handleDeleteShortcut(KeyCode.backspace, modifiers: .command, isRepeat: true)
+        #expect(repeatHandled && store.items.count == 1)
+    }
+
     @Test func persistsToDisk() {
         let dir = tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -102,6 +123,29 @@ struct ClipboardStoreTests {
         #expect(reloaded.items.count == 1)
         #expect(reloaded.items[0].pinned)
         #expect(reloaded.extraData(for: reloaded.items[0])["public.rtf"] == Data("{\\rtf1 x}".utf8))
+    }
+
+    @Test func copyingIdenticalTextUsesTheLatestFormatsAfterReload() throws {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ClipboardStore(directory: dir)
+        var capture = text("Same words")
+        capture.extras = ["public.html": Data("<b>Same words</b>".utf8)]
+        store.add(capture, maxItems: 10)
+        let id = try #require(store.items.first?.id)
+        store.togglePin(id)
+        store.saveNow()
+        capture.extras = ["public.rtf": Data("second format".utf8)]
+        store.add(capture, maxItems: 10)
+        store.saveNow()
+        let reopened = ClipboardStore(directory: dir)
+        let item = try #require(reopened.items.first)
+        #expect(reopened.items.count == 1 && item.id == id && item.pinned)
+        #expect(reopened.extraData(for: item) == capture.extras)
+        capture.extras = [:]
+        reopened.add(capture, maxItems: 10)
+        reopened.saveNow()
+        #expect(ClipboardStore(directory: dir).items.first?.extraFiles.isEmpty == true)
     }
 
     @Test func deleteRemovesFiles() throws {
@@ -143,10 +187,19 @@ extension ClipboardStoreTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data("not json".utf8).write(to: dir.appendingPathComponent("history.json"))
+        let blobs = dir.appendingPathComponent("blobs")
+        try FileManager.default.createDirectory(at: blobs, withIntermediateDirectories: true)
+        let attachment = blobs.appendingPathComponent("old-image.png")
+        try Data([1, 2, 3]).write(to: attachment)
         let store = ClipboardStore(directory: dir)
         #expect(store.items.isEmpty)
         let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
         #expect(names.contains { $0.hasPrefix("history-unreadable-") })
+        _ = ClipboardStore(directory: dir)
+        store.saveNow()
+        _ = ClipboardStore(directory: dir)
+        #expect(FileManager.default.fileExists(atPath: attachment.path))
+
     }
 
     /// 面板上的“全部清除”：点两下才清，固定的保留；中间打了字就不算

@@ -50,14 +50,16 @@ final class ClipboardController {
     var clearButtonPoint: CGPoint {
         let frame = panel.frame
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        return CGPoint(x: frame.maxX - 16 - 20, y: primaryHeight - (frame.maxY - 25))
+        let halfHeader = ClipboardPanelView.searchBarHeight / 2
+        let y = model.opensAbove ? frame.minY + halfHeader : frame.maxY - halfHeader
+        return CGPoint(x: frame.maxX - 16 - 20, y: primaryHeight - y)
     }
     /// 面板里当前显示的条目（自测用）。
     var visibleResults: [ClipboardItem] { model.results }
 
-    /// 从文件搜索框里打开（Win+V）时：面板叠在搜索框下面，选中的文字直接填进搜索框，Esc 回到搜索框。
+    /// 从文件搜索框里打开（Win+V）时：面板靠着搜索框，选中的文字直接填进搜索框，Esc 回到搜索框。
     struct Host {
-        /// 面板放在这块区域下面（AppKit 坐标）
+        /// 面板所贴靠的搜索栏（AppKit 坐标）
         let anchor: NSRect
         /// 选中的文字（图片是 nil）
         let insert: (String?) -> Void
@@ -76,11 +78,12 @@ final class ClipboardController {
             return
         }
         pasteTarget = host == nil ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+        let placement = placement(at: pointer, beside: host?.anchor)
         watcher.recordPendingChange()
-        model.prepareForShow()
+        model.prepareForShow(opensAbove: placement.opensAbove)
         self.host = host
         previewOffset = nil
-        position(panel, at: pointer, below: host?.anchor)
+        panel.setFrame(placement.frame, display: false)
         FrontAppTracker.shared.clipboardPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
         installKeyMonitor()
@@ -160,13 +163,16 @@ final class ClipboardController {
                 pbItem.setData(data, forType: NSPasteboard.PasteboardType(type))
             }
         case .image:
-            guard let url = store.imageURL(for: item), let png = try? Data(contentsOf: url) else {
+            guard let url = store.imageURL(for: item), let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
                 Log.clipboard.error("找不到图片文件，无法写入剪贴板")
                 return false
             }
-            pbItem.setData(png, forType: .png)
-            if let tiff = NSImage(data: png)?.tiffRepresentation {
-                pbItem.setData(tiff, forType: .tiff)
+            if url.pathExtension == "tiff" {
+                pbItem.setData(data, forType: .tiff)
+                if let png = ClipboardImage.png(fromTIFF: data) { pbItem.setData(png, forType: .png) }
+            } else {
+                pbItem.setData(data, forType: .png)
+                if let tiff = NSImage(data: data)?.tiffRepresentation { pbItem.setData(tiff, forType: .tiff) }
             }
         }
         pasteboard.clearContents()
@@ -184,7 +190,9 @@ final class ClipboardController {
         model.onPreviewChange = { [weak self] open in self?.resizeForPreview(open) }
         model.onFloat = { [weak self] item in
             guard let self, let url = store.imageURL(for: item),
-                  let data = try? Data(contentsOf: url), let picture = PinPicture(png: data) else {
+                  let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+                  let png = url.pathExtension == "tiff" ? ClipboardImage.png(fromTIFF: data) : data,
+                  let picture = PinPicture(png: png) else {
                 NSSound.beep()
                 return
             }
@@ -240,11 +248,10 @@ final class ClipboardController {
                 return nil
             }
             if key == KeyCode.p, mods == .command || mods == .control {
-                self.model.togglePinSelected()
+                if !event.isARepeat { self.model.togglePinSelected() }
                 return nil
             }
-            if key == KeyCode.forwardDelete && !mods.isEmpty || key == KeyCode.backspace && mods == .command {
-                self.model.deleteSelected()
+            if self.model.handleDeleteShortcut(key, modifiers: mods, isRepeat: event.isARepeat) {
                 return nil
             }
             return event
@@ -259,7 +266,8 @@ final class ClipboardController {
     /// 展开预览时优先留住列表的位置。右侧空间不够时向左移动，收起时回到展开前的位置。
     private func resizeForPreview(_ open: Bool) {
         guard panel.isVisible, let screen = panel.screen else { return }
-        let area = screen.visibleFrame.insetBy(dx: 8, dy: 8)
+        let inset = ClipboardPanelPlacement.screenInset
+        let area = screen.visibleFrame.insetBy(dx: inset, dy: inset)
         var frame = panel.frame
         if open {
             guard area.width >= ClipboardPanel.expandedWidth else { return }
@@ -276,34 +284,18 @@ final class ClipboardController {
         panel.setFrame(frame, display: true)
     }
 
-    /// 优先贴着搜索框；独立打开时使用指针所在屏幕，同屏有文字插入点才靠着它。
-    private func position(_ panel: NSPanel, at pointer: CGPoint, below given: NSRect?) {
-        let pointerScreen = WindowPlacement.pointerScreen(at: pointer)
-        let screen: NSScreen?
-        let anchor: NSRect
+    /// 优先贴着本程序的搜索框或正在输入的文字光标，其次跟随鼠标。
+    private func placement(at pointer: CGPoint, beside given: NSRect?) -> ClipboardPanelPlacement {
         if let given, let hostScreen = WindowPlacement.screen(containing: CGPoint(x: given.midX, y: given.midY)) {
-            screen = hostScreen
-            anchor = given
-        } else {
-            screen = pointerScreen
-            if let caret = CaretLocator.caretRect(),
-               screen?.frame.contains(CGPoint(x: caret.midX, y: caret.midY)) == true {
-                anchor = caret
-            } else {
-                anchor = NSRect(origin: pointer, size: .zero)
-            }
+            return .init(anchor: given, gap: 4, visibleFrame: hostScreen.visibleFrame)
         }
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-
-        let size = CGSize(width: min(ClipboardPanel.size.width, max(1, visible.width - 16)),
-                          height: min(ClipboardPanel.size.height, max(1, visible.height - 16)))
-        var origin = NSPoint(x: anchor.minX, y: anchor.minY - size.height - 6)
-        if origin.y < visible.minY {
-            origin.y = anchor.maxY + 6  // 下方放不下就放到上方
+        if let caret = CaretLocator.caretRect(),
+           let screen = WindowPlacement.screen(containing: CGPoint(x: caret.minX, y: caret.midY)),
+           caret.height <= screen.visibleFrame.height / 4 {
+            return .init(anchor: caret, gap: 12, visibleFrame: screen.visibleFrame)
         }
-        origin.x = min(max(origin.x, visible.minX + 8), visible.maxX - size.width - 8)
-        origin.y = min(max(origin.y, visible.minY + 8), visible.maxY - size.height - 8)
-        panel.setFrame(CGRect(origin: origin, size: size), display: false)
+        let visible = WindowPlacement.pointerScreen(at: pointer)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        return .init(anchor: NSRect(origin: pointer, size: .zero), gap: 4, visibleFrame: visible)
     }
 }
 
@@ -312,27 +304,47 @@ enum CaretLocator {
     /// 返回 AppKit 坐标（原点在主屏幕左下角）。
     static func caretRect() -> NSRect? {
         guard Permissions.accessibility,
-              let element = FocusInspector().focusedElement()
+              let element = FocusInspector().focusedElement(), FocusInspector.focusKind(of: element) == .text,
+              let primary = NSScreen.screens.first,
+              let selected: CFRange = element.axValue(kAXSelectedTextRangeAttribute, type: .cfRange),
+              selected.location >= 0, selected.length >= 0, selected.location < Int.max - selected.length
         else { return nil }
 
-        var rangeValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
-              let rangeValue
-        else { return nil }
+        // 选中文本时贴着选区末端。部分应用只返回有长度的文字范围。
+        let end = selected.location + selected.length
+        let rect: CGRect
+        let x: CGFloat
+        if let insertion = bounds(of: CFRange(location: end, length: 0), in: element) {
+            rect = insertion
+            x = insertion.minX
+        } else if let next = bounds(of: CFRange(location: end, length: 1), in: element) {
+            rect = next
+            x = next.minX
+        } else if end > 0, let previous = bounds(of: CFRange(location: end - 1, length: 1), in: element) {
+            rect = previous
+            x = previous.maxX
+        } else {
+            return nil
+        }
 
+        // 辅助功能接口的坐标原点在主屏幕左上角，y 向下。
+        return NSRect(x: x, y: primary.frame.maxY - rect.maxY, width: 0, height: rect.height)
+    }
+
+    private static func bounds(of range: CFRange, in element: AXUIElement) -> CGRect? {
+        var range = range
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
         var boundsValue: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
-            element, kAXBoundsForRangeParameterizedAttribute as CFString, rangeValue, &boundsValue
+            element, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &boundsValue
         ) == .success,
             let boundsValue, CFGetTypeID(boundsValue) == AXValueGetTypeID()
         else { return nil }
 
         var rect = CGRect.zero
-        guard AXValueGetValue(boundsValue as! AXValue, .cgRect, &rect), rect.origin != .zero else { return nil }
-
-        // 辅助功能接口的坐标原点在主屏幕左上角，y 向下。
-        guard let primary = NSScreen.screens.first else { return nil }
-        let flippedY = primary.frame.maxY - rect.maxY
-        return NSRect(x: rect.minX, y: flippedY, width: rect.width, height: max(rect.height, 1))
+        guard AXValueGetValue(boundsValue as! AXValue, .cgRect, &rect),
+              rect.minX.isFinite, rect.maxX.isFinite, rect.minY.isFinite, rect.maxY.isFinite, rect.height > 0
+        else { return nil }
+        return rect
     }
 }

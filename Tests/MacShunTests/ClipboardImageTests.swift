@@ -39,6 +39,74 @@ struct ClipboardImageTests {
         try #require(condition())
     }
 
+    @Test func tiffIsImmediatelyPasteableAndMergesWithAnExistingPNGAtCapacity() async throws {
+        let dir = folder(), board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: dir) }
+        let sample = try sample("archive", on: board)
+        let tiff = try #require(sample.png.flatMap { NSBitmapImageRep(data: $0)?.tiffRepresentation })
+        let oldPNG = try #require(NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
+        let store = ClipboardStore(directory: dir)
+        store.add(.init(kind: .text, text: "older", fingerprint: "older"), maxItems: 2)
+        var old = sample
+        old.png = oldPNG
+        old.fingerprint = ClipboardStore.fingerprint([Data("image".utf8), oldPNG])
+        store.add(old, maxItems: 2)
+        let originalID = try #require(store.sortedItems.first?.id)
+        board.clearContents()
+        board.setData(tiff, forType: .tiff)
+        let capture = try #require(ClipboardWatcher.capture(from: board, recordImages: true))
+        store.add(capture, maxItems: 2)
+        let staged = try #require(store.sortedItems.first)
+        #expect(store.sortedItems.count == 2 && staged.imageFile?.hasSuffix(".tiff") == true)
+        let model = ClipboardPanelModel(store: store, pasteboard: board)
+        model.prepareForShow()
+        let controller = ClipboardController(configStore: ConfigStore(), store: store, pasteboard: board)
+        controller.paste(staged)
+        #expect(board.data(forType: .tiff) == tiff && board.data(forType: .png) == oldPNG)
+        try await waitUntil { store.items.count == 2 && store.sortedItems.first?.tiffFingerprint == capture.fingerprint }
+        model.refresh(keepingSelection: true)
+        #expect(model.selectedItem?.id == originalID)
+        #expect(store.sortedItems.last?.text == "older")
+        store.add(capture, maxItems: 2)
+        #expect(store.items.count == 2 && store.sortedItems.first?.id == originalID)
+        store.saveNow()
+        let reopened = ClipboardStore(directory: dir)
+        reopened.add(capture, maxItems: 2)
+        #expect(reopened.sortedItems.first?.id == originalID && reopened.items.count == 2)
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("blobs").path)
+        #expect(files == [originalID.uuidString + ".png"])
+    }
+
+    @Test func queuedTIFFSurvivesRestartAndDeletionWithoutReordering() async throws {
+        let live = folder(), saved = folder(), board = NSPasteboard.withUniqueName()
+        defer {
+            board.releaseGlobally()
+            try? FileManager.default.removeItem(at: live)
+            try? FileManager.default.removeItem(at: saved)
+        }
+        let picture = try sample("queued", on: board)
+        let tiff = try #require(picture.png.flatMap { NSBitmapImageRep(data: $0)?.tiffRepresentation })
+        board.clearContents()
+        board.setData(tiff, forType: .tiff)
+        let capture = try #require(ClipboardWatcher.capture(from: board, recordImages: true))
+        let store = ClipboardStore(directory: live)
+        let date = Date(timeIntervalSince1970: 1000)
+        store.add(capture, maxItems: 5, now: date)
+        store.add(.init(kind: .text, text: "later", fingerprint: "later"), maxItems: 5, now: date.addingTimeInterval(0.1))
+        let ids = store.sortedItems.map(\.id)
+        store.saveNow()
+        try FileManager.default.copyItem(at: live, to: saved)
+        store.clearUnpinned()
+        let reopened = ClipboardStore(directory: saved)
+        #expect(reopened.sortedItems.map(\.id) == ids)
+        try await waitUntil { reopened.items.contains { $0.tiffFingerprint == capture.fingerprint } }
+        reopened.saveNow()
+        #expect(ClipboardStore(directory: saved).sortedItems.map(\.id) == ids)
+        #expect(store.items.isEmpty)
+        let files = try FileManager.default.contentsOfDirectory(atPath: live.appendingPathComponent("blobs").path)
+        #expect(files.isEmpty)
+    }
+
     @Test func oldAndNewImagesUseLocalOCRAndSurviveReload() async throws {
         let dir = folder()
         let board = NSPasteboard.withUniqueName()

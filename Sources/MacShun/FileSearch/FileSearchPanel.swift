@@ -118,13 +118,14 @@ final class FileSearchController {
         return CGPoint(x: frame.minX + 200, y: primaryHeight - (frame.maxY - top))
     }
 
-    /// 在搜索框里按 Win+V：剪贴板面板放在胶囊下面，选中的文字填到光标处，关掉以后回到搜索框。
+    /// 在搜索框里按 Win+V：剪贴板面板贴着搜索栏，选中的文字填到光标处，关掉以后回到搜索框。
     func clipboardHost() -> ClipboardController.Host {
         let frame = panel.frame
-        let height = model.isExpanded ? FileSearchView.inputHeaderHeight(expanded: true)
-            : FileSearchView.compactHeaderHeight(inFolder: false, typeAreaHeight: model.compactLayout.visible.fileTypes)
-        let capsuleBottom = frame.maxY - FileSearchView.margin - height
-        let anchor = NSRect(x: frame.minX + 64, y: capsuleBottom, width: 0, height: height)
+        let margin = FileSearchView.margin
+        let height = FileSearchView.inputHeaderHeight(expanded: model.isExpanded)
+            + (model.folder == nil ? 0 : FileSearchView.folderBarHeight)
+        let anchor = NSRect(x: frame.minX + margin, y: frame.maxY - margin - height,
+                            width: frame.width - 2 * margin, height: height)
         hostingClipboard = true
         return .init(
             anchor: anchor,

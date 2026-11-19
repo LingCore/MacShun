@@ -160,38 +160,50 @@ struct PinyinIndex {
         syllables = Pinyin.syllables(of: chars).map { Array($0) }
     }
 
-    /// 搜索：原文包含、拼音全拼、首字母，以及全拼和首字母混合（例如 “jiantb” 搜到“剪贴板”）。
-    func matches(_ query: String) -> Bool {
-        let q = query.lowercased().filter { !$0.isWhitespace }
-        if q.isEmpty { return true }
-        if lowercased.contains(query.lowercased()) || lowercased.contains(q) { return true }
-        // 查询里有汉字等非 ASCII 字符时只按原文匹配。
-        guard q.allSatisfy({ $0.isASCII }) else { return false }
-        return Self.syllableMatch(Array(q), syllables)
+    struct Query {
+        let lower: String
+        private let compact: String
+        let letters: [Character]?
+
+        init(_ text: String) {
+            lower = text.lowercased()
+            compact = lower.filter { !$0.isWhitespace }
+            letters = compact.utf8.allSatisfy { $0 < 0x80 } ? Array(compact) : nil
+        }
+
+        func matchesText(_ lowercased: String) -> Bool {
+            compact.isEmpty || lowercased.contains(lower) || (compact != lower && lowercased.contains(compact))
+        }
     }
 
-    /// 查询能否从某个字开始，连续地用每个字拼音的前缀（至少一个字母）拼出来。
+    func matches(_ query: String) -> Bool { matches(Query(query)) }
+
+    func matches(_ query: Query) -> Bool {
+        if query.matchesText(lowercased) { return true }
+        guard let letters = query.letters else { return false }
+        return Self.syllableMatch(letters, syllables)
+    }
+
+    /// can[i] 表示从下一个音节起能否拼完查询的第 i 个字符及其后缀。
+    /// 在当前音节内从小到大写 i，只读取尚未覆盖的 i+k，不需要二维表。
     static func syllableMatch(_ q: [Character], _ s: [[Character]]) -> Bool {
-        let n = q.count, m = s.count
+        let n = q.count
         guard n > 0 else { return true }
-        guard m > 0 else { return false }
-        // can[qi][si]：q[qi...] 能否从第 si 个字开始拼出。从后往前算。
-        var can = Array(repeating: Array(repeating: false, count: m + 1), count: n + 1)
-        for si in 0...m { can[n][si] = true }
-        for qi in stride(from: n - 1, through: 0, by: -1) {
-            for si in stride(from: m - 1, through: 0, by: -1) {
-                let syl = s[si]
+        guard n <= s.reduce(0, { $0 + $1.count }) else { return false }
+        var can = Array(repeating: false, count: n + 1)
+        can[n] = true
+        for syllable in s.reversed() {
+            for i in 0..<n {
+                can[i] = false
                 var k = 0
-                while k < syl.count && qi + k < n && charMatches(q[qi + k], syl[k]) {
+                while k < syllable.count && i + k < n && charMatches(q[i + k], syllable[k]) {
                     k += 1
-                    if can[qi + k][si + 1] {
-                        can[qi][si] = true
-                        break
-                    }
+                    if can[i + k] { can[i] = true; break }
                 }
             }
+            if can[0] { return true }
         }
-        return (0..<m).contains { can[0][$0] }
+        return false
     }
 
     /// 拼音里的 v（ü）也可以用 u 搜。
@@ -204,39 +216,28 @@ struct PinyinIndex {
     static func syllableMatch(_ q: [UInt8], encoded s: UnsafeBufferPointer<UInt8>) -> Bool {
         let n = q.count
         guard n > 0 else { return true }
-        guard !s.isEmpty else { return false }
-        var m = 1
-        for byte in s where byte == 0 { m += 1 }
-        return withUnsafeTemporaryAllocation(of: Int.self, capacity: m + 1) { starts in
-            // 第 si 个字的拼音是 s[starts[si] ..< starts[si + 1] - 1]
-            var k = 0
-            starts[0] = 0
-            for (i, byte) in s.enumerated() where byte == 0 {
-                k += 1
-                starts[k] = i + 1
-            }
-            starts[m] = s.count + 1
-            let width = m + 1
-            return withUnsafeTemporaryAllocation(of: Bool.self, capacity: (n + 1) * width) { can in
-                can.initialize(repeating: false)
-                for si in 0...m { can[n * width + si] = true }
-                for qi in stride(from: n - 1, through: 0, by: -1) {
-                    for si in stride(from: m - 1, through: 0, by: -1) {
-                        let start = starts[si], end = starts[si + 1] - 1
-                        var k = 0
-                        while start + k < end && qi + k < n
-                                && (q[qi + k] == s[start + k] || (s[start + k] == 0x76 && q[qi + k] == 0x75)) {
-                            k += 1
-                            if can[(qi + k) * width + si + 1] {
-                                can[qi * width + si] = true
-                                break
-                            }
-                        }
+        guard n <= s.count else { return false }
+        return withUnsafeTemporaryAllocation(of: Bool.self, capacity: n + 1) { can in
+            can.initialize(repeating: false)
+            can[n] = true
+            var end = s.count
+            while end > 0 {
+                var start = end
+                while start > 0 && s[start - 1] != 0 { start -= 1 }
+                for i in 0..<n {
+                    can[i] = false
+                    var k = 0
+                    while start + k < end && i + k < n {
+                        let letter = s[start + k]
+                        guard q[i + k] == letter || (letter == 0x76 && q[i + k] == 0x75) else { break }
+                        k += 1
+                        if can[i + k] { can[i] = true; break }
                     }
                 }
-                for si in 0 ..< m where can[si] { return true }
-                return false
+                if can[0] { return true }
+                end = start - 1
             }
+            return false
         }
     }
 }

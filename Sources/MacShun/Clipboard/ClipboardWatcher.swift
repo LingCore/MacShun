@@ -77,6 +77,7 @@ final class ClipboardWatcher {
         // 没有“始终允许”读取剪贴板时不读，否则每次复制都会弹出系统询问。
         guard cfg.enabled, PasteboardAccess.status == .allowed else { return }
         guard let capture = Self.capture(from: pasteboard, recordImages: cfg.recordImages) else { return }
+        guard pasteboard.changeCount == count else { return }
         store.add(capture, maxItems: cfg.maxItems)
     }
 
@@ -106,15 +107,13 @@ final class ClipboardWatcher {
         }
 
         guard recordImages else { return nil }
-        let raw = item.data(forType: .png) ?? item.data(forType: .tiff)
-        guard let raw, raw.count <= maxImageBytes,
-              let rep = NSBitmapImageRep(data: raw),
-              let png = item.data(forType: .png) ?? rep.representation(using: .png, properties: [:])
-        else { return nil }
+        let png = item.data(forType: .png)
+        let tiff = png == nil ? item.data(forType: .tiff) : nil
+        guard let raw = png ?? tiff, raw.count <= maxImageBytes,
+              let size = ClipboardImage.size(of: raw) else { return nil }
         return ClipboardCapture(
-            kind: .image, text: nil, png: png,
-            imageSize: CGSize(width: rep.pixelsWide, height: rep.pixelsHigh),
-            fingerprint: ClipboardStore.fingerprint([Data("image".utf8), png]),
+            kind: .image, text: nil, png: png, tiff: tiff, imageSize: size,
+            fingerprint: ClipboardStore.fingerprint([Data((png == nil ? "tiff" : "image").utf8), raw]),
             sourceApp: source
         )
     }

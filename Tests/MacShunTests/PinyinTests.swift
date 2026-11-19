@@ -75,6 +75,13 @@ struct PinyinTests {
         #expect(matches("任何内容", "   "))
     }
 
+    @Test func pastedLongQueryStillFindsLiteralTextBeyondThePhoneticIndex() {
+        let pasted = String(repeating: "abcdef ", count: 1200)
+        let prefix = String(repeating: "项目", count: 500)
+        #expect(matches(prefix + pasted, pasted))
+        #expect(!matches(prefix, pasted))
+    }
+
     @Test func syllables() {
         #expect(Pinyin.syllables(of: Array("剪贴板")) == ["jian", "tie", "ban"])
         #expect(Pinyin.syllables(of: Array("银行")) == ["yin", "hang"])

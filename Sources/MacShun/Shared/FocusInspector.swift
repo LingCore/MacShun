@@ -42,10 +42,14 @@ final class FocusInspector {
 
     func focusKind() -> FocusKind {
         guard let element = focusedElement() else { return .unknown }
-        guard let role = Self.string(element, kAXRoleAttribute) else { return .unknown }
-        if Self.textRoles.contains(role) { return .text }
-        if Self.isEditable(element) { return .text }
-        if Self.browsingRoles.contains(role) { return .browsing }
+        return Self.focusKind(of: element)
+    }
+
+    static func focusKind(of element: AXUIElement) -> FocusKind {
+        guard let role = string(element, kAXRoleAttribute) else { return .unknown }
+        if textRoles.contains(role) { return .text }
+        if isEditable(element) { return .text }
+        if browsingRoles.contains(role) { return .browsing }
         return .other
     }
 

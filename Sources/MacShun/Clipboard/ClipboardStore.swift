@@ -19,12 +19,14 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var imageText: String?
     /// 其他格式的数据文件（例如带格式的 RTF、HTML），键是剪贴板类型，值是文件名。
     var extraFiles: [String: String]
-    /// 图片文件名（PNG）。
+    /// 原始 PNG，或等待后台转存的 TIFF。
     var imageFile: String?
     var imageWidth: Int?
     var imageHeight: Int?
     /// 内容的指纹，用来去重。
     var fingerprint: String
+    /// TIFF 转为 PNG 后，仍可从原剪贴板数据直接去重。
+    var tiffFingerprint: String?
     var created: Date
     var lastUsed: Date
     var pinned: Bool
@@ -72,6 +74,7 @@ struct ClipboardCapture {
     /// 剪贴板类型 → 数据
     var extras: [String: Data] = [:]
     var png: Data?
+    var tiff: Data?
     var imageSize: CGSize?
     var fingerprint: String
     var sourceApp: String?
@@ -87,11 +90,15 @@ final class ClipboardStore: ObservableObject {
     let directory: URL
     private var indexes: [UUID: PinyinIndex] = [:]
     private var saveScheduled = false
+    private var replacedFiles = Set<String>()
     private var recognizesImages = false
     private var recognizing = false
     private var failedImages: Set<UUID> = []
     private var pendingReads: [UUID: Task<String?, Never>] = [:]
     private let ocrQueue = DispatchQueue(label: "MacShun.ClipboardImageText", qos: .utility)
+    private var maxUnpinnedItems: Int?
+    private var archivingTIFF = false
+    private var failedArchives = Set<UUID>()
     private let readImageText: @Sendable (URL) -> String?
 
     private var historyFile: URL { directory.appendingPathComponent("history.json") }
@@ -106,41 +113,44 @@ final class ClipboardStore: ObservableObject {
             self.directory = support.appendingPathComponent("MacShun/Clipboard", isDirectory: true)
         }
         load()
+        archiveNextTIFF()
     }
 
     // MARK: - 读取
 
     /// 排序：固定的在前，其余按最近使用时间。
     var sortedItems: [ClipboardItem] {
-        items.sorted { a, b in
+        let sorted = items.sorted { a, b in
             if a.pinned != b.pinned { return a.pinned }
             return a.lastUsed > b.lastUsed
         }
+        guard let limit = maxUnpinnedItems, sorted.count > limit else { return sorted }
+        let pinnedCount = sorted.prefix(while: \.pinned).count
+        return Array(sorted.prefix(pinnedCount + limit))
     }
 
     func search(_ query: String, filter: ClipboardFilter = .all) -> [ClipboardItem] {
         let sorted = sortedItems.filter(filter.includes)
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return sorted }
+        let term = PinyinIndex.Query(q)
         return sorted.filter { item in
-            if item.kind == .image {
-                guard let text = item.imageText, !text.isEmpty else { return false }
-                if text.localizedCaseInsensitiveContains(q) { return true }
-                if !q.allSatisfy(\.isASCII) { return false }
-            }
-            return index(for: item).matches(q)
+            guard let text = item.imageText ?? item.text, !text.isEmpty else { return false }
+            if item.kind == .image && text.localizedCaseInsensitiveContains(q) { return true }
+            if let cached = indexes[item.id] { return cached.matches(term) }
+            if term.matchesText(text.lowercased()) { return true }
+            guard let letters = term.letters else { return false }
+            let index = PinyinIndex(text: text)
+            indexes[item.id] = index
+            return PinyinIndex.syllableMatch(letters, index.syllables)
         }
     }
 
-    private func index(for item: ClipboardItem) -> PinyinIndex {
-        if let cached = indexes[item.id] { return cached }
-        let index = PinyinIndex(text: item.imageText ?? item.text ?? "")
-        indexes[item.id] = index
-        return index
-    }
-
     func imageURL(for item: ClipboardItem) -> URL? {
-        item.imageFile.map { blobDirectory.appendingPathComponent($0) }
+        guard var file = item.imageFile else { return nil }
+        if file.hasSuffix(".tiff"), let current = items.first(where: { $0.id == item.id || $0.tiffFingerprint == item.fingerprint }),
+           let currentFile = current.imageFile { file = currentFile }
+        return blobDirectory.appendingPathComponent(file)
     }
 
     func extraData(for item: ClipboardItem) -> [String: Data] {
@@ -157,7 +167,20 @@ final class ClipboardStore: ObservableObject {
 
     /// 记录一条新内容。和已有条目相同时，只把那一条移到最前面。
     func add(_ capture: ClipboardCapture, maxItems: Int, now: Date = Date()) {
-        if let i = items.firstIndex(where: { $0.fingerprint == capture.fingerprint }) {
+        if maxUnpinnedItems != maxItems { trim(maxItems: maxItems) }
+        if let i = items.firstIndex(where: { $0.fingerprint == capture.fingerprint || $0.tiffFingerprint == capture.fingerprint }) {
+            if capture.kind == .text, !capture.extras.isEmpty || !items[i].extraFiles.isEmpty {
+                do {
+                    // 先写新附件，等清单原子替换后再移除旧文件，中途退出仍可读回原记录。
+                    let files = try writeExtras(capture.extras, prefix: UUID())
+                    replacedFiles.formUnion(items[i].extraFiles.values)
+                    items[i].extraFiles = files
+                } catch {
+                    Log.clipboard.error("保存剪贴板格式失败：\(error.localizedDescription, privacy: .public)")
+                    return
+                }
+            }
+            items[i].sourceApp = capture.sourceApp
             items[i].lastUsed = now
             scheduleSave()
             return
@@ -171,19 +194,15 @@ final class ClipboardStore: ObservableObject {
             pinned: false, sourceApp: capture.sourceApp
         )
         do {
-            try createPrivateDirectory(blobDirectory)
-            if let png = capture.png {
-                let name = "\(id.uuidString).png"
-                try png.write(to: blobDirectory.appendingPathComponent(name), options: .atomic)
+            if let data = capture.png ?? capture.tiff {
+                try createPrivateDirectory(blobDirectory)
+                let name = id.uuidString + (capture.png != nil ? ".png" : ".tiff")
+                try data.write(to: blobDirectory.appendingPathComponent(name), options: .atomic)
                 item.imageFile = name
                 item.imageWidth = capture.imageSize.map { Int($0.width) }
                 item.imageHeight = capture.imageSize.map { Int($0.height) }
             }
-            for (n, (type, data)) in capture.extras.enumerated() {
-                let name = "\(id.uuidString)-\(n).dat"
-                try data.write(to: blobDirectory.appendingPathComponent(name), options: .atomic)
-                item.extraFiles[type] = name
-            }
+            item.extraFiles = try writeExtras(capture.extras, prefix: id)
         } catch {
             Log.clipboard.error("保存剪贴板内容失败：\(error.localizedDescription, privacy: .public)")
             removeFiles(of: item)
@@ -194,6 +213,84 @@ final class ClipboardStore: ObservableObject {
         trim(maxItems: maxItems)
         scheduleSave()
         indexNextImage()
+        if capture.tiff != nil { archiveNextTIFF() }
+    }
+
+    private func needsArchiving(_ item: ClipboardItem) -> Bool {
+        item.imageFile?.hasSuffix(".tiff") == true && !failedArchives.contains(item.id)
+    }
+
+    /// 先让原始 TIFF 可用，串行无损转存 PNG，避免快速复制时同时展开多张大图。
+    private func archiveNextTIFF() {
+        guard !archivingTIFF,
+              let item = items.first(where: needsArchiving),
+              let raw = imageURL(for: item) else { return }
+        archivingTIFF = true
+        let png = raw.deletingPathExtension().appendingPathExtension("png")
+        Task {
+            let fingerprint = await Task.detached(priority: .utility) { () -> String? in
+                guard let data = try? Data(contentsOf: raw, options: .mappedIfSafe),
+                      let encoded = ClipboardImage.png(fromTIFF: data) else { return nil }
+                do {
+                    try encoded.write(to: png, options: .atomic)
+                    return Self.fingerprint([Data("image".utf8), encoded])
+                } catch { return nil }
+            }.value
+            defer {
+                archivingTIFF = false
+                if let limit = maxUnpinnedItems { trim(maxItems: limit) }
+                archiveNextTIFF()
+                indexNextImage()
+            }
+            guard let i = items.firstIndex(where: { $0.id == item.id }) else {
+                try? FileManager.default.removeItem(at: png)
+                return
+            }
+            guard let fingerprint else {
+                failedArchives.insert(item.id)
+                return  // 原文件继续支持预览、粘贴；下次启动再尝试。
+            }
+            let current = items[i]
+            // 先提交新清单，再删除旧文件；退出后可从任一已提交的清单恢复。
+            replacedFiles.insert(raw.lastPathComponent)
+            if let j = items.firstIndex(where: { $0.id != current.id && $0.fingerprint == fingerprint }) {
+                var existing = items[j]
+                if current.lastUsed > existing.lastUsed {
+                    existing.lastUsed = current.lastUsed
+                    existing.sourceApp = current.sourceApp
+                }
+                existing.tiffFingerprint = current.fingerprint
+                existing.pinned = existing.pinned || current.pinned
+                items[j] = existing
+                items.remove(at: i)
+                indexes[current.id] = nil
+                try? FileManager.default.removeItem(at: png)
+            } else {
+                var archived = current
+                archived.imageFile = png.lastPathComponent
+                archived.tiffFingerprint = current.fingerprint
+                archived.fingerprint = fingerprint
+                items[i] = archived
+            }
+            scheduleSave()
+        }
+    }
+
+    private func writeExtras(_ extras: [String: Data], prefix: UUID) throws -> [String: String] {
+        guard !extras.isEmpty else { return [:] }
+        try createPrivateDirectory(blobDirectory)
+        var files: [String: String] = [:]
+        do {
+            for (offset, pair) in extras.enumerated() {
+                let name = "\(prefix.uuidString)-\(offset).dat"
+                try pair.value.write(to: blobDirectory.appendingPathComponent(name), options: .atomic)
+                files[pair.key] = name
+            }
+            return files
+        } catch {
+            for name in files.values { try? FileManager.default.removeItem(at: blobDirectory.appendingPathComponent(name)) }
+            throw error
+        }
     }
 
     func setImageRecognition(enabled: Bool) {
@@ -208,6 +305,7 @@ final class ClipboardStore: ObservableObject {
         guard recognizesImages, !recognizing,
               let item = items.last(where: {
                   $0.kind == .image && $0.imageText == nil && $0.imageFile != nil && !failedImages.contains($0.id)
+                      && !needsArchiving($0)
               }) else { return }
         recognizing = true
         Task { [weak self] in
@@ -229,6 +327,7 @@ final class ClipboardStore: ObservableObject {
                 ocrQueue.async { continuation.resume(returning: readImageText(url)) }
             }
             pendingReads[id] = nil
+            if replacedFiles.contains(url.lastPathComponent) { scheduleSave() }
             guard let i = items.firstIndex(where: { $0.id == id }) else { return nil }
             if recognizesImages {
                 if let text {
@@ -273,17 +372,27 @@ final class ClipboardStore: ObservableObject {
 
     /// 超出数量时删掉最久没用的（固定的不删）。
     func trim(maxItems: Int) {
+        maxUnpinnedItems = maxItems
         let unpinned = items.filter { !$0.pinned }.sorted { $0.lastUsed > $1.lastUsed }
         guard unpinned.count > maxItems else { return }
-        let removing = Set(unpinned[maxItems...].map(\.id))
+        // TIFF 完成转码后可能与旧 PNG 合并。先隐藏超限的旧条目，确认去重后再释放文件。
+        let recent = unpinned.prefix(maxItems)
+        var keeping = Set(recent.map(\.id))
+        if recent.contains(where: needsArchiving) {
+            keeping.formUnion(unpinned.lazy.filter { !self.needsArchiving($0) }.prefix(maxItems).map(\.id))
+        }
+        let removing = Set(unpinned.lazy.map(\.id)).subtracting(keeping)
+        guard !removing.isEmpty else { return }
         for item in items where removing.contains(item.id) {
             removeFiles(of: item)
             indexes[item.id] = nil
         }
         items.removeAll { removing.contains($0.id) }
+        scheduleSave()
     }
 
     private func removeFiles(of item: ClipboardItem) {
+        failedArchives.remove(item.id)
         failedImages.remove(item.id)
         var files = Array(item.extraFiles.values)
         if let image = item.imageFile { files.append(image) }
@@ -295,10 +404,7 @@ final class ClipboardStore: ObservableObject {
     // MARK: - 存盘
 
     private func load() {
-        guard let data = try? Data(contentsOf: historyFile) else {
-            removeUnreferencedFiles()
-            return
-        }
+        guard let data = try? Data(contentsOf: historyFile) else { return }
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -307,7 +413,7 @@ final class ClipboardStore: ObservableObject {
         } catch {
             // 读不了的历史文件改名留着，不要被下次保存覆盖；数据文件也先不删。
             Log.clipboard.error("读取剪贴板历史失败：\(error.localizedDescription, privacy: .public)")
-            let stamp = Int(Date().timeIntervalSince1970)
+            let stamp = UUID().uuidString
             let aside = directory.appendingPathComponent("history-unreadable-\(stamp).json")
             try? FileManager.default.moveItem(at: historyFile, to: aside)
         }
@@ -315,7 +421,10 @@ final class ClipboardStore: ObservableObject {
 
     /// 删掉历史记录里没有引用的数据文件（例如上次保存历史之前程序退出了）。
     private func removeUnreferencedFiles() {
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: blobDirectory.path) else { return }
+        // 旧清单无法解析时，不知道哪些附件仍被它引用。兼容已经留存的 unreadable 清单。
+        guard let manifests = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+              !manifests.contains(where: { $0.hasPrefix("history-unreadable-") && $0.hasSuffix(".json") }),
+              let files = try? FileManager.default.contentsOfDirectory(atPath: blobDirectory.path) else { return }
         var referenced = Set<String>()
         for item in items {
             referenced.formUnion(item.extraFiles.values)
@@ -341,8 +450,14 @@ final class ClipboardStore: ObservableObject {
             try createPrivateDirectory(directory)
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(items)
+            // ISO 8601 清单保留到秒。同秒复制或再次使用的条目按实际先后落盘。
+            let data = try encoder.encode(items.sorted { $0.lastUsed > $1.lastUsed })
             try data.write(to: historyFile, options: .atomic)
+            let readingTIFFs = Set(pendingReads.keys.map { $0.uuidString + ".tiff" })
+            for name in replacedFiles.subtracting(readingTIFFs) {
+                try? FileManager.default.removeItem(at: blobDirectory.appendingPathComponent(name))
+                replacedFiles.remove(name)
+            }
         } catch {
             Log.clipboard.error("保存剪贴板历史失败：\(error.localizedDescription, privacy: .public)")
         }
