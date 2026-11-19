@@ -176,7 +176,8 @@
 "图中文字" = "Text in Image";
 "图片不可用" = "Image unavailable";
 "文件搜索框只能粘贴文字" = "File Search accepts text only";
-"预览仅显示开头，复制和粘贴使用完整内容" = "Copying and pasting uses the full text";
+"预览仅显示开头，仍可粘贴完整内容" = "Preview shows the beginning. You can still paste the full text.";
+"粘贴选中文字" = "Paste Selection";
 
 /* Expanded file search */
 "展开搜索面板" = "Expand Search Panel";

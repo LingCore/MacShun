@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import SwiftUI
+import AppKit
 
 struct ClipboardPreview: View {
     @ObservedObject var model: ClipboardPanelModel
@@ -47,13 +48,16 @@ struct ClipboardPreview: View {
         }
     }
 
+    @ViewBuilder
     private var content: some View {
-        ScrollView {
-            if item.kind == .image {
-                VStack(alignment: .leading, spacing: 10) {
+        switch item.kind {
+        case .image:
+            GeometryReader { geometry in
+                let hasText = item.imageText.map { !$0.isEmpty } ?? false
+                VStack(alignment: .leading, spacing: 8) {
                     ClipboardImageView(url: model.store.imageURL(for: item), cache: model.previews)
                         .aspectRatio(CGFloat(max(item.imageWidth ?? 1, 1)) / CGFloat(max(item.imageHeight ?? 1, 1)), contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: 240)
+                        .frame(maxWidth: .infinity, maxHeight: min(240, geometry.size.height * (hasText ? 0.48 : 0.82)))
                     if let width = item.imageWidth, let height = item.imageHeight {
                         Text(L("图片 %@×%@", "\(width)", "\(height)"))
                             .font(.caption)
@@ -65,25 +69,28 @@ struct ClipboardPreview: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                excerpt(item.text ?? "")
             }
+            .padding(10)
+            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+        case .text:
+            excerpt(item.text ?? "")
+                .padding(10)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder
     private func excerpt(_ text: String) -> some View {
         let end = text.index(text.startIndex, offsetBy: 12_000, limitedBy: text.endIndex) ?? text.endIndex
-        Text(String(text[..<end]))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        if end < text.endIndex {
-            Text(L("预览仅显示开头，复制和粘贴使用完整内容"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            ClipboardPreviewText(text: String(text[..<end])) { selection in
+                model.selectPreviewText(selection, for: item.id)
+            }
+            if end < text.endIndex {
+                Text(L("预览仅显示开头，仍可粘贴完整内容"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -93,11 +100,67 @@ struct ClipboardPreview: View {
                 Label(L("复制"), systemImage: "doc.on.doc")
             }
             Spacer(minLength: 0)
-            Button { model.onPaste(item) } label: {
-                Label(L("粘贴"), systemImage: "return")
+            Button { model.pastePreview(item) } label: {
+                Label(model.previewSelection == nil ? L("粘贴") : L("粘贴选中文字"), systemImage: "return")
             }
             .buttonStyle(.borderedProminent)
         }
         .controlSize(.regular)
+    }
+}
+
+final class ClipboardPreviewTextView: NSTextView {
+    var selectedText: String? {
+        let selection = selectedRange()
+        guard selection.length > 0, let range = Range(selection, in: string) else { return nil }
+        return String(string[range])
+    }
+}
+
+private struct ClipboardPreviewText: NSViewRepresentable {
+    let text: String
+    let onSelection: (String?) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelection: onSelection) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        let view = ClipboardPreviewTextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = false
+        view.drawsBackground = false
+        view.textContainerInset = NSSize(width: 0, height: 2)
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.delegate = context.coordinator
+        scroll.documentView = view
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.onSelection = onSelection
+        guard let view = scroll.documentView as? ClipboardPreviewTextView, view.string != text else { return }
+        view.string = text
+        view.font = .systemFont(ofSize: NSFont.systemFontSize)
+        view.textColor = .labelColor
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var onSelection: (String?) -> Void
+
+        init(onSelection: @escaping (String?) -> Void) { self.onSelection = onSelection }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            let view = notification.object as? ClipboardPreviewTextView
+            onSelection(view?.selectedText)
+        }
     }
 }

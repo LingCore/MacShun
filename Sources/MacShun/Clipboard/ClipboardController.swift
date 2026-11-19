@@ -22,6 +22,7 @@ final class ClipboardController {
     private var pasteTarget: ClipboardPasteTarget?
     private var pendingPaste: UUID?
     private var previewOffset: CGFloat?
+    private lazy var hoverPreview = ClipboardHoverPreview()
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
     private var host: Host?
 
@@ -107,6 +108,8 @@ final class ClipboardController {
 
     /// 关掉。从搜索框打开的，告诉它面板没了（点了别处、在设置里关掉了剪贴板历史），它自己决定接着用还是一起关
     func hide() {
+        model.hoveredID = nil
+        hoverPreview.cancel()
         let host = self.host
         self.host = nil
         pasteTarget = nil
@@ -196,6 +199,7 @@ final class ClipboardController {
         model.onPaste = { [weak self] item in self?.paste(item) }
         model.onCopy = { [weak self] item in self?.copy(item) }
         model.onPreviewChange = { [weak self] open in self?.resizeForPreview(open) }
+        model.onHoverChange = { [weak self] id in self?.updateHoverPreview(id) }
         model.onFloat = { [weak self] item in
             guard let self, let url = store.imageURL(for: item),
                   let data = try? Data(contentsOf: url, options: .mappedIfSafe),
@@ -225,7 +229,7 @@ final class ClipboardController {
     /// 面板快捷键在搜索框之前处理，组字时由输入法优先处理。
     private func installKeyMonitor() {
         removeKeyMonitor()
-        let events: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
+        let events: NSEvent.EventTypeMask = [.keyDown, .flagsChanged, .scrollWheel, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
             guard let self else { return event }
             let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -233,11 +237,17 @@ final class ClipboardController {
                 self.model.showsQuickPasteNumbers = mods.contains(.option)
             }
             guard event.window === self.panel else { return event }
+            self.hoverPreview.cancel()
             guard event.type == .keyDown else { return event }
             let key = CGKeyCode(event.keyCode)
             if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
             if mods == .option, let index = Self.quickPasteKeys.firstIndex(of: key) {
                 if !event.isARepeat { self.model.pasteVisibleRow(index + 1) }
+                return nil
+            }
+            if mods.isEmpty, key == KeyCode.returnKey || key == KeyCode.keypadEnter,
+               self.panel.firstResponder is ClipboardPreviewTextView, let item = self.model.selectedItem {
+                if !event.isARepeat { self.model.pastePreview(item) }
                 return nil
             }
             if key == KeyCode.escape, mods.isEmpty {
@@ -273,6 +283,16 @@ final class ClipboardController {
                 return nil
             }
             return event
+        }
+    }
+
+    private func updateHoverPreview(_ id: UUID?) {
+        hoverPreview.cancel()
+        guard panel.isVisible, !model.isPreviewOpen, let id else { return }
+        hoverPreview.schedule(owner: panel) { [weak self] in
+            guard let self, self.model.hoveredID == id, !self.model.isPreviewOpen,
+                  let item = self.model.results.first(where: { $0.id == id }) else { return nil }
+            return ClipboardHoverCard(item: item, imageURL: self.store.imageURL(for: item), cache: self.model.previews)
         }
     }
 

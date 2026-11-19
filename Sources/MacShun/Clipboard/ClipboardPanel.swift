@@ -55,11 +55,16 @@ final class ClipboardPanelModel: ObservableObject {
     @Published private(set) var opensAbove = false
     /// 点了一次“全部清除”，等着再点一次确认（过几秒自动取消）
     @Published private(set) var confirmingClear = false
-    @Published var selection = 0
+    @Published var selection = 0 {
+        didSet { if selection != oldValue { previewSelection = nil } }
+    }
     /// 鼠标停在哪一条上
-    @Published var hoveredID: UUID?
+    @Published var hoveredID: UUID? {
+        didSet { if hoveredID != oldValue { onHoverChange(hoveredID) } }
+    }
     @Published var showsQuickPasteNumbers = false
     @Published private(set) var visibleRowIDs: Set<UUID> = []
+    @Published private(set) var previewSelection: String?
     /// 每次打开面板时加一，搜索框据此重新获得焦点。
     @Published private(set) var focusToken = 0
 
@@ -68,6 +73,7 @@ final class ClipboardPanelModel: ObservableObject {
     var onPaste: (ClipboardItem) -> Void = { _ in }
     var onCopy: (ClipboardItem) -> Void = { _ in }
     var onPreviewChange: (Bool) -> Void = { _ in }
+    var onHoverChange: (UUID?) -> Void = { _ in }
     var onClose: () -> Void = {}
     @Published private(set) var copyFeedback: String?
     private var textCopy: Task<Void, Never>?
@@ -132,12 +138,15 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     func refresh(keepingSelection: Bool = false) {
-        let previous = keepingSelection ? selectedItem : nil
+        let previous = selectedItem
         results = store.search(query, filter: filter)
-        if let previous, let index = results.firstIndex(where: { $0.id == previous.id || $0.tiffFingerprint == previous.fingerprint }) {
+        if keepingSelection, let previous,
+           let index = results.firstIndex(where: { $0.id == previous.id || $0.tiffFingerprint == previous.fingerprint }) {
             selection = index
         }
         if selection >= results.count { selection = max(results.count - 1, 0) }
+        if selectedItem?.id != previous?.id { previewSelection = nil }
+        if let hoveredID, !results.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
         if results.isEmpty { setPreviewOpen(false) }
     }
 
@@ -156,6 +165,8 @@ final class ClipboardPanelModel: ObservableObject {
 
     func setPreviewOpen(_ open: Bool) {
         guard open != isPreviewOpen, !open || selectedItem != nil else { return }
+        previewSelection = nil
+        hoveredID = nil
         isPreviewOpen = open
         onPreviewChange(open)
     }
@@ -177,6 +188,20 @@ final class ClipboardPanelModel: ObservableObject {
         let rows = quickPasteRows
         guard number > 0, number <= rows.count else { return }
         onPaste(rows[number - 1])
+    }
+
+    func selectPreviewText(_ text: String?, for id: UUID) {
+        guard isPreviewOpen, selectedItem?.id == id, previewSelection != text else { return }
+        previewSelection = text
+    }
+
+    func pastePreview(_ item: ClipboardItem) {
+        guard let text = previewSelection, selectedItem?.id == item.id else { onPaste(item); return }
+        var excerpt = item
+        excerpt.kind = .text
+        excerpt.text = text
+        excerpt.extraFiles = [:]
+        onPaste(excerpt)
     }
 
     func cancel() {
@@ -259,6 +284,7 @@ struct ClipboardPanelView: View {
                 if model.isPreviewOpen, let item = model.selectedItem {
                     if showBoth { Divider().padding(.vertical, 12) }
                     ClipboardPreview(model: model, item: item, showsFeedback: !showBoth)
+                        .id(item.id)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

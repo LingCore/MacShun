@@ -89,4 +89,32 @@ struct ClipboardLayoutTests {
         model.pasteVisibleRow(10)
         #expect(pasted == rows[3])
     }
+
+    @Test @MainActor func pastesOnlyTheSelectedExcerptFromPreview() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ClipboardStore(directory: directory)
+        defer {
+            store.saveNow()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        store.add(.init(kind: .text, text: "Full original", extras: ["public.html": Data("<b>Full original</b>".utf8)],
+                        fingerprint: "original"), maxItems: 10)
+        let model = ClipboardPanelModel(store: store)
+        model.prepareForShow()
+        model.setPreviewOpen(true)
+        let item = store.sortedItems[0]
+        model.selectPreviewText("original", for: item.id)
+
+        var pasted: ClipboardItem?
+        model.onPaste = { pasted = $0 }
+        model.pastePreview(item)
+        #expect(pasted?.text == "original")
+        #expect(pasted?.extraFiles.isEmpty == true)
+        #expect(store.items[0] == item)
+
+        model.cancel()
+        model.setPreviewOpen(true)
+        model.pastePreview(item)
+        #expect(pasted == item)
+    }
 }
