@@ -35,6 +35,7 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     var pinned: Bool
     /// 从哪个应用复制的
     var sourceApp: String?
+    var note: String?
 
     var fileNames: [String] {
         (fileURLs ?? []).map { $0.lastPathComponent.isEmpty ? $0.path : $0.lastPathComponent }
@@ -145,7 +146,8 @@ final class ClipboardStore: ObservableObject {
         guard !q.isEmpty else { return sorted }
         let term = PinyinIndex.Query(q)
         return sorted.filter { item in
-            let searchable = item.kind == .files ? item.fileNames.joined(separator: "\n") : item.imageText ?? item.text
+            let content = item.kind == .files ? item.fileNames.joined(separator: "\n") : item.imageText ?? item.text
+            let searchable = item.note.map { note in content.map { note + "\n" + $0 } ?? note } ?? content
             guard let text = searchable, !text.isEmpty else { return false }
             if item.kind == .image && text.localizedCaseInsensitiveContains(q) { return true }
             if let cached = indexes[item.id] { return cached.matches(term) }
@@ -272,6 +274,10 @@ final class ClipboardStore: ObservableObject {
                 }
                 existing.tiffFingerprint = current.fingerprint
                 existing.pinned = existing.pinned || current.pinned
+                if let note = current.note, note != existing.note {
+                    existing.note = [existing.note, note].compactMap { $0 }.joined(separator: " / ")
+                    indexes[existing.id] = nil
+                }
                 items[j] = existing
                 items.remove(at: i)
                 indexes[current.id] = nil
@@ -356,6 +362,17 @@ final class ClipboardStore: ObservableObject {
     func markUsed(_ id: UUID, now: Date = Date()) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
         items[i].lastUsed = now
+        scheduleSave()
+    }
+
+    func setNote(_ text: String, for id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let line = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = line.isEmpty ? nil : line
+        guard items[index].note != note else { return }
+        indexes[id] = nil
+        items[index].note = note
         scheduleSave()
     }
 

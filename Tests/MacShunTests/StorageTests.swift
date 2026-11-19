@@ -55,6 +55,30 @@ struct ClipboardStoreTests {
         #expect(store.search("").count == 2)
     }
 
+    @Test func notesAreLocalSearchableAndSurviveDuplicateCopies() throws {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ClipboardStore(directory: dir)
+        var fromEditor = text("Original 101")
+        fromEditor.sourceApp = "com.apple.TextEdit"
+        store.add(fromEditor, maxItems: 10)
+        let item = try #require(store.items.first)
+        store.setNote("  公司地址  ", for: item.id)
+        #expect(store.search("gsdz").first?.id == item.id)
+        #expect(store.search("Original").first?.note == "公司地址")
+
+        fromEditor.sourceApp = "com.apple.Notes"
+        store.add(fromEditor, maxItems: 10)
+        store.saveNow()
+        let reopened = ClipboardStore(directory: dir)
+        #expect(reopened.search("地址").first?.id == item.id)
+        #expect(reopened.search("gsdz").first?.text == "Original 101")
+        reopened.setNote(" ", for: item.id)
+        #expect(reopened.search("gsdz").isEmpty)
+        #expect(reopened.search("Original").first?.note == nil)
+        reopened.saveNow()
+    }
+
     @Test func categoryFiltersComposeWithSearchAndKeepExplicitSelection() throws {
         let dir = tempDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

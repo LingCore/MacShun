@@ -283,6 +283,13 @@ final class ClipboardController {
             guard event.type == .keyDown else { return event }
             let key = CGKeyCode(event.keyCode)
             if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
+            if self.model.isEditingNote {
+                if key == KeyCode.escape, mods.isEmpty {
+                    self.model.cancelNote()
+                    return nil
+                }
+                return event
+            }
             if mods == .option, let index = Self.quickPasteKeys.firstIndex(of: key) {
                 if !event.isARepeat { self.model.pasteVisibleRow(index + 1) }
                 return nil
@@ -330,7 +337,7 @@ final class ClipboardController {
 
     private func updateHoverPreview(_ id: UUID?) {
         hoverPreview.cancel()
-        guard panel.isVisible, !model.isPreviewOpen, let id else { return }
+        guard panel.isVisible, !model.isPreviewOpen, !model.isEditingNote, let id else { return }
         hoverPreview.schedule(owner: panel) { [weak self] in
             guard let self, self.model.hoveredID == id, !self.model.isPreviewOpen,
                   let item = self.model.results.first(where: { $0.id == id }) else { return nil }

@@ -65,6 +65,8 @@ final class ClipboardPanelModel: ObservableObject {
     @Published var showsQuickPasteNumbers = false
     @Published private(set) var visibleRowIDs: Set<UUID> = []
     @Published private(set) var previewSelection: String?
+    @Published private var noteItem: ClipboardItem?
+    @Published var noteDraft = ""
     /// 每次打开面板时加一，搜索框据此重新获得焦点。
     @Published private(set) var focusToken = 0
 
@@ -95,6 +97,8 @@ final class ClipboardPanelModel: ObservableObject {
     func prepareForShow(opensAbove: Bool = false) {
         cancelTextCopy()
         setPreviewOpen(false)
+        noteItem = nil
+        noteDraft = ""
         self.opensAbove = opensAbove
         filter = .all
         query = ""
@@ -180,7 +184,7 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     func quickPasteNumber(for id: UUID) -> Int? {
-        guard showsQuickPasteNumbers else { return nil }
+        guard showsQuickPasteNumbers, !isEditingNote else { return nil }
         return quickPasteRows.firstIndex { $0.id == id }.map { $0 + 1 }
     }
 
@@ -205,7 +209,9 @@ final class ClipboardPanelModel: ObservableObject {
     }
 
     func cancel() {
-        if isPreviewOpen {
+        if isEditingNote {
+            cancelNote()
+        } else if isPreviewOpen {
             setPreviewOpen(false)
             focusToken += 1
         } else {
@@ -215,6 +221,33 @@ final class ClipboardPanelModel: ObservableObject {
 
     func pasteSelected() {
         if let item = selectedItem { onPaste(item) }
+    }
+
+    var isEditingNote: Bool { noteItem != nil }
+
+    func beginNote(_ item: ClipboardItem) {
+        guard !isEditingNote else { return }
+        setPreviewOpen(false)
+        select(item)
+        hoveredID = nil
+        noteDraft = item.note ?? ""
+        noteItem = item
+        focusToken += 1
+    }
+
+    func saveNote() {
+        guard let item = noteItem else { return }
+        if let current = store.items.first(where: { $0.id == item.id || $0.tiffFingerprint == item.fingerprint }) {
+            store.setNote(noteDraft, for: current.id)
+        }
+        cancelNote()
+    }
+
+    func cancelNote() {
+        guard noteItem != nil else { return }
+        noteItem = nil
+        noteDraft = ""
+        focusToken += 1
     }
 
     func pasteAsPlainText(_ item: ClipboardItem) {
@@ -300,17 +333,19 @@ struct ClipboardPanelView: View {
                 footer
             } else {
                 searchBar
-                filters
+                filters.disabled(model.isEditingNote)
             }
             Divider().opacity(0.6)
             if model.results.isEmpty {
                 emptyState
             } else {
                 list.id(model.opensAbove)
+                    .disabled(model.isEditingNote)
+                    .allowsHitTesting(!model.isEditingNote)
             }
             Divider().opacity(0.6)
             if model.opensAbove {
-                filters
+                filters.disabled(model.isEditingNote)
                 searchBar
             } else {
                 footer
@@ -319,6 +354,15 @@ struct ClipboardPanelView: View {
     }
 
     private var searchBar: some View {
+        Group {
+            if model.isEditingNote { noteEditor }
+            else { searchControls }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: Self.searchBarHeight)
+    }
+
+    private var searchControls: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 16, weight: .medium))
@@ -344,8 +388,25 @@ struct ClipboardPanelView: View {
                 clearButton
             }
         }
-        .padding(.horizontal, 16)
-        .frame(height: Self.searchBarHeight)
+    }
+
+    private var noteEditor: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "note.text")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.secondary)
+            SearchField(
+                text: $model.noteDraft,
+                placeholder: L("输入备注"),
+                focusToken: model.focusToken,
+                onMove: { _ in },
+                onSubmit: { model.saveNote() },
+                onCancel: { model.cancelNote() }
+            )
+            .accessibilityLabel(L("输入备注"))
+            RowButton(symbol: "checkmark", help: L("保存备注")) { model.saveNote() }
+            RowButton(symbol: "xmark", help: L("取消")) { model.cancelNote() }
+        }
     }
 
     private var filters: some View {
@@ -511,7 +572,7 @@ struct ClipboardPanelView: View {
                 }
             }
             Spacer(minLength: 0)
-            if !model.isPreviewOpen {
+            if !model.isEditingNote && !model.isPreviewOpen {
                 Button { model.pasteSelected() } label: {
                     Label(L("粘贴"), systemImage: "return")
                         .font(.callout.weight(.medium))
@@ -589,6 +650,11 @@ private struct ClipboardRow: View {
             }
             .frame(width: 26, height: 26)
             VStack(alignment: .leading, spacing: 4) {
+                if let note = item.note {
+                    Text(note)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                }
                 content
                 HStack(spacing: 6) {
                     meta
@@ -749,6 +815,7 @@ private struct ClipboardRow: View {
             Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
         }
         Divider()
+        Button(item.note == nil ? L("添加备注…") : L("编辑备注…")) { model.beginNote(item) }
         Button(item.pinned ? L("取消固定") : L("固定")) { model.store.togglePin(item.id) }
         Button(L("删除"), role: .destructive) { model.store.delete(item.id) }
     }
