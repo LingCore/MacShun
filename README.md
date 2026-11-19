@@ -41,14 +41,15 @@
 
 ### 功能
 
-连接多台显示器时，主动打开设置、软件更新、文件搜索或剪贴板历史，窗口会出现在鼠标指针所在的屏幕。
+连接多台显示器时，主动打开设置、软件更新或文件搜索，窗口会出现在鼠标指针所在的屏幕。
 
 #### 📋 剪贴板历史（Option+V / Win+V）
 
 - Mac 键盘按 **⌥ Option+V**，Windows 键盘按 **Win+V**，也可以点菜单栏的 Mac顺 图标，选择 **打开剪贴板历史**。单击选中，双击或按 **Enter** 粘贴。在文件搜索框里打开时，选中的文字会填进搜索框。
-- **分类、预览和复制**。按文字、链接、图片或已固定筛选。点眼睛图标或按 **⌘Y** 预览，点复制按钮或按 **⌘⇧C** 只复制。按 **⇧Enter** 可把文字粘贴为纯文本。
+- 面板优先贴着文字光标或 Mac顺 的文件搜索框打开，找不到文字光标时跟随鼠标。面板可以向上或向下展开，搜索框始终在靠近打开位置的一侧。
+- **分类、预览和粘贴**。按文字、链接、图片或已固定筛选。点眼睛图标或按 **⌘Y** 预览，点眼睛旁的回车箭头直接粘贴。按 **⇧Enter** 粘贴纯文本，按 **⌘⇧C** 只复制。
 - **支持拼音搜索**：输入全拼或首字母都能找到，比如输入 `jtb` 就能搜到“剪贴板”。
-- 记录文字和图片，常用的内容可以固定在最上面。右上角“全部清除”一键清空历史，固定的保留。
+- 记录文字和图片，常用的内容可以固定并优先显示。在搜索栏右侧点「全部清除」并确认，即可清除未固定的记录。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
 - **按图中文字找图片**：已记录的截图和图片会在本机后台识别，旧历史也会补上。按 Win+V 输入图里的文字或拼音，按 Enter 粘贴原图，按 F3 将它贴到屏幕。
 - 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
@@ -148,7 +149,7 @@
 
 #### 📊 性能监控
 
-- 菜单栏显示 **CPU、GPU、内存占用和芯片温度**，每 2 秒更新；在 **设置 › 性能监控** 分别选择需要的项目，关闭后停止采集。
+- 菜单栏显示 **CPU、GPU、内存占用和芯片温度**，每 2 秒更新；在 **设置 › 性能监控** 可选择 **文字读数、纯图标仪表或折线走势** 样式（图标与折线样式支持合并显示 CPU 和 GPU），并按需勾选项目，关闭后停止采集。
 - 内存显示应用、联动和压缩内存占用，不包含可回收的文件缓存；多块 GPU 时显示占用最高的一块。
 - 温度取已识别的 CPU/GPU 传感器最高读数，不代表机身温度。部分机型可能无法读取 GPU 或温度，此时显示“暂不可用”。全程在本机读取，不需要管理员权限。
 
@@ -185,6 +186,7 @@
 | 输入监控 | 识别是哪个键盘、哪个鼠标在输入（可以给每个设备单独设置） |
 | 剪贴板读取 | 在后台记录剪贴板历史（在系统设置里选“始终允许”） |
 | 文件和文件夹 | 第一次打开文件搜索时，系统会问能不能访问“桌面”“文稿”“下载”；点了不允许的文件夹搜不到 |
+| 屏幕录制 | 首次截图、长截图或识别屏幕文字时由系统提示授权 |
 
 ### 常见问题
 
@@ -263,17 +265,17 @@ The interface is available in **English** and **Simplified Chinese**. It follows
 
 ### Features
 
-When you open Settings, Software Update, File Search, or Clipboard History, the window opens on the display under your pointer.
+When you open Settings, Software Update, or File Search, the window opens on the display under your pointer.
 
 #### 📋 Clipboard history (Option+V / Win+V)
 
+- Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Click to select, then double-click or press **Return** to paste. In the file search bar, the selected text goes into the query.
+- The panel opens next to the text caret or the MacShun file search bar, with the pointer as a fallback. It can open above or below, and its search field stays closest to where it opened.
+- **Filter, preview, and paste.** Filter by text, links, images, or pinned items. Click the eye icon or press **⌘Y** to preview. Click the return arrow beside the eye to paste directly. Press **Shift+Return** to paste plain text or **⌘⇧C** to copy.
+- **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
+- Stores text and images. Pin frequently used items to show them first. Choose **Clear All** on the right side of the search bar and confirm to clear unpinned history.
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
-
-- Press **Option+V** on a Mac keyboard or **Win+V** on a Windows keyboard. You can also choose **Open Clipboard History** from the MacShun menu bar icon. Click to select, then double-click or press **Return** to paste. In the file search bar, the selected text goes into the query.
-- **Filter, preview, and copy.** Filter by text, links, images, or pinned items. Click the eye icon or press **⌘Y** to preview. Use the copy button or **⌘⇧C** to copy an entry. Press **Shift+Return** to paste plain text.
-- **Pinyin search** for Chinese text (full pinyin or initials, e.g. `jtb` finds 剪贴板).
-- Stores text and images; pin the items you use often. “Clear All” in the top-right corner empties the history and keeps pinned items.
 - Skips content that password managers mark as concealed. Everything stays on your Mac.
 
 <p align="center">
@@ -371,7 +373,7 @@ When you open Settings, Software Update, File Search, or Clipboard History, the 
 
 #### 📊 Performance monitor
 
-- See **CPU, GPU, memory usage and chip temperature** in the menu bar, updated every 2 seconds. Pick readings in **Settings › Performance Monitor**; disabled readings are no longer collected.
+- See **CPU, GPU, memory usage and chip temperature** in the menu bar, updated every 2 seconds. Choose **Text, Icons, or Trend** styles in **Settings › Performance Monitor** (icon and trend styles can combine CPU and GPU) and pick individual readings; disabled readings stop collecting.
 - Memory includes app, wired and compressed memory, excluding reclaimable file caches. With multiple GPUs, the busiest GPU is shown.
 - Temperature is the highest reading from recognized CPU/GPU sensors, rather than the enclosure temperature. Unsupported GPU or temperature readings show “Unavailable.” All readings stay on the Mac and require no administrator access.
 
@@ -406,6 +408,7 @@ Requires macOS 14 Sonoma or later.
 | Input Monitoring | Tell which keyboard or mouse an event came from (per-device settings) |
 | Pasteboard access | Record clipboard history in the background (choose "Always Allow") |
 | Files and Folders | The first time you open file search, macOS asks about Desktop, Documents and Downloads; folders you deny won't be searched |
+| Screen Recording | Prompted on first use of screenshots, scrolling capture, or copying text from screen |
 
 The settings window walks you through each one, and changes take effect immediately.
 
@@ -459,6 +462,8 @@ scripts/test.sh                # run unit tests
 scripts/check-l10n.py          # check that every UI string has an English translation
 scripts/release.sh             # build the universal release dmg (Apple Silicon + Intel)
 ```
+
+See [docs/architecture.md](docs/architecture.md) for architecture and module details, and [docs/requirements.md](docs/requirements.md) for product requirements.
 
 ---
 

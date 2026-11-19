@@ -1,168 +1,52 @@
 # 模块划分与实现
 
-更新日期：2026-10-26。已有快捷键、鼠标、剪贴板、文件搜索、文件内容搜索、刷新率和分屏。分屏拖动已改为自由跨屏与共享边缘停留预览，单元测试通过；本轮新交互仍需真实鼠标和触控板验证，其他待验证项见文末。
+Mac顺（MacShun）是基于 SwiftPM 的 macOS 14+ 菜单栏应用，界面由 AppKit 与 SwiftUI 混合实现。
 
-## 模块
+## 模块总览
 
-| 目录 | 负责的内容 | 用到的系统接口 | 需要的系统权限 |
+| 目录 | 职责 | 核心系统接口与技术 | 主要系统权限 |
 |---|---|---|---|
-| `App/` | 程序入口、菜单栏图标、设置界面、开机自启、权限引导、检查更新 | SwiftUI、AppKit、`SMAppService`、`URLSession`、Security（代码签名） | 无 |
-| `Keyboard/` | Windows 键位规则（K1–K9）、Win+E/D/L/S 等系统操作 | `CGEventTap`、辅助功能接口（查询焦点） | 辅助功能 |
-| `Mouse/` | 指针加速、滚轮方向和步长、侧键、Ctrl+滚轮、光标大小（M1–M6） | `CGEventTap`、IOKit HID、`CGSSetCursorScale` | 辅助功能、输入监控 |
-| `FileSearch/` | 文件名索引、连按两下 Ctrl 弹出的搜索框（F1），文件内容索引（F2） | FSEvents、`FileManager`、`NSPanel`、SQLite FTS5、PDFKit、libcompression | 首次扫描时系统询问“桌面”“文稿”“下载”的访问权限 |
-| `Window/` | 分屏（W1–W3）：Win+方向键、拖到屏幕边缘、贴靠助手 | 辅助功能接口（AXUIElement）、`CGWindowListCopyWindowInfo`、`NSEvent` 全局鼠标监听 | 辅助功能（已有） |
-| `Display/` | 每块显示器按百分比选缩放（D1）、选刷新率（D2） | `CGDisplayCopyAllDisplayModes`、`CGConfigureDisplayWithDisplayMode` | 无 |
-| `Clipboard/` | 记录剪贴板、保存历史、弹出面板、模拟粘贴（C1–C5） | `NSPasteboard`（轮询 `changeCount`）、`NSPanel`、`CGEvent` | 读取剪贴板（“粘贴”设为始终允许）、辅助功能（模拟粘贴、找光标位置） |
-| `Shared/` | 事件拦截线程、配置、权限、拼音、前台应用与输入法、应用名单、日志 | `CFStringTransform`、Text Input Sources | 无 |
+| `App/` | 程序入口、菜单栏图标、设置窗口与搜索、开机自启、权限引导、拾穗展示、自动更新、匿名装机统计、真机自测 | SwiftUI、AppKit、`SMAppService`、`URLSession`、Security | 无（更新与引导依赖已授予权限） |
+| `Keyboard/` | Windows 快捷键规则（K1–K8）、按键布局自动学习、双击 Ctrl 检测 | `CGEventTap`、AX 焦点查询 | 辅助功能 |
+| `Mouse/` | 指针去加速与速度、滚轮方向与按行步长、侧键映射、Ctrl+滚轮缩放、光标大小 | `CGEventTap`、IOKit HID、`CGSSetCursorScale` | 辅助功能、输入监控（完全磁盘访问可选） |
+| `Clipboard/` | 剪贴板轮询、本地存储、分类筛选、预览、拼音与图中文字检索、模拟粘贴 | `NSPasteboard`、`NSPanel`、`CGEvent`、Vision OCR | 读取剪贴板（始终允许）、辅助功能 |
+| `FileSearch/` | 文件名索引、FSEvents 增量更新、展开筛选与排序、路径/同音查找、文件内容索引、系统功能口语搜索、原生文件面板跳转 | `readdir`、FSEvents、SQLite FTS5、PDFKit、libcompression、Vision OCR、`NSPanel` | 文件和文件夹（桌面/文稿/下载等） |
+| `Capture/` | 区域/窗口截图、屏幕取色、矢量与文字/步骤/多边形/锚点选区标注、手机号与邮箱辅助打码、长截图拼接与再标注、屏幕取字、桌面贴图 | ScreenCaptureKit（`SCScreenshotManager`）、Vision、`NSPanel` | 屏幕录制 |
+| `Window/` | Win+方向键分屏、跨屏自由拖拽与共享边缘停留预览、贴靠助手、系统原生平铺冲突检测 | `AXUIElement`、`CGWindowListCopyWindowInfo`、`NSEvent` 全局监听 | 辅助功能 |
+| `Display/` | 每块显示器按百分比选清晰缩放档位、选刷新率 | `CGDisplayCopyAllDisplayModes`、`CGConfigureDisplayWithDisplayMode` | 无 |
+| `Performance/` | 菜单栏 CPU、GPU、内存占用与芯片温度采集及多样式渲染（文字、纯图标仪表、折线走势） | Mach host statistics、IOKit（GPU / SMC 只读）、`NSImage` | 无 |
+| `Shared/` | 事件拦截独立线程、设备监控、前台应用与输入法追踪、焦点查询、配置持久化、拼音转换、本地化、多屏窗口定位、日志 | `CGEventTap`、IOKit HID、`CFStringTransform`、Text Input Sources | — |
 
-### 主要文件
+## 核心文件索引
 
-| 文件 | 内容 |
-|---|---|
-| `Shared/EventTapService.swift` | 在独立线程上建立一个事件拦截，键盘事件交给 `KeyboardEngine`，滚轮和侧键交给 `MouseEngine` |
-| `Keyboard/KeyMapper.swift` | 键位规则。纯函数，不碰系统事件，单元测试主要测它 |
-| `Keyboard/KeyboardEngine.swift` | 记住每个按下的键是怎么处理的，松开时照做；Alt+Tab 时模拟 ⌘ 一直按住 |
-| `Keyboard/SystemActions.swift` | Win+E/D/L/S/Space 对应的操作 |
-| `Mouse/ScrollTransform.swift` | 滚轮换算（方向、按行滚动）。纯函数 |
-| `Shared/InputDeviceMonitor.swift` | 用 IOKit 列出鼠标和键盘；记住最近一次是哪个设备在输入，用于按设备分别设置 |
-| `Mouse/PointerAcceleration.swift` | 按鼠标关闭指针加速、调指针速度 |
-| `Mouse/CursorSize.swift` | 光标大小 |
-| `Keyboard/CapsLockSwitch.swift` | 还原早先 Caps Lock 试验留下的系统设置 |
-| `Keyboard/DoubleTapDetector.swift` | 识别连按两下 Ctrl。纯函数 |
-| `FileSearch/FileIndex.swift` | 文件名索引：扫描、FSEvents 增量更新、打分排序（打分是纯函数） |
-| `FileSearch/FileSearchPanel.swift` | 胶囊搜索框，合并文件名和内容两路结果 |
-| `FileSearch/ContentIndex.swift` | 文件内容索引：SQLite FTS5，增量更新，查询和摘要（分词、查询、摘要是纯函数） |
-| `FileSearch/ContentExtractor.swift` | 从 txt/csv/json、Office、PDF 里读出文字 |
-| `FileSearch/ZipReader.swift` | 读 docx/xlsx/pptx 外面那层 zip |
-| `Window/DragSnapIntent.swift` | 共享边缘停留、跨屏保护与松手目标校验的纯状态机 |
-| `Window/WindowLayout.swift` | 分屏位置的大小、Windows 11 的 Win+方向键规则、拖到边缘的判断。纯函数 |
-| `Window/WindowElement.swift` | 通过辅助功能接口读写别的程序的窗口；本程序自己的窗口直接用 NSWindow |
-| `Window/WindowSnapper.swift` | 分屏的主控：快捷键、记住分屏前的大小、拖动吸附和预览框、和系统自带分屏的冲突 |
-| `Window/SnapAssist.swift` | 贴靠助手面板 |
-| `Display/DisplayScaling.swift` | 算出每块显示器清晰的缩放档位和能用的刷新率（纯函数），切换显示模式 |
-| `Clipboard/ClipboardStore.swift` | 历史记录的保存、去重、固定、搜索 |
-| `Clipboard/ClipboardPanel.swift` | Win+V 弹出的面板 |
-| `Shared/Pinyin.swift` | 汉字转拼音、多音字纠正表、拼音匹配 |
-| `Shared/AppCatalog.swift` | 终端、远程桌面和虚拟机、浏览器等应用名单 |
-| `App/Updater.swift` | 检查更新：问拾穗发布服务最新版本，按“镜像在前、GitHub 原始地址在后”的顺序下载 dmg（`fetchPackage`，可注入下载函数测试），核对摘要和签名，换掉自己再重新打开；版本号比较、发布说明拆中英文是纯函数 |
-| `App/UpdateWindow.swift` | “软件更新”窗口 |
-| `App/InstallReport.swift` | 匿名装机报告：每天最多一次向更新用的同一个服务器（`/api/v1/projects/macshun/installs`）报告随机化标识、版本、系统版本和架构；设置里可关（`stats.enabled`）；自测、引导测试、开发版和单元测试里不发；标识推导、地址推导和“今天要不要发”是纯函数 |
+- **App**：`AppDelegate.swift` 组装各控制器与生命周期；`SettingsView.swift` 与 `SettingsSearch.swift` 提供设置界面与拼音可搜目录；`Updater.swift` / `UpdateWindow.swift` / `UpdateProbe.swift` 负责通过拾穗发布服务（优先 `mirrors`、兜底 GitHub）下载、核对 SHA-256 与代码签名并原地替换；`InstallReport.swift` 负责可选的每日一次匿名装机上报；`SelfTest.swift` / `GuideTest.swift` 承担真机交互自测。
+- **Keyboard & Mouse**：`KeyMapper.swift` 与 `ScrollTransform.swift` / `SideButtons.swift` 为纯规则层；`KeyboardEngine.swift` 与 `MouseEngine.swift` 运行在 `EventTapService` 独立线程；`LayoutInference.swift` 按键盘分别学习 Windows / Mac 键位模式；`PointerAcceleration.swift` 读写 HID 线性加速与速度属性；`CursorSize.swift` 写系统偏好（有完全磁盘访问时）并在无权限时退回 `CGSSetCursorScale` 周期维护。
+- **Clipboard**：`ClipboardWatcher.swift` 轮询 `changeCount` 并跳过密码管理器标记的隐藏条目；`ClipboardStore.swift` 管理文本/富格式附件/图片存盘与后台图像文字识别；`ClipboardPanel.swift` / `ClipboardController.swift` / `ClipboardPreview.swift` 提供面板、分类筛选、纯文本粘贴、与文件搜索框联动叠放。
+- **FileSearch**：`FileIndex.swift` 与 `IndexedFolders.swift` 维护按目录紧凑存储（`FolderEntries`）的分区索引快照；`FileNameSearch.swift` 与 `FileSearchFilters.swift` 处理多核并行匹配、路径加分、同音回退与未收录目录直读；`ContentIndex.swift` / `ContentExtractor.swift` / `ZipReader.swift` 维护本地 SQLite FTS5 全文索引与子进程 OCR；`SystemFeatureCatalog.swift` / `SystemFeatureQuery.swift` 提供本机系统设置口语检索；`FileSearchPanel.swift` 与辅助视图实现胶囊/展开双态面板、原生文件对话框定位（`FileDialogTarget.swift`）和结果拖出。
+- **Capture**：`ScreenCaptureController.swift` 统筹冻结选区（`FrozenScreen.swift`）、取字与输出；`CaptureCanvas.swift` / `CaptureToolbar.swift` / `CaptureAnnotations.swift` / `CaptureLineShape.swift` / `CapturePolygon.swift` 管理选区编辑、箭头/折线/曲线/文字/序号标注及撤销重做；`CaptureLoupe.swift` 负责放大镜与 HEX/RGB/HSL 取色；`CaptureRedaction.swift` 用快速 Vision 识别在本机检测手机号和邮箱；`ScrollingCapture.swift` / `ScrollCaptureSource.swift` / `ScrollStitcher.swift` / `LongCaptureEditor.swift` 处理长截图滚动拼接与滚动标注；`ScreenPins.swift` 管理桌面悬浮贴图。
+- **Window & Display & Performance**：`WindowSnapper.swift` / `DragSnapIntent.swift` / `WindowLayout.swift` / `WindowElement.swift` / `SnapAssist.swift` 实现窗口状态跟踪、共享边缘停留意图状态机和跨屏布局；`DisplayScaling.swift` 计算清晰 HiDPI 缩放比例与刷新率档位；`PerformanceMonitor.swift` 在低优先级串行队列每 2 秒采样 `SystemMetrics.swift` 与 `ChipTemperature.swift`，由 `PerformanceMenuBarImage.swift` / `PerformanceMenuBarGlyphs.swift` 绘制菜单栏图像。
 
-## 关键决定
+## 关键设计与约束
 
-- **改键方案**：程序自己用 `CGEventTap` 在会话层拦截按键，装好就能用，不依赖 Karabiner-Elements。
-  - 规则只认“Windows 意义上”的修饰键，按紧挨空格键左边的键发出什么分两种布局：发出 ⌥ 时（Windows 模式）Win = ⌘、Alt = ⌥；发出 ⌘ 时（Mac 模式，以及苹果键盘）按位置对应，option = Win、command = Alt。
-- **键盘的 Win/Mac 模式（K8）**：很多机械键盘有 Win/Mac 模式开关，切到 Mac 模式是键盘自己把 Alt、Win 两个键的信号对调。实测 MCHOSE K99 切换模式前后，报给系统的设备信息（型号、序列号、报告格式、接口）完全不变，键盘也不重新连接，所以无法直接读出模式。目标是用户什么都不用做：
-  - 最常用的组合不依赖模式（`KeyMapper.systemShortcut`）：⌥ 一定当 Alt 或 Win 用（Windows 用户不会用 ⌥+字母打 √ ∂ ß），所以 Win+V/E/L/S 两种模式下都能用；Alt+Tab 的 ⌥Tab、⌘Tab 都能切换程序；Alt+F4 的 ⌥F4、⌘F4 都退出程序。
-  - 只有 Win+D、Win+Space 按当前模式认 Win 键：Windows 模式下 Alt+D 是浏览器地址栏的习惯，⌥Space 常被 Alfred、Raycast 等启动器占用。
-  - 模式在后台从按法学习，不弹提示（`Keyboard/LayoutInference.swift`）：Alt+Tab、Alt+F4 发出 ⌥ 是 Windows 模式、发出 ⌘ 是 Mac 模式；⌥+V/E/L/S 是 Win 键的按法，说明是 Mac 模式。F4 看到一次就算，其他的要连续两次。
-  - 按键盘分别记住模式。和鼠标一样，用 IOKit 监听各键盘的原始输入，知道每个按键来自哪把键盘（`Shared/InputDeviceMonitor.swift`）。苹果键盘一定是 ⌘ 紧挨空格。设置页只显示每把键盘当前的模式，旁边有一个“不对”按钮。
-  - 鼠标上的“键盘”接口（宏按键，例如 ATK 鼠标）不会出现在键盘列表里，因为列表只显示打过字的键盘。
-  - 曾经做过“第一次用新键盘时弹提示，请用户按一下 Alt 识别”，作者试用后觉得不够简单，改成了现在的做法。
-- **Windows 文字编辑（K1、K2）**：默认把 Ctrl+字母、数字、符号换成对应的 ⌘ 组合键，保留 Shift；Ctrl+Y 换成 ⌘⇧Z。Ctrl+H/M/Q 和 Ctrl+` 不改写，避免隐藏、最小化和退出。Home/End、Ctrl+方向键和删除键按 Windows 习惯处理；浏览器未知焦点时不把 Home/End 换成会触发后退的 ⌘←/→。普通复制粘贴不查询辅助功能焦点，输入法的 Ctrl+. 标点切换保持原样。`ctrlAsCommand`、`textNavigation` 缺失时默认开启，已有关闭偏好保留。
-- **终端（K5）**：独立终端应用由 `AppCatalog` 识别，保留 Ctrl+C 等控制键；只把 Ctrl+Shift+C/V 换成 ⌘C/V。系统快捷键和本程序面板仍正常生效。
-- **Finder 焦点**：通过辅助功能接口确认焦点在文件列表上，再改写 Finder 的文件操作。输入框和未知焦点不触发文件操作，Ctrl 文字编辑仍按通用规则处理。
-- **搜索面板粘贴**：文件搜索和剪贴板历史的搜索框保留 Ctrl+V 粘贴，Windows 布局下 Win+V 仍能在面板内呼出或关闭剪贴板历史。
-- **鼠标按设备设置**：滚轮事件不带设备信息，所以另外用 IOKit 监听各鼠标的滚轮和按键输入，最近有输入的鼠标就是当前设备。只接了一个鼠标时不用猜。
-- **指针加速**：用系统公开的 HID 属性 `HIDUseLinearScalingMouseAcceleration`（和 macOS 14 起“系统设置”里关掉“指针加速”的效果一样），可以每个鼠标分别设置，跟踪速度仍然有效。这个属性不会保存，鼠标重连、睡眠唤醒后由程序重新设置；退出时恢复原值。
-- **指针速度**：没有加速时，系统把鼠标的移动计数直接乘以 `HIDMouseAcceleration`（就是“跟踪速度”，系统滑块最高 3）得到指针移动的点数（见 IOHIDFamily 的 `IOHIDPointerScrollFilter::setupPointerAcceleration` 和 `IOHIDSimpleAccelerator`）。程序按鼠标把这个值设成用户选的倍数（0.25–8 倍），改了马上生效；没调过就跟系统设置一样。只在没有加速时调，有加速时这个值是用来选加速曲线的，交给系统。调过速度后，“系统设置”里的跟踪速度对这个鼠标不再起作用（程序每 30 秒会把它改回来）。
-- **鼠标侧键（M4）**：后退、前进在浏览器、VS Code 这类自己认侧键的程序里原样放行，其他程序换成 ⌘[ / ⌘]；两个侧键对调时，在这类程序里改写事件的按键编号（不发 ⌘[，VS Code 里那是减少缩进）。也可以改成复制、粘贴等（本程序直接发 ⌘C 这类按键，不受键盘设置影响）、调度中心、显示桌面、剪贴板历史、文件搜索，或者“不处理”（原样放行，给罗技、雷蛇等鼠标软件用）。自定义快捷键按 Windows 的修饰键记（Ctrl、Alt、Win、Shift，`WinShortcut`），录的时候键盘规则暂停（`recordingShortcut`），记下实际按的键；按侧键时按现在这把键盘的布局换成实际的修饰键，从 HID 层发出、不带本程序的标记，所以和在键盘上按一样经过键盘规则。远程桌面、虚拟机里侧键一律原样交给里面的系统。以前的“侧键前进、后退”开关关掉的，升级后两个侧键都是“不处理”。
-- **光标大小**：用窗口服务器未公开的 `CGSSetCursorScale` 实时改（1–4 倍，和“辅助功能 → 显示 → 指针大小”同一个东西），不写系统偏好 `com.apple.universalaccess`。退出时恢复成系统偏好里的大小；和指针速度一起每 30 秒检查一次，被系统改回去时重新设置。实测 macOS 27 普通程序可以调用，不需要权限。
-- **分屏**：按 Windows 11 的习惯做，而不是照搬 Rectangle 的上百种尺寸和 Ctrl+Option 快捷键。
-  - 窗口现在分在哪：先看是不是我们上次放的位置（按窗口编号记），再按大小位置判断，每条边允许差 16 点（终端按字符调整大小对不齐）。分屏前的大小也按窗口编号记，恢复时用；记不得就居中放三分之二大小。
-  - 参考 Rectangle 处理的坑：先设大小、再设位置、再设一次大小（跨屏幕时系统会按原来那块屏幕限制大小）；程序开着 `AXEnhancedUserInterface` 时临时关掉（不然改大小很卡、有动画）；AX 调用超时设成 0.5 秒；用私有函数 `_AXUIElementGetWindow` 取窗口编号。对本程序自己的窗口调用 AX 会卡到超时（要等自己的主线程回应），改用 NSWindow。
-  - 拖到边缘：`NSEvent` 全局监听鼠标（只看不改）。只有从窗口顶部 80 点以内开始的拖动才跟踪（在内容里选文字、拖文件时不去问窗口位置），确定窗口在移动（位置变、大小不变）后按鼠标位置判断边缘和角。
-  - 两块屏幕相接的边：光标自由跨屏，不再建立可写拖动事件拦截或 warp 光标。`DragSnapIntent`（纯函数状态机）在共享边缘的 8 点候选区停稳 180ms 后才预览，允许少量手抖；跨屏立即清掉旧候选，目标屏的共享边缘有 250ms 保护。外侧边缘仍立即预览。按光标所在边段判断共享关系，因此高矮错位显示器的外露边仍按普通边处理。计时器会在鼠标停住、没有新事件时重新核对位置；抬起只提交已预览且仍在同一目标内的吸附。参数是当前交互初值，真实鼠标和触控板手感仍需验证。
-  - 拖动事件使用各自 CGEvent 坐标和 NSEvent 时间戳；屏幕 ID、frame 或可用区域变化、Esc、让给系统平铺、设置关闭或新的拖动都会使旧候选及待提交操作失效。松手后等待原生窗口位置稳定才写 AX（连续两次位置/大小差不超过 1 点，每次间隔约一帧，最多约 100ms），不再无条件等固定 50ms 后提交旧目标。
-  - macOS 15 起系统自带拖动分屏（`com.apple.WindowManager` 的 `EnableTilingByEdgeDrag`、`EnableTilingOptionAccelerator`，没写过就是开着）。两个同时开会打架，所以系统的开着时我们的拖动分屏不生效，设置页提示并提供“关掉系统的拖动分屏”按钮（用户点了才写）。Win+方向键不受影响。
-  - 贴靠助手：`CGWindowListCopyWindowInfo` 拿屏幕上的窗口和前后顺序（不需要屏幕录制权限），窗口标题从 AX 读。面板是不抢前台的 NSPanel，能接收方向键、Enter、Esc，点别处就关。
-  - 真机自测：`scripts/selftest.sh window` 用一个 Finder 窗口按真实的 Win+方向键检查位置；有左右相邻的两块屏幕时，再用模拟鼠标拖它经过交界，检查自由跨屏、主动停留时的预览和松手分屏；用最大重叠面积确认窗口已进入目标屏。二十秒左右。
-- **显示器缩放**：Windows 的百分比 = 原生宽度 ÷ “看起来像”的宽度。只列出清晰的档位：原生分辨率（100%），以及高分屏模式里渲染像素不少于原生像素的（系统先按 2 倍渲染再缩小，文字清晰）。2K 这类非高分屏，系统给的高分屏模式只有原生像素的一半，所以只有 100% 和 200%。切换用 `CGCompleteDisplayConfiguration(.permanently)`，和系统设置里改一样会一直保留。
-- **刷新率**：列出和当前模式大小（点和像素）都一样的模式的刷新率，按两位小数区分（59.94 和 60 分开）；切缩放时优先保持当前刷新率。同一个大小和刷新率有时有两个模式（2K 144Hz 屏上看到过，公开属性完全一样，猜是时序不同），优先系统标为默认（`ioFlags & 0x4`）的，都不是就用列表里靠后的，和系统自己选的一致。
-- **Caps Lock（试过后去掉）**：系统设置“使用大写锁定键切换‘ABC’输入法”背后是 Carbon 里没有公开的 `TISSetRomanSwitchState(Boolean)`（直接写 `TISRomanSwitchState` 偏好不生效）。关掉它之后，苹果拼音收到 Caps Lock 会进自己的英文模式，打出来仍是小写；再临时切到 ABC 又会被系统自动关掉 Caps Lock。做不到 Windows 那样一按就大写，所以去掉了，`Keyboard/CapsLockSwitch.swift` 只负责还原用过那几个版本留下的系统设置。
-- **文件搜索**：Mac 的 APFS 没有 NTFS 那样的文件总表（Everything 快的原因），所以自己扫一遍建索引，之后靠 FSEvents 增量更新。第一轮扫个人文件夹（不含“资源库”）和应用程序（含 Cryptexes 里的 Safari），实测 2.3 万个文件 0.4 秒；第二轮在后台扫外接硬盘，跳过 Windows 系统文件夹，扫的时候不耽误搜索。macOS 的 NTFS 驱动（FSKit）查每个文件的属性很慢、而且一次只处理一个，所以外接硬盘不用 FileManager，只用 readdir 读名字和类型，只给文件夹查隐藏标记，几块盘一起用 4 个线程扫，边扫边并进索引：实测 41 万个文件从 82 秒降到 11 秒。原来的 FileManager 方式遇到文件特别多的文件夹（几千个）会读取失败、整个漏掉，readdir 没有这个问题。每次搜索遍历全部文件名，按字节查找，43 万个文件约 70 毫秒。应用程序另外收录访达里的本地化名字（“备忘录”），所以能按中文名和拼音搜到。索引按文件夹紧凑存放（`FolderEntries`）：一个文件夹里所有文件的名字、小写名字、逐字拼音放在一块连续的字节里，每个文件只另占一个 24 字节的 Item；拼音按字节匹配，用临时缓冲区不分配二维数组。比每个文件各用一个 String 和几个数组省一半以上内存（实测中文文件名每个从 213 字节降到 89 字节），搜索也快约一倍。扫描时每个文件夹读完就释放 FileManager 的临时对象，减少内存碎片。FSEvents 报告的文件夹只有在上一级文件夹里列着、而且不是“包”时才收（照片图库、.app 里面的变化不收）；正在扫描的位置下的变化先记下来，扫完再处理，免得被扫描结果盖掉。删掉的子文件夹按原来列着的子文件夹往下找，不用把所有文件夹比一遍。名字按合成形式（NFC）小写后比较，分解形式存的名字（“デ” 存成 “テ”加浊点）也能用输入法打出来的字搜到。查询里有 /（或 \）时当成路径：最后一段按名字匹配，前面的文件夹不是硬条件，只加分（连着对上、正好是所在文件夹 40，在它下面 30，否则按对上几段最多 20），所以文件夹写错了也能搜到名字对上的文件；文件夹可以写访达里显示的名字（“桌面”）或 Windows 的叫法（“文档”“视频”）；~/ 换成个人文件夹，Windows 盘符、两边的空格换行引号和 file:// 去掉，有 / 的路径里 \ 当终端转义（“My\ Project”），Windows 的 \\服务器\共享 换成 /Volumes/共享，.. 回到上一层；不像完整路径时整个查询把 / 换成 : 再按名字搜一遍（访达把名字里的 : 显示成 /，例如“AC/DC”），取分高的；/ 开头而且文件存在的直接放第一条（不在索引里也行）。个人文件夹里的“桌面”“下载”这些和应用程序一样另记访达里显示的名字。连按两下 Ctrl 在第二下松开时才算（第二下中间按了别的键不算），所以按一下 Ctrl 接着 Ctrl+V 不会误触发；搜索框开着时再连按只放到前面，不关。Ctrl+Enter 是系统“显示快捷菜单”的快捷键，`NSApplication.sendEvent` 在交给窗口之前就按快捷键处理了（输入框会弹出右键菜单），所以用本程序的本地事件监听（`addLocalMonitorForEvents`，在 sendEvent 之前）接住；模拟按键测不出这个，要用真按键（`scripts/selftest.sh search`）。在搜索框里按 Win+V（或点菜单栏的“打开剪贴板历史”）时剪贴板面板不关搜索框，叠在胶囊下面（`ClipboardController.Host`）：选中的文字用字段编辑器的 `insertText` 插到光标处，Esc 回到搜索框；剪贴板面板不管怎么关的都通知搜索框，搜索框没在接收按键就一起关，免得留下一个不接收按键、却让全局按键一直按“在面板里”处理的搜索框。输入框是单行模式，粘贴进来的换行变成空格；⌥↩、⌃↩、⌥Tab 不插入换行和 Tab。内容搜索的结果按关键词核对，文件名因为文件变化重搜时不打断内容搜索。外接硬盘上 Windows 的系统文件夹和 $ 开头的系统文件只在盘的最上一层跳过，AppData 在哪一层都跳过。接上、拔掉硬盘时只有外接硬盘真的变了才重新扫描。第一次呼出时才开始建索引，让系统询问“桌面”等文件夹权限发生在用户主动打开的时候。
-- **文件内容搜索**：不用聚焦（Spotlight）。聚焦查短词慢、拿不到匹配处的文字、外接 NTFS 盘通常不建索引、用户排除的文件夹搜不到。改为自己建 SQLite FTS5 索引（系统自带的 libsqlite3，macOS 27 上是 3.54），放在 `~/Library/Application Support/MacShun/ContentIndex/`。
-  - 要读哪些文件由文件名索引告诉它（扫描完、FSEvents 有变化时交过来文件列表和范围），按修改时间和大小判断要不要重读。程序依赖包（node_modules、site-packages、vendor 等）和生成的文件夹（dist、build、coverage、target）不读，压缩过的 `.min.js` 和锁文件（package-lock.json 等）不读。日志（.log）不读：一直在写，FSEvents 每秒报一次变化，会反复重读。网页去掉脚本、样式和标签再收录。名字里带 cache 的文件夹不读（实测一个缓存文件夹里有 9000 多张缩略图）。
-  - 图片（png、jpg、heic、webp 等）和没有文字层的扫描版 PDF 用系统的文字识别（Vision，简体、繁体中文和英文，和聚焦一样）。比 100×200 像素还小的图（图标）先读文件头判断，不认。识别放在子进程里（`--extract-image-text`，后台优先级），一次两张，排在所有文件的最后；实测每张 0.2–0.6 秒（含启动进程），开机后第一次加载模型约 12 秒，子进程内存约 80 MB。扫描版 PDF 认前 20 页，每页按长边约 2000 像素画出来。图片按照片里记的方向转正（手机竖拍的照片），超过 3000 万像素的按比例缩小再认。设置里可以关掉，关掉后重新扫描一遍，图片从内容索引里去掉，扫描版 PDF 也不再认字（子进程带不带 `--ocr`）；再打开时没读出字的 PDF 重新读。PDF 和图片的子进程都是后台优先级，自己最多活 90 秒（`alarm`），主程序退出或崩了也不会留下。子进程起不来、超时（电脑太忙）算“这次没读成”，不记进数据库，下次启动再读；子进程崩了才算文件坏了。崩溃标记只记在本进程里读的文件（PDF、图片在子进程里读，崩了不影响本进程）。“应用程序”和系统文件夹只按名字搜，不读内容。
-  - 从搜索框打开过的文件记在 `OpenHistory`（UserDefaults，最多 300 个，关掉文件搜索时清空）：打开次数最多算 6 次、每次 3 分，一周内打开过再加 6 分，加在文件名得分上；内容结果里打开过的往前放。
-  - 中文分词：存进去之前每个汉字前后加空格，用 `unicode61` 分成单字；查询时一个词变成短语（“合 同”），所以两个字的词也能搜，不需要词典。两个字之间隔着标点时加一个私用区字符 U+E000 当分隔记号（unicode61 把私用区字符当成词），词组就不会跨过标点（“符合。同时”不算“合同”）；空格、换行不加。英文结尾两个以上字母时按前缀匹配；只有一个字母或数字的词不参与（以它开头的词太多，搜得慢）。至少两个汉字或三个字母才搜内容。
-  - 读文件前把这一批的路径写进 `reading`（用 0 分开），读完删掉；正常退出时也删掉。下次启动还在说明读的时候程序被结束了：只有一个文件就记成“没有内容”（文件改过才再读），有好几个就把它们改成一个一个单独读，再出事就知道是哪个。写数据库有一步失败（例如磁盘满）就回滚整个事务，重新读出文件列表。
-  - 全文索引是 contentless 的（不存原文）；原文用 zlib 压缩后另存一份，用来截取结果里显示的那一行。contentless 表删除时要交回原来的文字，所以从存的原文重新算一遍（不依赖 3.43 才有的 `contentless_delete`）。
-  - 读文字：txt/csv/json 依次试 UTF-8、UTF-16（BOM）、GB18030，JSON 里的 `\uXXXX` 换回汉字；docx/xlsx/pptx 用 libcompression 自己解 zip，再用 XMLParser 取文字（不用 textutil，启动进程每个文件要 90 毫秒）；xlsx 只读文字格子；pdf 用 PDFKit，最多 100 页。每个文件最多收录 512 KB 文字，Office 文件所有部分加起来最多解压 256 MB。zip 整个读进内存、不用内存映射（读的时候文件被截短会 SIGBUS）。iCloud 里还没下载的文件（`SF_DATALESS`）不读，免得触发下载。
-  - 一批十几个文件几个核同时读（解析、压缩、分词），读完在一个事务里写进数据库；PDF 一次四个。外接硬盘边扫边读，不等全部扫完。读完后调用 `malloc_zone_pressure_relief` 把用过的大块内存还给系统。
-  - 实测（个人文件夹加 4 块 NTFS 盘，1.8 万个文件有内容）：第一次从启动到全部读完 24 秒，索引 215 MB；以后每次启动只检查修改时间。搜索 3–19 毫秒。
-  - 文件与功能搜索沿用当前输入法，可直接输入中文问句、文件名或拼音。
-- **窗口到前台**：macOS 14 起是协作式激活，用户正在用别的程序时，菜单栏程序自己请求激活会被拒绝，设置窗口会被挡在后面（自测复现过）。`App/Foreground.swift` 先正常请求激活并把窗口摆到最上面，没激活成功再用辅助功能接口把本程序设为前台。
-- **读取剪贴板**：从 macOS 15.4 起，程序在后台读剪贴板会触发系统询问。剪贴板历史要求用户在“系统设置 → 隐私与安全性 → 粘贴”里把 Mac顺 设为“始终允许”；没设好之前不自动读取，避免每次复制都弹窗。
-- **系统功能搜索**：默认与文件名一起检索本地目录中的 macOS 设置和工具；“系统”范围可以单独浏览。匹配中英文名称、拼音、Windows 叫法，以及由对象和意图组成的口语表达。文件结果与系统入口使用不同类型，只有文件可预览、定位或删除。
-- **拼音搜索**：用系统自带的 `CFStringTransform` 逐字转拼音。系统按字取最常见读音，`地`、`长` 的默认读音不对，`银行`、`重新`、`音乐`、`调整` 等多音字词也会转错，所以在 `Pinyin.swift` 里维护了纠正表。剪贴板、文件和设置搜索都沿用当前输入法，等候选词上屏后再更新查询。
-- **签名**：开发期间用固定的自签名证书（`scripts/dev-cert.sh`），放在单独的钥匙串里。签名要求绑定这张证书，重新编译后权限不用重新授予。
-- **应用标识**：`io.github.lingcore.winshun`。程序原名 Win顺，改名 Mac顺 时应用标识和签名证书（`WinShun Development`）都没改：改了它们所有人都要重新授权，设置也要搬家。改名前留下的数据文件夹和开机自启由 `App/FormerName.swift` 接过来。
-- **只装 Command Line Tools 时的限制**：macOS 27 SDK 里 SwiftUI 的 `@State` 是宏，它的插件只随 Xcode 提供，所以代码里不用 `@State`；Swift Testing 的宏插件在 `plugins/testing` 子目录里，`scripts/test.sh` 会把路径告诉编译器。
-- **README 截图**：`scripts/readme-shots.sh` 把 `scripts/readme-shots/main.swift` 和程序源码一起编译，用假数据离屏渲染设置窗口、剪贴板面板、文件搜索框和贴靠助手，中文、英文 × 浅色、深色各一套，写到 `docs/images`。不读写真实配置和剪贴板历史；假文件和假显示器通过只在 DEBUG 编译里有的 `showPreview` 塞进去。分屏页底部有一条按真实系统设置显示的提示（系统自带的拖动分屏开着时），截图把窗口底边切在它上面，所以那张图的高度是按两种语言分别调的。
+### 1. 事件拦截与设备区分
+- `EventTapService` 在独立线程拦截键盘、滚轮和鼠标侧键事件，避免界面繁忙时阻塞输入。共享配置和前台状态一律通过 `Locked` 传递。
+- `InputDeviceMonitor` 通过 IOKit 监听各输入设备原始事件，识别当前操作的键盘或鼠标：鼠标滚轮和加速按设备保存设置；键盘按设备分别记住 Windows / Mac 模式（`LayoutInference`），默认由 `KeyMapper.systemShortcut` 兼容常见组合键。
+- 密码框等“安全键盘输入”状态下，macOS 会暂停将按键送入 `CGEventTap`，这是用户态事件拦截的固有系统边界。
 
-- **自动更新**：新版本发到 GitHub Releases，由拾穗发布服务同步版本和安装包信息。0.4.0 起，程序启动约 20 秒后及之后每 12 小时查询拾穗发布服务。0.3.0 仍查询 GitHub 的公开接口，升级后自动切换。
-  - 发现新版本时弹出“软件更新”窗口，显示发布说明里界面语言的那一半；自动检查发现的窗口不抢键盘焦点。“跳过这个版本”后不再自动提醒，“以后再说”隔 3 天再提醒。菜单栏和设置里一直有“更新到 x.y.z”。
-  - 点“立即更新”：依次试 `mirrors`（只收 https）和原始地址下载 `MacShun-<版本>.dmg`，每个地址下完都核对大小和发布服务给的 SHA-256，网络错误、非 2xx、大小或摘要不符就删掉文件换下一个，全部失败才报错（镜像是不可信的第三方，信任来自摘要和签名）；取消会停掉当前下载且不再试下一个。通过后挂载 dmg，把程序复制到同一磁盘的临时文件夹；**新程序必须满足正在运行的这个的“指定要求”**（同一个应用标识、同一张 “WinShun Development” 证书），否则不装。这既防止装上假安装包，也保证系统里的授权还认它。然后用 `replaceItemAt` 一步换掉原来的程序，等旧进程退出后打开新的。
-  - 程序自己下载的文件没有隔离标记，新版本打开时不会再出现“无法验证开发者”。在“应用程序”里原地更新不会被系统的“App 管理”保护拦下（2026-10-07 在 macOS 27 上实测，权限都还在）。
-    - 也按普通用户的路子测过：用 Chrome 下载测试版 dmg（带隔离标记）、拖进“应用程序”、在“隐私与安全性”里点“仍要打开”，再点“立即更新”：换成了新版本，系统没有再拦，三项权限都还在。测试版用 Info.plist 里的 `MacShunUpdateFeed` 指向本机的假发布。
-  - 装不上时（签名不一致、文件夹没有写权限）删除下载好的 dmg，“手动安装”只打开官网项目页，不打开校验失败的安装包。
-  - 以后换成 Developer ID 证书后，旧版本会拒绝装新版本（那时授权本来也要重新给），只能手动装一次。
-  - 发布说明的格式要保持：开头一段话中文在前、英文在后；“## 新功能 · What's new”下每条“- emoji 中文”，下一行缩进写英文。
+### 2. 文件索引与全文检索
+- 个人目录和应用程序使用 `FileIndex` 扫盘加 FSEvents 增量维护，外接硬盘（含 NTFS）改用 `readdir` 与多线程后台扫描，跳过缓存、依赖包（`node_modules` 等）、构建产物与日志文件。
+- `ContentIndex` 在 `~/Library/Application Support/MacShun/ContentIndex/` 维护 contentless SQLite FTS5 索引（WAL 模式读写分离），中文按单字加标点分隔符（`U+E000`）切分，原文经 zlib 压缩另存用于截取匹配行；PDF 与图片（含扫描件 OCR）在有 90 秒超时保护的隔离子进程中解析，避免单文件崩溃影响主进程。
+- `OpenHistory`（UserDefaults 最多 300 条）与 `PinnedSearchFolders` 分别保存打开加权和固定项目夹。
 
-## 已知限制
+### 3. 跨屏分屏与原生平铺
+- 拖动分屏采用只读全局 `NSEvent` 监听，不拦截或 warp 光标；`DragSnapIntent` 纯状态机负责外侧边缘即时预览与多屏共享边缘停留（180ms 稳定预览、250ms 跨屏保护）的防抖判定，并在屏幕参数变化或切屏时使旧候选失效。
+- macOS 15+ 自带边缘拖动平铺启用时，Mac顺 自动让出拖动分屏并在设置 › 通用提示冲突检测及关闭入口；`Win+方向键` 快捷键不受系统拖动平铺开关影响。
 
-- **安全输入**：密码框获得焦点时（以及部分应用开启“安全键盘输入”时），macOS 不把按键交给事件拦截，Mac顺 的快捷键此时无法触发。这是 `CGEventTap` 的限制，只有驱动层的方案（例如 Karabiner-Elements）能绕过。
-- 不能区分是哪个键盘按的键，所以 Windows 键盘和 Mac 键盘同时使用时只能选一种布局。
-- 滚轮方向、按行滚动只对一格一格的滚轮生效；触控板和妙控鼠标是连续滚动，交给系统设置。
-- 同型号的两个鼠标共用一组设置（按厂商号、产品号和名称识别）。
-- Alt+F4 换成 ⌘Q，会退出整个程序（包括它的其他窗口）。
+### 4. 光标大小、显示器与性能监控
+- `CursorSizeController` 优先写入 `com.apple.universalaccess` 的 `mouseDriverCursorSize`（需完全磁盘访问权限），无该权限时退回到运行时周期性调用 `CGSSetCursorScale` 并在退出时恢复。
+- `DisplayScaling` 仅保留原生分辨率及渲染像素不少于原生分辨率的清晰 HiDPI 档位，修改通过 `CGCompleteDisplayConfiguration(.permanently)` 持久化。
+- `PerformanceMonitor` 在关闭监控、单指标关闭或系统睡眠时停止采集并清理缓存；`ChipTemperature` 与 `SystemMetrics` 改写了 MIT 许可的 `exelban/stats` 只读 SMC / GPU 统计定义，详见根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
-## 真机自测
-
-`scripts/selftest.sh` 让 Mac顺 自己模拟按键、滚轮和鼠标侧键（`App/SelfTest.swift`）。这些事件和真实按键一样经过事件拦截，自测再检查测试窗口收到的按键、光标位置、剪贴板内容和 Finder 里的文件。运行约半分钟，期间不要操作键盘鼠标。
-
-自测期间暂停键盘模式学习，因为会模拟两种布局。覆盖的场景包括：
-
-- K1、K2：Ctrl+A/C/V/X 全选、复制、粘贴、剪切，Ctrl+Z/Y 撤销和重做；Home/End、Shift+End、Ctrl+Home/End、Ctrl+方向键和 Ctrl+Backspace 的真实文字和光标效果（`scripts/selftest.sh keyboard` 只测键盘，并保留全部剪贴板格式）
-- C1、C2：Win+V 打开面板，输入 yhk 搜到“银行卡号”，Enter 粘贴到原来的窗口
-- F1：连按两下 Ctrl 打开搜索框，开着时再连按、按一下 Ctrl 接着 Ctrl+V 都不关；在搜索框里 Win+V 打开剪贴板面板、Esc 回来、选一条填进搜索框；粘贴“桌面/…/art/gpt/style_reference.png”搜到桌面上的测试文件；按“下载”搜到个人文件夹里的 Downloads；Ctrl+Enter 在访达中显示且不弹出右键菜单（`scripts/selftest.sh search` 只测这几项）
-- M3、M4、M5：慢转、快转都是每格 3 行；Ctrl+滚轮变成 ⌘=；侧键变成 ⌘[ / ⌘]；侧键设成 ⌘A 时和按 ⌘A 一样全选，设成“不处理”时原样交给程序
-- K3：Alt+F4 → ⌘Q（⌥F4、⌘F4 都行）；⌥V 在两种模式下都打开剪贴板历史；Win+Space 切换输入法；Alt+Tab 切换到上一个程序并且 ⌘ 正常松开；Win+E 打开 Finder
-- K4：F2 进入重命名，Backspace 返回上一级，Enter 打开文件夹，Ctrl+X、Ctrl+V 移动文件
-
-自测中发现并修好的问题：
-- 公开接口创建的 HID 客户端不能修改 `HIDUseLinearScalingMouseAcceleration`，改用 IOKit 里未公开的 `IOHIDEventSystemClientCreate`。
-- 菜单栏程序没有“编辑”菜单，本程序自己的输入框里 ⌘C/⌘V/⌘A 都不起作用。已加上不显示的主菜单。
-- 文件搜索里 Ctrl+Enter 弹出右键菜单、打不开访达：Ctrl+Enter 是系统“显示快捷菜单”的快捷键，`NSApplication` 在交给窗口之前就处理了；直接调用窗口 `sendEvent` 的模拟测试测不出来。改用本地事件监听接住。
-- 作者的 MCHOSE K99 处于 Mac 模式，Alt 键发出 ⌘、Win 键发出 ⌥，但设置默认是“Alt 发出 ⌥”，结果要按 Alt+S 才能打开聚焦搜索。布局选项因此改成按“紧挨空格的键发出什么”命名，并加了自动识别。
-
-`scripts/update-test.sh` 测自动更新：在本机搭一个假的 GitHub 发布（99.0.0），让一份临时的 Mac顺 自己下载、核对、替换、重新打开；再用一个临时签名的 99.0.0 确认会被拒绝。2026-10-07 10 项全部通过。
-
-## 待验证（只能人工确认）
-
-- Win+S：真实按键能打开聚焦搜索（作者 2026-10-02 确认），但自测检测不到聚焦搜索窗口，原因未查明。
-- Win+D：程序坞接口可以找到，效果要看屏幕。
-- Win+L：锁屏接口可以找到，自测不会真的锁屏。
-- Alt+Tab 按住 Alt 时切换器能否停住、连按 Tab 能否选择（自测只验证了快速切换）。
-- 真实鼠标的滚轮方向。模拟的滚轮事件不经过系统的“自然滚动”反转，所以自测只验证了行数，没有验证方向。
-- 浏览器（Chrome 等）里能否问到输入框焦点。问不到时 Home/End 保持 Mac 原样。
-- 指针加速、指针速度属性是否会被系统定期改回（程序每 30 秒检查一次）。
-- 指针速度调快后的实际手感（自测只能确认系统收下了这个值，模拟的鼠标移动不经过系统的指针加速）。
-
-## 可以参考的开源项目
-
-| 项目 | 许可证 | 参考什么 |
-|---|---|---|
-| Maccy（https://github.com/p0deje/Maccy） | MIT | 剪贴板监听、历史存储、弹出面板 |
-| LinearMouse（https://github.com/linearmouse/linearmouse） | MIT | 按设备设置指针和滚轮、侧键前进后退 |
-| Karabiner-Elements（https://github.com/pqrs-org/Karabiner-Elements） | 待核实 | Windows 键位规则的设计，按应用排除的名单 |
-| Rectangle（https://github.com/rxhanson/Rectangle） | MIT（已核实） | 分屏参考了它处理窗口的做法（见“分屏”），没有借用代码 |
-
-目前没有借用任何第三方代码。借用代码时，要登记到根目录的 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
-
-## 编码约定
-
-- 每个源文件第一行写 `// SPDX-License-Identifier: MIT`。
-- 事件拦截线程和界面线程之间共享的状态一律用 `Locked` 包起来；输入法、AppKit 的接口只在主线程上调用。
-- 签名证书、公证密码、Sparkle 私钥这些不能放进仓库，`.gitignore` 里已经排除了常见的证书和密钥文件。
+### 5. 更新、统计与构建环境
+- `Updater` 通过拾穗发布服务检查版本，按 `mirrors` 优先、GitHub 原始地址兜底的顺序下载 DMG，强制核对字节大小、SHA-256 与同证书代码签名（`WinShun Development` / `io.github.lingcore.winshun`）后原地替换重启。
+- `Package.swift` 当前使用 Swift 5 语言模式；为兼容仅安装 Command Line Tools（无 Xcode SwiftUI 宏插件）的环境，SwiftUI 视图不使用 `@State`。
