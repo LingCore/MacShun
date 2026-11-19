@@ -129,10 +129,14 @@ final class PermissionGuide {
         return plan
     }
 
+    /// 每次启动或停止递增，取消在途的延迟推进和延迟重启回调。
+    private var sessionGeneration = 0
+
     /// 从这些权限里挑出还没授权的，一项一项引导。
     func start(_ kinds: [PermissionKind], state: AppState) {
         self.state = state
         guard !model.relaunching else { return }
+        sessionGeneration += 1
         queue = plan(kinds)
         model.step = 0
         guard !queue.isEmpty else {
@@ -148,11 +152,14 @@ final class PermissionGuide {
     }
 
     func stop() {
+        sessionGeneration += 1
         subscription = nil
         followTimer?.invalidate()
         followTimer = nil
         panel?.orderOut(nil)
         queue = []
+        model.granted = false
+        model.relaunching = false
     }
 
     private func next() {
@@ -174,9 +181,10 @@ final class PermissionGuide {
     func checkGranted() {
         guard !model.granted, panel?.isVisible == true, isGranted(model.kind) else { return }
         Log.app.notice("授权引导：\(self.model.kind.paneTitle, privacy: .public) 已开启")
+        let generation = sessionGeneration
         withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { model.granted = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
-            guard let self, self.model.granted else { return }
+            guard let self, self.sessionGeneration == generation, self.model.granted else { return }
             self.next()
         }
     }
@@ -192,9 +200,11 @@ final class PermissionGuide {
         // 引导里打勾和每秒的权限检查可能同时走到这里，只重启一次
         guard !model.relaunching else { return }
         Log.app.notice("授权引导：重启 Mac顺 让输入监控生效")
+        let generation = sessionGeneration
         model.relaunching = true
         showPanel()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.sessionGeneration == generation else { return }
             AppState.relaunch(showSettings: true)
         }
     }

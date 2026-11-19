@@ -169,7 +169,6 @@ struct SettingsView: View {
     let clipboardStore: ClipboardStore
     @ObservedObject var selection: SettingsSelection
     @ObservedObject var tiling = NativeTilingStatus.shared
-    @ObservedObject var performance = PerformanceMonitor.shared
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -285,7 +284,7 @@ struct SettingsView: View {
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .performance:
-            PerformanceSettings(config: $configStore.config.performance, monitor: performance)
+            PerformanceSettings(config: $configStore.config.performance, monitor: PerformanceMonitor.shared)
         case .general:
             GeneralSettings(
                 state: state, update: $configStore.config.update, updater: Updater.shared,

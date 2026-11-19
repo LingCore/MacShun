@@ -34,6 +34,7 @@ final class WindowSnapper {
     private var previewTask: DispatchWorkItem?
     private var dragGeneration = UUID()
     private var screenObserver: NSObjectProtocol?
+    private var spaceObserver: NSObjectProtocol?
     /// 自测用：系统自带的拖动分屏开着也照样处理拖动
     var ignoresNativeTiling = false
     /// 自测用：拖动时预览的位置（AX 坐标）
@@ -43,12 +44,22 @@ final class WindowSnapper {
         self.configStore = configStore
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.cancelDrag() }
+        ) { [weak self] _ in
+            self?.cancelDrag()
+            self?.assist.hide()
+        }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.cancelDrag()
+            self?.assist.hide()
+        }
     }
 
     deinit {
         if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
         previewTask?.cancel()
     }
 
@@ -203,6 +214,10 @@ final class WindowSnapper {
         var resolved = false
         /// 确定是在拖窗口（位置变了、大小没变）
         var moving = false
+        /// 上一次轮询窗口位置的时间（用于未确认拖动前限频，避免 1000Hz 鼠标刷 AX IPC）
+        var lastProbeTime: TimeInterval = 0
+        /// 本次拖动开始时缓存的系统平铺选项状态
+        let optionAcceleratorEnabled: Bool
         /// 拖之前的样子，分屏后恢复用
         var restoreFrame: CGRect?
     }
@@ -211,17 +226,34 @@ final class WindowSnapper {
     /// 在内容里拖（选文字、拖文件）不跟踪，免得每个拖动事件都去问一次窗口位置。
     private static let titleBarHeight: CGFloat = 80
 
+    /// 用轻量级 CGWindowList 预筛：若已知窗口编号不属于外部普通窗口或点击不在顶部标题栏区域，跳过后续 AX 查询。
+    private static func mightBeTitleBarDrag(windowNumber: CGWindowID, at point: CGPoint) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], windowNumber) as? [[String: Any]],
+              let info = list.first else { return true }
+        if let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid == getpid() { return false }
+        if let layer = info[kCGWindowLayer as String] as? Int, layer != 0 { return false }
+        if let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+           let bounds = CGRect(dictionaryRepresentation: boundsDict),
+           point.y - bounds.minY > titleBarHeight {
+            return false
+        }
+        return true
+    }
+
     private func handleMouse(_ event: NSEvent) {
-        // 事件的坐标与时间必须成对使用：主线程处理回调时，全局光标可能已经跨了屏。
-        let point = event.cgEvent?.location ?? ScreenGeometry.axPoint(NSEvent.mouseLocation)
         if event.type == .keyDown {
-            if event.keyCode == KeyCode.escape { cancelDrag() }
+            if drag != nil, event.keyCode == KeyCode.escape { cancelDrag() }
             return
         }
         if event.type == .flagsChanged {
-            if yieldsToNativeTiling(event.modifierFlags) { cancelDrag() }
+            guard let state = drag else { return }
+            if !ignoresNativeTiling && event.modifierFlags.contains(.option) && state.optionAcceleratorEnabled {
+                cancelDrag()
+            }
             return
         }
+        // 事件的坐标与时间必须成对使用：主线程处理回调时，全局光标可能已经跨了屏。
+        let point = event.cgEvent?.location ?? ScreenGeometry.axPoint(NSEvent.mouseLocation)
         switch event.type {
         case .leftMouseDown:
             cancelDrag()
@@ -231,15 +263,21 @@ final class WindowSnapper {
             }
             assist.hide()
             let number = event.cgEvent?.getIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent) ?? 0
+            let windowID: CGWindowID? = number > 0 ? CGWindowID(number) : nil
+            if let windowID, !Self.mightBeTitleBarDrag(windowNumber: windowID, at: point) {
+                return
+            }
             let screens = ScreenGeometry.screens()
-            drag = DragState(start: point, windowNumber: number > 0 ? CGWindowID(number) : nil,
+            let optionTiling = !ignoresNativeTiling && NativeTiling.optionAcceleratorEnabled
+            drag = DragState(start: point, windowNumber: windowID,
                              screens: screens,
-                             intent: DragSnapIntent(screens: screens.map(\.frame), cursor: point, time: event.timestamp))
+                             intent: DragSnapIntent(screens: screens.map(\.frame), cursor: point, time: event.timestamp),
+                             optionAcceleratorEnabled: optionTiling)
 
         case .leftMouseDragged:
             guard var state = drag else { return }
             // 系统的“按住 ⌥ 拖动平铺”开着时，按着 ⌥ 拖让给系统
-            if yieldsToNativeTiling(event.modifierFlags) || state.screens != ScreenGeometry.screens() {
+            if !ignoresNativeTiling && event.modifierFlags.contains(.option) && state.optionAcceleratorEnabled {
                 cancelDrag()
                 return
             }
@@ -259,6 +297,12 @@ final class WindowSnapper {
             }
             guard let window = state.window, let startFrame = state.startFrame else { return }
             if !state.moving {
+                // 顶部栏选字/拖标签页时限制 AX 帧探测频率（≤ 30Hz），避免高频鼠标拖卡主线程
+                if event.timestamp - state.lastProbeTime < 0.03 {
+                    drag = state
+                    return
+                }
+                state.lastProbeTime = event.timestamp
                 guard let frame = window.frame, frame.size == startFrame.size else {
                     cancelDrag()   // 在改大小
                     return
@@ -384,6 +428,7 @@ final class WindowSnapper {
 /// 和我们的拖动分屏同时开着会打架：两边都去摆窗口。
 enum NativeTiling {
     private static let domain = "com.apple.WindowManager"
+    private static let defaults = UserDefaults(suiteName: domain)
 
     /// 拖到左右边、四个角平铺，或者拖到上边（菜单栏）填满屏幕，开着任何一个都会和我们抢
     static var dragTilingEnabled: Bool {
@@ -399,13 +444,13 @@ enum NativeTiling {
 
     /// 没写过就是开着（系统默认）
     private static func enabled(_ key: String) -> Bool {
-        guard let defaults = UserDefaults(suiteName: domain), defaults.object(forKey: key) != nil else { return true }
+        guard let defaults, defaults.object(forKey: key) != nil else { return true }
         return defaults.bool(forKey: key)
     }
 
     /// 用户在设置里点了按钮才调用：关掉系统自带的拖动分屏（和在系统设置里关掉一样）
     static func disableDragTiling() {
-        guard let defaults = UserDefaults(suiteName: domain) else { return }
+        guard let defaults else { return }
         for key in ["EnableTilingByEdgeDrag", "EnableTopTilingByEdgeDrag", "EnableTilingOptionAccelerator"] {
             defaults.set(false, forKey: key)
         }

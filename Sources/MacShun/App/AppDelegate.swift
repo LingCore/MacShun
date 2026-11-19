@@ -258,6 +258,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.app.notice("权限状态：\(summary, privacy: .public)")
     }
 
+    private var tapRetryTicks = 0
+
     /// 每秒检查一次权限，授权后马上启用，不用重启程序。
     private func startPermissionPolling() {
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -266,8 +268,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.state.refreshPermissions()
 
             let after = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
-            if before != after || !self.state.eventTapRunning {
+            if before != after {
+                self.tapRetryTicks = 0
                 self.startEventTapsIfPossible()
+            } else if !self.state.eventTapRunning, after.0 {
+                // 辅助功能已授予但事件拦截暂未拉起时退避重试，避免每秒空转刷日志
+                self.tapRetryTicks += 1
+                if self.tapRetryTicks >= 5 {
+                    self.tapRetryTicks = 0
+                    self.startEventTapsIfPossible()
+                }
+            } else {
+                self.tapRetryTicks = 0
             }
             // macOS 27：刚开了“设备控制和数据访问”（不管是在引导里还是在系统弹窗里开的），
             // 输入监控要重启才生效，直接重启，不用用户再点

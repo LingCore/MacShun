@@ -543,15 +543,15 @@ private struct WorkItem: View {
             }
             .buttonStyle(.plain)
             .help(url.absoluteString)
+            .linkCursor()
             .onHover { inside in
                 if inside {
-                    hover.id = work.id
-                    NSCursor.pointingHand.push()
+                    hover.enter(work.id)
                 } else {
-                    if hover.id == work.id { hover.id = nil }
-                    NSCursor.pop()
+                    hover.leave(work.id)
                 }
             }
+            .onDisappear { hover.leave(work.id) }
         } else {
             name
         }
@@ -562,6 +562,24 @@ private struct WorkItem: View {
 private final class WorkLinkHover: ObservableObject {
     static let shared = WorkLinkHover()
     @Published var id: String?
+    private var cursorPushed = false
+
+    func enter(_ workID: String) {
+        id = workID
+        if #unavailable(macOS 15.0), !cursorPushed {
+            NSCursor.pointingHand.push()
+            cursorPushed = true
+        }
+    }
+
+    func leave(_ workID: String) {
+        guard id == workID else { return }
+        id = nil
+        if cursorPushed {
+            NSCursor.pop()
+            cursorPushed = false
+        }
+    }
 }
 
 /// 作品图标的容器：跟场景同色调的圆角方块，内容四边留出同样的间隙。占位的那个用虚线边。

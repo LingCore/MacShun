@@ -151,4 +151,22 @@ struct DisplayScalingTests {
         let list = modes(["2560x1440@2560x1440", "1280x1024@2560x2048"])
         #expect(DisplayScaling.options(from: list, preferredRefresh: 60).map(\.mode.width) == [2560])
     }
+
+    @Test func acceptsRoundedNotchedMacBookHiDPIModes() {
+        // MacBook Air 13" (2560×1664) 的默认 HiDPI 1470×956@2x 与更多空间 1710×1112@2x 逻辑比值略有取整偏差
+        let mba13 = modes([
+            "1280x832@2560x1664",
+            "1470x956@2940x1912",
+            "1710x1112@3420x2224",
+            "2560x1664@2560x1664",
+            "1280x720@2560x1440", // 16:9，非原生比例，仍应排除
+        ], native: "2560x1664@2560x1664")
+        let widths = DisplayScaling.options(from: mba13, preferredRefresh: 60).map(\.mode.width)
+        #expect(widths == [2560, 1710, 1470, 1280])
+
+        // 仅含 HiDPI 原生标记时仍能正确识别原生像素尺寸
+        let hidpiOnly = modes(["1512x982@3024x1964", "1800x1169@3600x2338"], native: "1512x982@3024x1964")
+        #expect(DisplayScaling.nativeSize(of: hidpiOnly)! == (3024, 1964))
+        #expect(DisplayScaling.options(from: hidpiOnly, preferredRefresh: 60).map(\.mode.width) == [1800, 1512])
+    }
 }

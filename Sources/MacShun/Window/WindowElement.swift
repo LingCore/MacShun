@@ -75,26 +75,32 @@ struct WindowElement: SnappableWindow {
         return WindowElement(element: window, pid: app.processIdentifier)
     }
 
-    /// 某个位置下面的窗口
+    /// 某个位置下面的窗口（跳过本程序自身窗口，避免在主线程上对自身调用 AX 死锁到超时）。
     static func under(_ point: CGPoint) -> WindowElement? {
         // 不给系统级元素设超时：那会改掉整个程序的默认超时，键盘那边查焦点要靠更短的超时
         let systemWide = AXUIElementCreateSystemWide()
         var hit: AXUIElement?
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &hit) == .success,
               var current = hit else { return nil }
+        var pid: pid_t = 0
+        AXUIElementGetPid(current, &pid)
+        guard pid != 0, pid != getpid() else { return nil }
+        AXUIElementSetMessagingTimeout(current, Self.timeout)
         // 点到的是按钮、文字这些，往上找到窗口
         for _ in 0 ..< 30 {
             if current.string(kAXRoleAttribute) == kAXWindowRole as String { break }
             if let window: AXUIElement = current.value(kAXWindowAttribute) {
                 current = window
+                AXUIElementSetMessagingTimeout(current, Self.timeout)
                 break
             }
             guard let parent: AXUIElement = current.value(kAXParentAttribute) else { return nil }
             current = parent
+            AXUIElementSetMessagingTimeout(current, Self.timeout)
         }
         guard current.string(kAXRoleAttribute) == kAXWindowRole as String else { return nil }
-        var pid: pid_t = 0
         AXUIElementGetPid(current, &pid)
+        guard pid != 0, pid != getpid() else { return nil }
         return WindowElement(element: current, pid: pid)
     }
 

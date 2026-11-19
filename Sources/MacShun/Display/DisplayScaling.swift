@@ -64,23 +64,32 @@ enum DisplayScaling {
         abs(rate - rate.rounded()) < 0.005 ? "\(Int(rate.rounded())) Hz" : String(format: "%.2f Hz", rate)
     }
 
-    /// 屏幕原生分辨率：标着原生的模式；没有标记时取最大的 1 倍模式。
+    /// 屏幕原生分辨率：标着原生的模式（优先 1 倍，再退回 HiDPI 原生）；没有标记时取最大的 1 倍模式。
     static func nativeSize(of modes: [ModeSpec]) -> (width: Int, height: Int)? {
         if let native = modes.first(where: { $0.isNative && !$0.isHiDPI }) {
             return (native.pixelWidth, native.pixelHeight)
         }
+        if let native = modes.first(where: { $0.isNative }) {
+            return (native.pixelWidth, native.pixelHeight)
+        }
         let flat = modes.filter { $0.pixelWidth == $0.width }
-        guard let largest = flat.max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }) else { return nil }
+        if let largest = flat.max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }) {
+            return (largest.pixelWidth, largest.pixelHeight)
+        }
+        guard let largest = modes.max(by: { $0.pixelWidth * $0.pixelHeight < $1.pixelWidth * $1.pixelHeight }) else { return nil }
         return (largest.pixelWidth, largest.pixelHeight)
     }
 
     /// 清晰的档位，按百分比从小到大。同一个大小有几种刷新率时，优先用 preferredRefresh（一般是现在的刷新率）。
     static func options(from modes: [ModeSpec], preferredRefresh: Double) -> [Option] {
-        guard let native = nativeSize(of: modes) else { return [] }
+        guard let native = nativeSize(of: modes), native.width > 0, native.height > 0 else { return [] }
+        let nativeAspect = Double(native.width) / Double(native.height)
         var best: [String: Option] = [:]
         for (index, mode) in modes.enumerated() where !mode.isUnusual {
-            // 宽高比要和屏幕一样，不然画面会被拉伸或加黑边
-            guard mode.width * native.height == mode.height * native.width else { continue }
+            guard mode.width > 0, mode.height > 0 else { continue }
+            // 宽高比要接近原生比例（允许刘海屏/带鱼屏 HiDPI 逻辑分辨率取整带来的 ~1% 误差），排除 16:10 / 4:3 / 5:4 等变形档位
+            let modeAspect = Double(mode.width) / Double(mode.height)
+            guard abs(modeAspect - nativeAspect) / nativeAspect <= 0.01 else { continue }
             let atNative = !mode.isHiDPI && mode.pixelWidth == native.width && mode.width == native.width
             let sharpHiDPI = mode.isHiDPI && mode.pixelWidth >= native.width
             guard atNative || sharpHiDPI else { continue }

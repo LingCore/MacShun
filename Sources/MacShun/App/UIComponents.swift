@@ -276,13 +276,16 @@ struct VisualEffect: NSViewRepresentable {
 
 /// 应用的图标和名字，按应用标识查，查过的记下来。只在主线程上使用。
 enum AppInfo {
-    private static var icons: [String: NSImage] = [:]
+    private static var icons: [String: NSImage?] = [:]
     private static var names: [String: String] = [:]
 
     static func icon(_ bundleID: String?) -> NSImage? {
         guard let bundleID else { return nil }
         if let cached = icons[bundleID] { return cached }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            icons[bundleID] = Optional<NSImage>.none
+            return nil
+        }
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         icons[bundleID] = icon
         return icon

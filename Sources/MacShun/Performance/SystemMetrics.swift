@@ -165,7 +165,9 @@ final class SystemMetricsSampler {
             }
         }
         guard result == KERN_SUCCESS else { return nil }
-        return MemoryUsage.calculate(total: Double(ProcessInfo.processInfo.physicalMemory), pageSize: Double(vm_page_size),
+        var hostPageSize: vm_size_t = vm_page_size
+        _ = host_page_size(host, &hostPageSize)
+        return MemoryUsage.calculate(total: Double(ProcessInfo.processInfo.physicalMemory), pageSize: Double(hostPageSize),
                                      active: info.active_count, inactive: info.inactive_count, speculative: info.speculative_count,
                                      wired: info.wire_count, compressed: info.compressor_page_count,
                                      purgeable: info.purgeable_count, external: info.external_page_count)

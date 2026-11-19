@@ -36,7 +36,6 @@ struct DragSnapIntent {
         let now = max(time, lastTime)
         let distance = hypot(cursor.x - lastPoint.x, cursor.y - lastPoint.y)
         let elapsed = now - lastTime
-        let speed = elapsed > 0 ? distance / elapsed : (distance > 0 ? .infinity : 0)
         lastPoint = cursor
         lastTime = now
 
@@ -68,7 +67,10 @@ struct DragSnapIntent {
             return
         }
 
-        if speed > Self.approachSpeed || hypot(cursor.x - anchor.x, cursor.y - anchor.y) > Self.motionTolerance {
+        // 已预览时只按相对锚点的位移判断是否撤离，避免高回报率鼠标或松手瞬间微抖/时间戳持平导致误取消。
+        let displaced = hypot(cursor.x - anchor.x, cursor.y - anchor.y) > Self.motionTolerance
+        let fastApproach = target != next && elapsed > 0 && distance > 1.5 && (distance / elapsed) > Self.approachSpeed
+        if displaced || fastApproach {
             enteredAt = now
             anchor = cursor
         }

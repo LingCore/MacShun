@@ -11,6 +11,8 @@ final class SnapAssist {
     private var panel: SnapAssistPanel?
     /// 要填的那一半（AX 坐标）
     private var area: CGRect = .zero
+    private var showToken = 0
+    private static let scanQueue = DispatchQueue(label: "MacShun.SnapAssist.scan", qos: .userInitiated)
 
     init(onChoose: @escaping (WindowElement, CGRect) -> Void) {
         self.onChoose = onChoose
@@ -21,8 +23,28 @@ final class SnapAssist {
     var isVisible: Bool { panel?.isVisible == true }
 
     func show(area: CGRect, excluding id: CGWindowID?) {
-        let candidates = Self.candidates(excluding: id)
-        guard !candidates.isEmpty else { return }
+        showToken += 1
+        let token = showToken
+        let entries = Self.collectWindowEntries(excluding: id)
+        guard !entries.isEmpty else {
+            hide()
+            return
+        }
+        // AX 跨进程查询挪到后台队列，避免有卡死的外部应用阻塞主线程和事件响应。
+        Self.scanQueue.async { [weak self] in
+            let candidates = Self.resolveCandidates(from: entries)
+            DispatchQueue.main.async {
+                guard let self, self.showToken == token else { return }
+                guard !candidates.isEmpty else {
+                    self.hide()
+                    return
+                }
+                self.present(candidates, in: area)
+            }
+        }
+    }
+
+    private func present(_ candidates: [SnapAssistModel.Candidate], in area: CGRect) {
         self.area = area
         let frame = ScreenGeometry.appKitRect(area).insetBy(dx: 8, dy: 8)
         model.columns = SnapAssistView.columns(forWidth: frame.width)
@@ -32,8 +54,8 @@ final class SnapAssist {
         self.panel = panel
         panel.setFrame(frame, display: true)
         panel.alphaValue = 0
-        FrontAppTracker.shared.snapAssistActive.set(true)
         panel.makeKeyAndOrderFront(nil)
+        FrontAppTracker.shared.snapAssistActive.set(panel.isKeyWindow)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             panel.animator().alphaValue = 1
@@ -41,6 +63,7 @@ final class SnapAssist {
     }
 
     func hide() {
+        showToken += 1
         FrontAppTracker.shared.snapAssistActive.set(false)
         guard let panel, panel.isVisible else { return }
         panel.orderOut(nil)
@@ -61,13 +84,21 @@ final class SnapAssist {
         return panel
     }
 
-    /// 屏幕上其他的普通窗口，从前到后排。
-    static func candidates(excluding excluded: CGWindowID?) -> [SnapAssistModel.Candidate] {
+    private struct WindowEntry {
+        let number: CGWindowID
+        let pid: pid_t
+        let appName: String
+        let icon: NSImage
+    }
+
+    /// 在主线程采集 CGWindowList 与 AppKit 元数据（快速无 AX IPC）。
+    private static func collectWindowEntries(excluding excluded: CGWindowID?) -> [WindowEntry] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return [] }
         let ownPID = getpid()
-        var elementsByPID: [pid_t: [CGWindowID: WindowElement]] = [:]
-        var result: [SnapAssistModel.Candidate] = []
+        var appCache: [pid_t: (name: String, icon: NSImage)?] = [:]
+        let fallbackIcon = NSWorkspace.shared.icon(for: .application)
+        var entries: [WindowEntry] = []
         for info in list {
             guard let number = info[kCGWindowNumber as String] as? CGWindowID, number != excluded,
                   let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
@@ -75,24 +106,49 @@ final class SnapAssist {
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
                   let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict),
-                  bounds.width >= 120, bounds.height >= 80,
-                  let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular
+                  bounds.width >= 120, bounds.height >= 80
             else { continue }
-            if elementsByPID[pid] == nil {
+            let appMeta: (name: String, icon: NSImage)?
+            if let cached = appCache[pid] {
+                appMeta = cached
+            } else if let app = NSRunningApplication(processIdentifier: pid), app.activationPolicy == .regular {
+                let meta = (app.localizedName ?? "", app.icon ?? fallbackIcon)
+                appCache[pid] = meta
+                appMeta = meta
+            } else {
+                appCache[pid] = Optional<(String, NSImage)>.none
+                appMeta = nil
+            }
+            guard let appMeta else { continue }
+            entries.append(WindowEntry(number: number, pid: pid, appName: appMeta.name, icon: appMeta.icon))
+        }
+        return entries
+    }
+
+    /// 可在后台队列运行：通过 AX 筛选标准且可移动的非最小化窗口并读取标题。
+    private static func resolveCandidates(from entries: [WindowEntry]) -> [SnapAssistModel.Candidate] {
+        var elementsByPID: [pid_t: [CGWindowID: WindowElement]] = [:]
+        var result: [SnapAssistModel.Candidate] = []
+        for entry in entries {
+            if elementsByPID[entry.pid] == nil {
                 var map: [CGWindowID: WindowElement] = [:]
-                for window in WindowElement.windows(of: pid) {
+                for window in WindowElement.windows(of: entry.pid) {
                     if let id = window.windowID { map[id] = window }
                 }
-                elementsByPID[pid] = map
+                elementsByPID[entry.pid] = map
             }
-            guard let window = elementsByPID[pid]?[number], window.isStandard, !window.isMinimized, window.isMovable else { continue }
-            let appName = app.localizedName ?? ""
-            let title = window.title.flatMap { $0.isEmpty ? nil : $0 } ?? appName
-            result.append(.init(id: number, window: window, title: title, appName: appName,
-                                icon: app.icon ?? NSWorkspace.shared.icon(for: .application)))
+            guard let window = elementsByPID[entry.pid]?[entry.number],
+                  window.isStandard, !window.isMinimized, window.isMovable else { continue }
+            let title = window.title.flatMap { $0.isEmpty ? nil : $0 } ?? entry.appName
+            result.append(.init(id: entry.number, window: window, title: title, appName: entry.appName, icon: entry.icon))
             if result.count >= 12 { break }
         }
         return result
+    }
+
+    /// 屏幕上其他的普通窗口，从前到后排。
+    static func candidates(excluding excluded: CGWindowID?) -> [SnapAssistModel.Candidate] {
+        resolveCandidates(from: collectWindowEntries(excluding: excluded))
     }
 }
 

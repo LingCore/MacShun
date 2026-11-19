@@ -147,8 +147,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func showUpdate() { UpdateWindowController.shared.show(activate: true) }
 
     @objc private func checkForUpdates() {
-        // 已经知道有新版本就直接给看；否则先开始检查，窗口里显示“正在检查”
-        if Updater.shared.available == nil { Updater.shared.check(manual: true) }
+        // 用户主动点“检查更新…”时总是重新查一次，避免停留在旧的 available 提示上错过更新版本
+        if Updater.shared.activity == .none { Updater.shared.check(manual: true) }
         UpdateWindowController.shared.show(activate: true)
     }
 }

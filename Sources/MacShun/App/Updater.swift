@@ -224,10 +224,11 @@ final class Updater: ObservableObject, @unchecked Sendable {
                 try await Task.detached(priority: .userInitiated) {
                     try Self.installPackage(dmg, into: target, expectedVersion: release.version)
                 }.value
+                try? FileManager.default.removeItem(at: work)
                 Log.app.notice("已更新到 \(release.version, privacy: .public)，重新打开")
                 DispatchQueue.main.async { AppState.relaunch() }
             } catch {
-                self?.fail(error)
+                self?.fail(error, token: token)
             }
         }
     }
@@ -235,6 +236,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
     /// 取消下载
     func cancel() {
         guard case .downloading = activity else { return }
+        installToken = UUID()
         installTask?.cancel()
         installTask = nil
         activity = .none
@@ -330,11 +332,12 @@ final class Updater: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func fail(_ error: Error) {
+    private func fail(_ error: Error, token: UUID) {
         // 用户点了取消
         if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
         Log.app.error("更新失败：\(error.localizedDescription, privacy: .public)")
         DispatchQueue.main.async {
+            guard self.installToken == token else { return }
             self.activity = .none
             self.installTask = nil
             self.problem = error.localizedDescription
@@ -367,10 +370,23 @@ final class Updater: ObservableObject, @unchecked Sendable {
         let parent = target.deletingLastPathComponent()
         guard fm.isWritableFile(atPath: parent.path) else { throw UpdateError.notWritable(parent.path) }
 
-        let mount = dmg.deletingLastPathComponent().appendingPathComponent("mount", isDirectory: true)
+        // 挂载点独立放在 work 目录外，避免卸载失败时清理 work 误触挂载卷。
+        let mount = fm.temporaryDirectory.appendingPathComponent("MacShun-mount-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: mount, withIntermediateDirectories: true)
+        var attached = false
+        defer {
+            if attached {
+                if (try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])) == nil {
+                    Thread.sleep(forTimeInterval: 0.2)
+                    _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+                }
+            }
+            if ((try? fm.contentsOfDirectory(atPath: mount.path)) ?? []).isEmpty {
+                try? fm.removeItem(at: mount)
+            }
+        }
         try run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount.path])
-        defer { _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"]) }
+        attached = true
         guard let app = try fm.contentsOfDirectory(at: mount, includingPropertiesForKeys: nil)
             .first(where: { $0.pathExtension == "app" })
         else { throw UpdateError.noApp }
@@ -416,6 +432,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

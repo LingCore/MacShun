@@ -143,4 +143,17 @@ struct DragSnapIntentTests {
         intent.update(cursor: left, time: 0.36)
         #expect(intent.target == .init(position: .rightHalf, screen: 0, isShared: true))
     }
+
+    @Test func microTwitchOrTimestampTieOnReleaseKeepsArmedSharedPreview() {
+        var intent = drag()
+        intent.update(cursor: edge, time: 0.1)
+        intent.update(cursor: edge, time: 0.29)
+        let armed = intent.target
+        #expect(armed == .init(position: .rightHalf, screen: 0, isShared: true))
+        // 1000Hz 鼠标微抖（0.6pt / 1ms = 600pt/s）且仍在容差内：不应取消已出现的预览。
+        intent.update(cursor: CGPoint(x: edge.x - 0.6, y: edge.y + 0.2), time: 0.291)
+        #expect(intent.target == armed)
+        // 松手事件时间戳不大于上次 systemUptime（elapsed == 0）并伴随 0.5pt 微移：仍应提交预览。
+        #expect(intent.release(cursor: CGPoint(x: edge.x - 1.0, y: edge.y), time: 0.291) == armed)
+    }
 }
