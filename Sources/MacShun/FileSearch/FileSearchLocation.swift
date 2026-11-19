@@ -102,12 +102,12 @@ struct SearchVolume {
 
 struct NetworkSearchSnapshot {
     let root: String
-    let folders: [String: FolderEntries]
+    let folders: IndexedFolders
     let metadata: [String: FileSearchMetadata]
 
     static func read(_ root: String, cancelled: () -> Bool) -> Self? {
         var pending = [root]
-        var folders: [String: FolderEntries] = [:]
+        var folders = IndexedFolders()
         var metadata: [String: FileSearchMetadata] = [:]
         while let folder = pending.popLast() {
             guard !cancelled() else { return nil }

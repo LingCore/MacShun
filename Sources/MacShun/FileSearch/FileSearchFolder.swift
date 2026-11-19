@@ -48,7 +48,7 @@ final class FileSearchFolder {
     }
 
     /// 用户粘贴绝对路径时，和逐层进入目录一样核对每一级，避免从包或符号链接绕出范围。
-    func canBrowse(_ directory: String, in snapshot: [String: FolderEntries], isCancelled: () -> Bool) -> Bool {
+    func canBrowse(_ directory: String, in snapshot: IndexedFolders, isCancelled: () -> Bool) -> Bool {
         guard includes(directory) else { return false }
         var parent = path
         for part in directory.dropFirst(path.count).split(separator: "/") {
@@ -59,7 +59,7 @@ final class FileSearchFolder {
         return true
     }
 
-    func entries(in directory: String, snapshot: [String: FolderEntries], isCancelled: () -> Bool) -> FolderEntries? {
+    func entries(in directory: String, snapshot: IndexedFolders, isCancelled: () -> Bool) -> FolderEntries? {
         if let entries = snapshot[directory] { return entries }
         // 快照可能刚好赶上父目录被换成链接。临时读盘前再确认实际位置。
         guard let root = physicalRoot, let actual = Self.physicalPath(directory),

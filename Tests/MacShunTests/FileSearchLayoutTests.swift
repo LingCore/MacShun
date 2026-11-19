@@ -8,6 +8,19 @@ import Testing
 @Suite("搜索结果布局", .serialized)
 @MainActor
 struct FileSearchLayoutTests {
+    @Test func duplicateFileNamesShowDistinguishingFolders() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = FileSearchModel(index: FileIndex(mainRoots: []), contentIndex: ContentIndex(directory: directory))
+        let paths = ["/Projects/甲/交付/封面.png", "/Projects/乙/交付/封面.png", "/交付/封面.png",
+                     "/Projects/归档/封面.png", "/Projects/乙/交付/报价.pdf"]
+        let files = paths.map { FileSearchResult(path: $0, name: ($0 as NSString).lastPathComponent, isDirectory: false, score: 1) }
+        model.showPreview(query: "封", results: files)
+        #expect(model.duplicateFolderLabels == [paths[0]: "甲/交付", paths[1]: "乙/交付", paths[2]: "/交付", paths[3]: "归档"])
+        model.showPreview(query: "甲", results: [files[0]])
+        #expect(model.duplicateFolderLabels.isEmpty)
+    }
+
     @Test func resultMenuShortcutsUseTheSelectedFile() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

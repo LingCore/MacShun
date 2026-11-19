@@ -40,7 +40,7 @@ struct FolderScopeTests {
         let area = FileSearchFolder(path: fixture.project.path)
         func search(_ q: String, in snapshot: [String: FolderEntries] = [:]) throws -> FileNameSearch.Page {
             try #require(FileNameSearch(query: .init(q), limit: 60, boosts: [:], preferredFolder: nil, within: area)
-                .run(in: snapshot, isCancelled: { false }))
+                .run(in: IndexedFolders(snapshot), isCancelled: { false }))
         }
 
         let children = try search("").results

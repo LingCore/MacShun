@@ -325,6 +325,114 @@ struct ContentIndexTests {
         try? FileManager.default.removeItem(at: folder)
     }
 
+    @Test func scopedReconciliationKeepsNestedFilesAndRecognizesEquivalentSpellingsAfterReopen() throws {
+        let root = temporaryFolder(), db = root.appendingPathComponent("index")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Cafe\u{301}_%")
+        let nested = folder.appendingPathComponent("a/child.txt")
+        let direct = folder.appendingPathComponent("a0.txt")
+        let similar = root.appendingPathComponent("Cafe\u{301}_%extra/other.txt")
+        for file in [direct, nested, similar] {
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("originalmarker".utf8).write(to: file)
+        }
+        let initial = ContentIndex(directory: db)
+        initial.start()
+        initial.sync(files: [direct.path, nested.path, similar.path], scopes: [])
+        initial.waitUntilIdle()
+        initial.stop(deleteData: false)
+        initial.waitUntilIdle()
+
+        let index = ContentIndex(directory: db)
+        index.start()
+        defer { index.stop(deleteData: false); index.waitUntilIdle() }
+        try Data("replacementmarker".utf8).write(to: direct)
+        index.sync(files: [direct.path.precomposedStringWithCanonicalMapping, nested.path], scopes: [])
+        index.waitUntilIdle()
+        #expect(index.documentCountNow == 3)
+        #expect(index.searchNow("replacementmarker").map(\.path) == [direct.path])
+        #expect(Set(index.searchNow("originalmarker").map(\.path)) == [nested.path, similar.path])
+
+        let key = folder.path.precomposedStringWithCanonicalMapping
+        index.removeMissing(present: [], scopes: [.init(folder: key, recursive: false)])
+        index.waitUntilIdle()
+        #expect(index.documentCountNow == 2)
+        #expect(index.searchNow("replacementmarker").isEmpty)
+        index.removeMissing(present: [], scopes: [.init(folder: key, recursive: true)])
+        index.waitUntilIdle()
+        #expect(index.searchNow("originalmarker").map(\.path) == [similar.path])
+        index.prune(keeping: [folder.path])
+        index.waitUntilIdle()
+        #expect(index.documentCountNow == 0)
+    }
+
+    @Test func driveBatchesReconcileContentsAgainstTheFinalDirectorySnapshot() throws {
+        let root = temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("Cafe\u{301}"), renamed = folder.appendingPathComponent("new.txt")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let old = folder.appendingPathComponent("old.txt"), keep = folder.appendingPathComponent("\u{301}résumé.txt")
+        for file in [old, keep] { try Data("drivemarker".utf8).write(to: file) }
+        let index = ContentIndex(directory: root.appendingPathComponent("index"))
+        index.start()
+        defer { index.stop(deleteData: true); index.waitUntilIdle() }
+        let first = try #require(FileSearchDirectory.readDrive(folder.path))
+        index.sync(folders: [folder.path: first.entries])
+        index.waitUntilIdle()
+        try FileManager.default.moveItem(at: old, to: renamed)
+        let current = try #require(FileSearchDirectory.readDrive(folder.path))
+        let batch = [folder.path: current.entries]
+        index.sync(folders: batch)
+        index.removeMissing(in: IndexedFolders(batch), scopes: [.init(folder: folder.path, recursive: true)])
+        index.waitUntilIdle()
+        #expect(Set(index.searchNow("drivemarker").map(\.path)) == [keep.path, renamed.path])
+    }
+
+    @Test func failedReplacementRollsBackPostingsAndCountBeforeRetry() throws {
+        let root = temporaryFolder(), db = root.appendingPathComponent("index")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let note = root.appendingPathComponent("note.txt")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("oldmarker".utf8).write(to: note)
+        let index = ContentIndex(directory: db)
+        index.start()
+        defer { index.stop(deleteData: false); index.waitUntilIdle() }
+        index.sync(files: [note.path], scopes: [])
+        index.waitUntilIdle()
+
+        let sql = try #require(SQLiteDatabase(path: db.appendingPathComponent("content.sqlite").path, create: false))
+        try #require(sql.execute("CREATE TRIGGER fail_update BEFORE UPDATE ON docs BEGIN SELECT RAISE(ABORT, 'test'); END"))
+        try Data("newmarker rewritten".utf8).write(to: note)
+        index.sync(files: [note.path], scopes: [])
+        index.waitUntilIdle()
+        #expect(index.documentCountNow == 1)
+        #expect(index.searchNow("oldmarker").count == 1 && index.searchNow("newmarker").isEmpty)
+
+        try #require(sql.execute("DROP TRIGGER fail_update"))
+        index.sync(files: [note.path], scopes: [])
+        index.waitUntilIdle()
+        #expect(index.documentCountNow == 1)
+        #expect(index.searchNow("oldmarker").isEmpty && index.searchNow("newmarker").count == 1)
+    }
+
+    @Test func forgettingTextlessPDFsRemovesOnlyMatchingRows() throws {
+        let root = temporaryFolder(), db = root.appendingPathComponent("index")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let index = ContentIndex(directory: db)
+        index.start()
+        index.waitUntilIdle()
+        defer { index.stop(deleteData: false); index.waitUntilIdle() }
+        let sql = try #require(SQLiteDatabase(path: db.appendingPathComponent("content.sqlite").path, create: false))
+        try #require(sql.execute("""
+            INSERT INTO docs (path, mtime, size) VALUES ('/empty.PdF', 1, 1), ('/empty.PdF.txt', 1, 1)
+            """))
+        index.forgetTextlessPDFs()
+        index.waitUntilIdle()
+        #expect(sql.int("SELECT count(*) FROM docs") == 1)
+        #expect(sql.int("SELECT count(*) FROM docs WHERE path = '/empty.PdF.txt'") == 1)
+        #expect(index.documentCountNow == 0)
+    }
+
     @Test func manyScopesMatchLikeOne() {
         let scopes = (0 ..< 20).map { ContentIndex.Scope(folder: "/x/\($0)", recursive: $0 % 2 == 0) }
         let set = ContentIndex.ScopeSet(scopes)

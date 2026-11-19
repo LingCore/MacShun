@@ -19,7 +19,7 @@ struct FileNameSearch {
     var options: FileSearchOptions = .init()
     var network: [NetworkSearchSnapshot] = []
 
-    func run(in folders: [String: FolderEntries], isCancelled: () -> Bool) -> Page? {
+    func run(in folders: IndexedFolders, isCancelled: () -> Bool) -> Page? {
         guard let exact = matchingPage(in: folders, isCancelled: isCancelled) else { return nil }
         guard exact.results.isEmpty, !isCancelled(), let spoken = query.withHomophones() else { return exact }
         let fallback = Self(query: spoken, limit: limit, boosts: boosts, preferredFolder: preferredFolder,
@@ -32,7 +32,7 @@ struct FileNameSearch {
         }, directory: page.directory)
     }
 
-    private func matchingPage(in folders: [String: FolderEntries], isCancelled: () -> Bool) -> Page? {
+    private func matchingPage(in folders: IndexedFolders, isCancelled: () -> Bool) -> Page? {
         guard !isCancelled() else { return nil }
         let scopedNetwork = within.flatMap { networkSnapshot(for: $0.path) }
         if let within, scopedNetwork == nil, !within.rootIsAvailable { return Page(results: [], directory: .unavailable) }
@@ -115,19 +115,37 @@ struct FileNameSearch {
             }
             return Page(results: finish(&best, preferPath: false, since: since), directory: partial ? .partial : nil)
         }
-        for source in [folders] + network.map(\.folders) {
-            for (offset, pair) in source.enumerated() {
-                if offset.isMultiple(of: 128), isCancelled() { return nil }
-                match(pair.value, in: pair.key, using: &best, direct: false, since: since, isCancelled: isCancelled)
+        let sources = [folders] + network.map(\.folders)
+        // 对大索引分区取各自的前 limit 项，再按同一排序合并，精确匹配、历史加分和分页顺序一致。
+        let workers = sources.contains { $0.fileCount >= 16_384 }
+            ? min(8, ProcessInfo.processInfo.activeProcessorCount) : 1
+        let partials = Locked([[FileSearchResult]]())
+        DispatchQueue.concurrentPerform(iterations: workers) { worker in
+            let matcher = Self(query: workers > 1 ? query.workerCopy() : query, limit: limit, boosts: boosts,
+                               preferredFolder: preferredFolder, within: within, options: options, network: network)
+            var local = BestFileResults(limit: limit, byName: query.terms.isEmpty, order: options.order)
+            for source in sources {
+                for part in stride(from: worker, to: source.partitions.count, by: workers) {
+                    for (offset, pair) in source.partitions[part].enumerated() {
+                        if offset.isMultiple(of: 64), isCancelled() { return }
+                        matcher.match(pair.value, in: pair.key, using: &local, direct: false, since: since, isCancelled: isCancelled)
+                    }
+                }
             }
+            let rows = local.sorted()
+            partials.update { $0.append(rows) }
         }
         guard !isCancelled() else { return nil }
+        for rows in partials.get() {
+            for hit in rows { best.add(hit) }
+        }
         return Page(results: finish(&best, preferPath: true, since: since))
     }
 
     private func match(_ entries: FolderEntries, in folder: String, using best: inout BestFileResults, direct: Bool,
                        since: Double?, isCancelled: () -> Bool) {
         let mixed = query.isPlainName && !query.terms.isEmpty && (query.terms.count > 1 || !query.filters.suffixes.isEmpty)
+        if !mixed, query.nameTerms == nil, query.terms.count == 1, !entries.mightMatch(query.terms[0]) { return }
         // 搜索范围以上的祖先目录不参与混合词匹配或相对路径加分。
         lazy var folderWords = within.map { ($0.path as NSString).lastPathComponent + folder.dropFirst($0.path.count) } ?? folder
         let folderTerms = mixed ? wordsInFolder(folderWords) : []

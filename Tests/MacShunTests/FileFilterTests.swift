@@ -17,7 +17,7 @@ struct FileFilterTests {
 
     private func names(_ query: String) throws -> Set<String> {
         let search = FileNameSearch(query: .init(query), limit: 60, boosts: [:], preferredFolder: nil)
-        let page = try #require(search.run(in: sample, isCancelled: { false }))
+        let page = try #require(search.run(in: IndexedFolders(sample), isCancelled: { false }))
         return Set(page.results.map(\.name))
     }
 

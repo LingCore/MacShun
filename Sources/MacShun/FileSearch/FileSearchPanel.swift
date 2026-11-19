@@ -190,7 +190,7 @@ final class FileSearchController {
         index.start()
         dialogNavigation?.cancel()
         dialog = FileDialogTarget.focused()
-        model.preferredFolder = dialog == nil ? Self.finderFolder() : nil
+        model.finderFolder = dialog == nil ? FinderSearchFolder.current() : nil
         model.prepareForShow(inFileDialog: dialog != nil)
         let target = model.preferredCompactHeights
         model.compactPresentation = .init(visible: animatesCompactTypeStrip ? .init() : target, target: target)
@@ -204,22 +204,6 @@ final class FileSearchController {
         FrontAppTracker.shared.fileSearchPanelActive.set(true)
         panel.makeKeyAndOrderFront(nil)
         resize()
-    }
-
-    /// 只在从访达呼出时取一次位置。无需额外授权，虚拟位置和没有窗口时照常全局搜索。
-    private static func finderFolder() -> String? {
-        guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == AppCatalog.finder,
-              AXIsProcessTrusted() else { return nil }
-        let app = AXUIElementCreateApplication(front.processIdentifier)
-        AXUIElementSetMessagingTimeout(app, 0.05)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success,
-              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
-        let window = value as! AXUIElement
-        AXUIElementSetMessagingTimeout(window, 0.05)
-        guard let document = FocusInspector.string(window, kAXDocumentAttribute),
-              let url = URL(string: document), url.isFileURL else { return nil }
-        return url.standardizedFileURL.path
     }
 
     func hide() {
@@ -394,7 +378,7 @@ final class FileSearchController {
         picker.canCreateDirectories = false
         picker.level = NSWindow.Level(rawValue: panel.level.rawValue + 1)
         picker.prompt = L("选择文件夹")
-        picker.directoryURL = (model.searchFolder?.path ?? model.preferredFolder)
+        picker.directoryURL = (model.searchFolder?.path ?? model.finderFolder?.path)
             .map { URL(fileURLWithPath: index.resolvedLocationPath($0), isDirectory: true) }
         showingModal = true
         let response = picker.runModal()
@@ -673,6 +657,7 @@ final class FileSearchPanel: NSPanel {
         backgroundColor = .clear
         hasShadow = false   // 阴影由界面自己画，跟着胶囊的形状
         isMovableByWindowBackground = false
+        acceptsMouseMovedEvents = true
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
@@ -779,7 +764,37 @@ final class FileSearchModel: ObservableObject {
         }
     }
     /// 明确匹配的系统功能、文件名、文件正文，各自保留类型与操作。
-    @Published private(set) var rows: [LauncherRow] = []
+    @Published private(set) var rows: [LauncherRow] = [] {
+        didSet { duplicateFolderLabels = Self.folderLabels(for: rows) }
+    }
+    private(set) var duplicateFolderLabels: [String: String] = [:]
+
+    /// 从父目录名开始，只有重名的路径才多显示一级。根目录与另一条路径的同名后缀也能区分。
+    private static func folderLabels(for rows: [LauncherRow]) -> [String: String] {
+        var labels: [String: String] = [:]
+        let groups = Dictionary(grouping: rows.compactMap(\.file), by: \.name)
+        for matches in groups.values where matches.count > 1 {
+            let byParent = Dictionary(grouping: matches) { ($0.path as NSString).deletingLastPathComponent }
+            guard byParent.count > 1 else { continue }
+            var remaining = byParent.keys.map { (path: $0, parts: $0.split(separator: "/")) }
+            var depth = 1
+            while !remaining.isEmpty {
+                let bySuffix = Dictionary(grouping: remaining) { parent in
+                    parent.parts.count < depth ? parent.path : parent.parts.suffix(depth).joined(separator: "/")
+                }
+                remaining.removeAll(keepingCapacity: true)
+                for (suffix, parents) in bySuffix {
+                    if parents.count == 1, let parent = parents.first {
+                        for file in byParent[parent.path] ?? [] { labels[file.path] = suffix }
+                    } else {
+                        remaining.append(contentsOf: parents)
+                    }
+                }
+                depth += 1
+            }
+        }
+        return labels
+    }
     /// File-only view used by file search diagnostics.
     var results: [FileSearchResult] { rows.compactMap(\.file) }
     private var featureResults: [SystemFeature] = []
@@ -947,7 +962,7 @@ final class FileSearchModel: ObservableObject {
     var onSaveFilters: () -> Void = {}
     var onEditBounds: (FileSearchRangeKind) -> Void = { _ in }
 
-    var preferredFolder: String?
+    var finderFolder: FinderSearchFolder?
     @Published private(set) var directoryStatus: FileNameSearch.DirectoryStatus?
     private var parsedQuery = FileMatcher.Query("")
     @Published private var activeNameSearch: Locked<Bool>?
@@ -993,12 +1008,11 @@ final class FileSearchModel: ObservableObject {
                 }
             }
             .store(in: &subscriptions)
-        // 内容索引读完一批文件后也重新搜一次（每次最多半秒发布一次）
-        contentIndex.$documentCount
-            .removeDuplicates()
+        // 正文改写、收录范围变化也需要刷新，即使文档总数相同。
+        contentIndex.resultsDidChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                guard let self, self.isShown else { return }
+                guard let self, self.isShown, self.searchesTextForQuery else { return }
                 if self.searchingContent { self.contentNeedsRefresh = true }
                 else { self.scheduleContentSearch() }
             }
@@ -1228,7 +1242,7 @@ final class FileSearchModel: ObservableObject {
         activeNameSearch = cancelled
         namesNeedRefresh = false
         index.searchPage(parsedQuery, limit: usesPanelResults ? pageLimit + 1 : 60, boosts: history?.boosts() ?? [:],
-                         preferredFolder: preferredFolder, within: searchFolder, options: searchOptions,
+                         preferredFolder: finderFolder?.path, finderTitle: finderFolder?.title, within: searchFolder, options: searchOptions,
                          isCancelled: cancelled.get) { [weak self] page in
             guard let self, self.activeNameSearch === cancelled else { return }
             self.activeNameSearch = nil
@@ -1624,7 +1638,7 @@ struct FileSearchView: View {
     @ObservedObject var contentIndex: ContentIndex
 
     static let capsuleHeight: CGFloat = 56
-    private static let expandedSearchHeight: CGFloat = 44
+    private static let expandedSearchHeight: CGFloat = 54
     private static let sidebarWidth: CGFloat = 198
     private static let sidebarBreakpoint: CGFloat = 680
     static let folderBarHeight: CGFloat = 34
@@ -1756,7 +1770,8 @@ struct FileSearchView: View {
             if !expanded { capsule.strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5).allowsHitTesting(false) }
         }
         .overlay(alignment: .top) {
-            FileSearchWindowGrip(height: expanded ? 8 : 15, toggle: model.toggleExpanded)
+            FileSearchWindowGrip(height: expanded ? 12 : 15, toggle: model.toggleExpanded)
+                .padding(.top, expanded ? 4 : 0)
         }
         .shadow(color: .black.opacity(expanded ? 0 : 0.25), radius: 10, y: 4)
     }
@@ -1805,7 +1820,8 @@ struct FileSearchView: View {
                 panelToggle
             }
             .padding(.horizontal, expanded ? 12 : 17)
-            .frame(height: height)
+            .frame(maxHeight: .infinity)
+            .padding(.top, expanded ? Self.gap : 0)
         }
         .frame(height: height)
     }
@@ -2275,12 +2291,16 @@ private struct FileResultRow: View {
     private var confirmingDelete: Bool { model.confirmingDelete == result.path }
 
     /// 所在的文件夹，个人文件夹写成 ~
-    private var folder: String {
+    private var fullFolder: String {
         let parent = (result.path as NSString).deletingLastPathComponent
         if parent == Self.home { return "~" }
         if parent.hasPrefix(Self.home + "/") { return "~" + parent.dropFirst(Self.home.count) }
         return parent
     }
+
+    private var distinctFolder: String? { model.duplicateFolderLabels[result.path] }
+    private var folder: String { distinctFolder ?? fullFolder }
+    private var folderTruncation: Text.TruncationMode { distinctFolder == nil ? .head : .tail }
 
     private var modified: String? {
         result.metadata.map {
@@ -2315,7 +2335,8 @@ private struct FileResultRow: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
                                 .lineLimit(1)
-                                .truncationMode(.head)
+                                .truncationMode(folderTruncation)
+                                .accessibilityLabel(fullFolder)
                         }
                     }
                     Text(highlighted(snippet, terms: model.contentHighlightTerms, size: 12))
@@ -2338,7 +2359,8 @@ private struct FileResultRow: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.head)
+                            .truncationMode(folderTruncation)
+                            .accessibilityLabel(fullFolder)
                     }
                 }
             }
@@ -2350,7 +2372,8 @@ private struct FileResultRow: View {
             if columns.showsFolder {
                 Text(highlighted(folder, terms: model.folderHighlightTerms, size: 11))
                     .frame(width: FileResultColumns.folderWidth, alignment: .leading)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(folderTruncation)
+                    .accessibilityLabel(fullFolder)
             }
             if columns.showsDate {
                 Text(modified ?? "—").frame(width: FileResultColumns.dateWidth, alignment: .leading)
@@ -2362,7 +2385,7 @@ private struct FileResultRow: View {
             }
         }
         .modifier(FileSearchRowStyle(expanded: expanded, selected: isSelected, hovering: hovering))
-        .help(model.isExpanded ? ([result.path] + [modified, size].compactMap { $0 }).joined(separator: "\n") : "")
+        .help(model.isExpanded || distinctFolder != nil ? ([result.path] + [modified, size].compactMap { $0 }).joined(separator: "\n") : "")
         .onHover { inside in
             if inside {
                 model.hoveredPath = result.path

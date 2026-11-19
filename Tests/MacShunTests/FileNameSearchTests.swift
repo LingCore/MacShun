@@ -13,7 +13,7 @@ struct FileNameSearchTests {
     private func search(_ text: String, in folders: [String: FolderEntries] = [:], limit: Int = 60,
                         boosts: [String: Double] = [:], finder: String? = nil) throws -> FileNameSearch.Page {
         try #require(FileNameSearch(query: .init(text), limit: limit, boosts: boosts, preferredFolder: finder)
-            .run(in: folders, isCancelled: { false }))
+            .run(in: IndexedFolders(folders), isCancelled: { false }))
     }
 
     @Test func mixesWordsFromTheNameAndItsAncestorsInEitherOrder() throws {
@@ -92,6 +92,32 @@ struct FileNameSearchTests {
         model.isShown = false
         try await waitForName("first.txt")
         #expect(opened == ["second.txt"])
+    }
+
+    @Test func partitionedSearchKeepsGlobalRankingAndSnapshotIsolation() throws {
+        let listing = entries((0..<128).map { "report-\($0).txt" })
+        let folders = Dictionary(uniqueKeysWithValues: (0..<130).map { ("/project/\($0)", listing) })
+        var live = IndexedFolders(folders)
+        let published = live
+        live["/project/129"] = nil
+        live["/project/0"] = entries(["report.txt"])
+        #expect(published.fileCount == 130 * 128)
+        #expect(live.fileCount == 128 * 128 + 1)
+
+        let preferred = "/project/129/report-99.txt"
+        let request = FileNameSearch(query: .init("report"), limit: 61, boosts: [preferred: 200], preferredFolder: nil)
+        // 各目录独立搜索得到全部候选，按最终规则排序，核对跨分区的分页边界。
+        let perFolder = FileNameSearch(query: request.query, limit: listing.count, boosts: request.boosts, preferredFolder: nil)
+        var all: [FileSearchResult] = []
+        for (path, entries) in folders {
+            let page = try #require(perFolder.run(in: IndexedFolders([path: entries]), isCancelled: { false }))
+            all += page.results
+        }
+        let expected = all.sorted { BestFileResults.byRelevance($0, $1) }
+        let page = try #require(request.run(in: published, isCancelled: { false }))
+        #expect(page.results == Array(expected.prefix(request.limit)))
+        #expect(page.results.first?.path == preferred)
+        #expect(request.run(in: live, isCancelled: { false })?.results.contains { $0.path == preferred } == false)
     }
 
     @Test func topResultsEqualFullSortAfterDeduplication() {
@@ -243,6 +269,38 @@ struct FileNameSearchTests {
         #expect(options.foldersOnly && !options.selects(.images) && !options.selects(.pdf))
         options.toggle(.folders)
         #expect(options.selects(.any))
+    }
+
+    @Test @MainActor func contentPanelRefreshesWhenAnIndexedFileIsEditedInPlace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let note = root.appendingPathComponent("note.txt")
+        let content = ContentIndex(directory: root.appendingPathComponent("db"))
+        content.start()
+        defer { content.stop(deleteData: true); content.waitUntilIdle() }
+        func write(_ text: String) throws {
+            try Data(text.utf8).write(to: note)
+            content.sync(files: [note.path], scopes: [.init(folder: root.path, recursive: false)])
+            content.waitUntilIdle()
+        }
+        func wait(_ condition: () -> Bool) async throws {
+            let deadline = ContinuousClock.now + .seconds(3)
+            while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            try #require(condition())
+        }
+        try write("marker original")
+        let model = FileSearchModel(index: FileIndex(mainRoots: []), contentIndex: content)
+        model.isShown = true
+        model.searchesContent = true
+        model.scope = .contents
+        model.query = "marker"
+        try await wait { model.results.first?.snippet == "marker original" && !model.isLoadingResults }
+        try write("marker edited in place")
+        try await wait { model.results.first?.snippet == "marker edited in place" && !model.isLoadingResults }
+        try write("different wording")
+        try await wait { model.results.isEmpty && !model.isLoadingResults }
+        #expect(content.documentCount == 1)
     }
 
     @Test @MainActor func returnInAllWaitsForCurrentContentInsteadOfOpeningAnOldHit() async throws {

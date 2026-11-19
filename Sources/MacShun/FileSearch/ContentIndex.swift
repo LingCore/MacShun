@@ -19,6 +19,9 @@ final class ContentIndex: ObservableObject {
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("MacShun/ContentIndex", isDirectory: true))
 
+    /// 已提交的正文或搜索范围变化。改写同一份文件也会通知正在显示的查询。
+    let resultsDidChange = PassthroughSubject<Void, Never>()
+
     /// 收录了内容的文件数
     @Published private(set) var documentCount = 0
     /// 还没读的文件数。大于 0 时表示正在建立索引
@@ -30,7 +33,7 @@ final class ContentIndex: ObservableObject {
     struct Scope {
         let folder: String
         let recursive: Bool
-        private let prefix: String
+        fileprivate let prefix: String
 
         init(folder: String, recursive: Bool) {
             self.folder = folder
@@ -91,21 +94,27 @@ final class ContentIndex: ObservableObject {
         let mtime: Double
         let size: Int
         let hasText: Bool
+
+        init(_ row: SQLiteStatement) {
+            id = row.int(0)
+            mtime = row.double(1)
+            size = Int(row.int(2))
+            hasText = row.int(3) != 0
+        }
     }
 
     /// 以下只在 workQueue 上读写
     private var database: SQLiteDatabase?
-    private var known: [String: Document] = [:]
+    private var documentQuery: SQLiteStatement?
     /// 要读的文件。buckets 按种类分开排队，取的时候核对一下 todo，已经不用读的跳过
     private var todo: [String: ContentExtractor.Kind] = [:]
     private var buckets: [[String]] = []
     private var textCount = 0
     private var working = false
     private var lastPublish = Date.distantPast
+    private var resultsChanged = false
     /// 上次和别的文件一起读时程序退出了的文件：这次一个一个单独读，再出事就知道是哪个
     private var suspects = Set<String>()
-    /// 这个事务里有一步写失败了（例如磁盘满），结束时回滚
-    private var transactionFailed = false
 
     /// 程序正在退出：不再开始读新的一批
     private let quitting = Locked(false)
@@ -127,6 +136,7 @@ final class ContentIndex: ObservableObject {
         workQueue.async {
             guard self.database == nil else { return }
             self.open()
+            self.resultsChanged = true
             self.publish(force: true)
         }
     }
@@ -135,11 +145,12 @@ final class ContentIndex: ObservableObject {
     func stop(deleteData: Bool) {
         workQueue.async {
             guard self.database != nil || deleteData else { return }
+            self.documentQuery = nil
             self.database = nil
-            self.known = [:]
             self.todo = [:]
             self.buckets = []
             self.textCount = 0
+            self.resultsChanged = true
             self.suspects = []
             // 先关掉搜索用的连接再删文件，不然还能从删掉的索引里搜到，重新打开时还可能删掉新索引的日志文件
             self.searchQueue.sync { self.reader = nil }
@@ -152,16 +163,20 @@ final class ContentIndex: ObservableObject {
     }
 
     func setSearchRoots(_ roots: [String]) {
-        searchRoots.set(roots)
+        let changed = searchRoots.update { old in
+            guard old != roots else { return false }
+            old = roots
+            return true
+        }
+        if changed { DispatchQueue.main.async { self.resultsDidChange.send() } }
     }
 
     /// 打开“认图片里的文字”时：之前没读出字的 PDF 可能是扫描件，忘掉，下次同步时重新读（认字）
     func forgetTextlessPDFs() {
         workQueue.async {
-            guard self.database != nil else { return }
-            let paths = self.known.filter { !$0.value.hasText && $0.key.lowercased().hasSuffix(".pdf") }.map(\.key)
-            guard !paths.isEmpty else { return }
-            self.transaction { paths.forEach(self.remove) }
+            guard let database = self.database else { return }
+            // 没有正文的记录没有 FTS 行，也不计入 textCount。
+            database.execute("DELETE FROM docs WHERE text IS NULL AND lower(substr(path, -4)) = '.pdf'")
         }
     }
 
@@ -179,6 +194,18 @@ final class ContentIndex: ObservableObject {
             removeDatabaseFiles()
             guard openDatabase() else { return }
         }
+        guard let db = database, preparePathLookup(db),
+              let count = db.prepare("SELECT count(*) FROM docs WHERE text IS NOT NULL"), count.step(),
+              let query = db.prepare("""
+                  SELECT id, mtime, size, text IS NOT NULL FROM docs
+                  WHERE id = (SELECT id FROM doc_keys WHERE key = ? LIMIT 1)
+                  """) else {
+            database = nil
+            Log.app.error("内容索引：无法读取文档元数据")
+            return
+        }
+        textCount = Int(count.int(0))
+        documentQuery = query
         // 上次读这一批文件时程序退出了（崩溃或被强制结束）。只有一个文件时就是它：记成“没有内容”，
         // 文件改过之后才会再读；有好几个时不知道是哪个，这次一个一个单独读
         let marker = (try? String(contentsOf: readingMarker, encoding: .utf8)) ?? ""
@@ -186,7 +213,7 @@ final class ContentIndex: ObservableObject {
         if crashed.count == 1, let path = crashed.first {
             Log.app.error("内容索引：上次读这个文件时退出了，跳过：\(path, privacy: .public)")
             transaction {
-                if let info = Self.fileInfo(path) { upsert(path, mtime: info.mtime, size: info.size, compressed: nil, body: nil) }
+                if let info = Self.fileInfo(path) { try upsert(path, mtime: info.mtime, size: info.size, compressed: nil, body: nil) }
             }
         } else if crashed.count > 1 {
             Log.app.notice("内容索引：上次读一批文件时退出了，这些文件改为单独读")
@@ -195,7 +222,7 @@ final class ContentIndex: ObservableObject {
         try? FileManager.default.removeItem(at: readingMarker)
     }
 
-    /// 打开数据库、建表、读出已经收录的文件。失败时返回 false。
+    /// 打开数据库，沿用已有的文档表和全文索引。
     private func openDatabase() -> Bool {
         guard var db = SQLiteDatabase(path: databasePath) else { return false }
         if db.int("PRAGMA user_version") != Self.schemaVersion && db.int("SELECT count(*) FROM sqlite_master") != 0 {
@@ -222,29 +249,70 @@ final class ContentIndex: ObservableObject {
             """)
         guard ok else { return false }
         database = db
-        return loadKnown()
-    }
-
-    /// 从数据库读出已经收录的文件（打开时，和写失败回滚以后）。
-    private func loadKnown() -> Bool {
-        guard let database, let statement = database.prepare("SELECT id, path, mtime, size, text IS NOT NULL FROM docs") else {
-            self.database = nil
-            return false
-        }
-        var loaded: [String: Document] = [:]
-        var texts = 0
-        while statement.step() {
-            let hasText = statement.int(4) != 0
-            loaded[statement.string(1)] = Document(id: statement.int(0), mtime: statement.double(2),
-                                                   size: Int(statement.int(3)), hasText: hasText)
-            if hasText { texts += 1 }
-        }
-        known = loaded
-        textCount = texts
         return true
     }
 
+    /// Swift 路径比较接受 Unicode 等价拼写。保留原始文件名，只把非 NFC 拼写的别名放进
+    /// 写连接的临时 B 树；既有索引直接可用，绝大多数路径仍走 docs.path 原有的唯一索引。
+    private func preparePathLookup(_ db: SQLiteDatabase) -> Bool {
+        guard db.execute("""
+            PRAGMA temp_store = FILE;
+            CREATE TEMP TABLE path_aliases (id INTEGER PRIMARY KEY, key TEXT NOT NULL);
+            CREATE INDEX temp.alias_keys ON path_aliases(key);
+            CREATE TEMP VIEW doc_keys AS SELECT path AS key, id FROM docs UNION ALL SELECT key, id FROM path_aliases;
+            CREATE TEMP TRIGGER discard_alias AFTER DELETE ON main.docs
+            BEGIN DELETE FROM path_aliases WHERE id = OLD.id; END;
+            """),
+            // UTF-8 字节数等于字符数的路径是纯 ASCII，无需检查 NFC。
+            let paths = db.prepare("SELECT id, path FROM docs WHERE length(CAST(path AS BLOB)) != length(path) ORDER BY path"),
+            let insert = db.prepare("INSERT INTO path_aliases (id, key) VALUES (?, ?)")
+        else { return false }
+        do {
+            while try paths.next() {
+                try autoreleasepool {
+                    let path = paths.string(1)
+                    let key = path.precomposedStringWithCanonicalMapping
+                    if !key.utf8.elementsEqual(path.utf8) {
+                        insert.bind(1, paths.int(0))
+                        insert.bind(2, key)
+                        guard insert.run() else { throw SQLiteFailure() }
+                        insert.reset()
+                    }
+                }
+            }
+            return true
+        } catch { return false }
+    }
+
+    /// 重用写队列上的语句；reset 及时结束读事务，WAL 可以正常做 checkpoint。
+    private func document(at path: String) throws -> Document? {
+        guard let query = documentQuery else { throw SQLiteFailure() }
+        query.bind(1, path.precomposedStringWithCanonicalMapping)
+        defer { query.reset() }
+        guard try query.next() else { return nil }
+        return Document(query)
+    }
+
+    /// 扫描批次共用一次 SQLite 读事务，临时字典只覆盖本批文件。
+    private func documents(for paths: [String]) throws -> [String: Document] {
+        if paths.isEmpty { return [:] }
+        if paths.count == 1 {
+            guard let doc = try document(at: paths[0]) else { return [:] }
+            return [paths[0]: doc]
+        }
+        let parameters = Array(repeating: "?", count: paths.count).joined(separator: ",")
+        guard let rows = database?.prepare("""
+            SELECT docs.id, mtime, size, text IS NOT NULL, key FROM doc_keys JOIN docs ON docs.id = doc_keys.id
+            WHERE key IN (\(parameters))
+            """) else { throw SQLiteFailure() }
+        for (i, path) in paths.enumerated() { rows.bind(Int32(i + 1), path.precomposedStringWithCanonicalMapping) }
+        var matches: [String: Document] = [:]
+        while try rows.next() { matches[rows.string(4)] = Document(rows) }
+        return matches
+    }
+
     private func removeDatabaseFiles() {
+        documentQuery = nil
         database = nil
         searchQueue.sync { reader = nil }
         for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: databasePath + suffix) }
@@ -258,24 +326,20 @@ final class ContentIndex: ObservableObject {
         workQueue.async {
             guard self.database != nil else { return }
             // 外接硬盘上查一个文件的大小和修改时间要零点几毫秒，几个线程一起查
-            let candidates = files.compactMap { path in
-                ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent).map { (path, $0) }
-            }
-            let infos = Self.fileInfos(candidates.map(\.0))
-            for ((path, kind), info) in zip(candidates, infos) {
-                guard let info else { continue }
-                // iCloud 里还没下载到这台电脑的文件，读一下就会开始下载，不读
-                if info.isDataless { continue }
-                if info.size == 0 || info.size > kind.maxFileSize {
-                    self.todo[path] = nil
-                    if self.known[path] != nil { self.transaction { self.remove(path) } }
-                    continue
+            do {
+                for start in stride(from: 0, to: files.count, by: 512) {
+                    try autoreleasepool {
+                        let batch = files[start..<min(start + 512, files.count)]
+                        let candidates = batch.compactMap { path in
+                            ContentExtractor.kind(ofFileNamed: (path as NSString).lastPathComponent).map { (path, $0) }
+                        }
+                        try self.checkDocuments(candidates)
+                    }
                 }
-                if let doc = self.known[path], doc.mtime == info.mtime, doc.size == info.size {
-                    self.todo[path] = nil
-                } else {
-                    self.enqueue(path, kind: kind)
-                }
+            } catch {
+                Log.app.error("内容索引：无法核对文件属性")
+                self.scheduleWork()
+                return
             }
             // 外接盘分批交来的文件只增不删，不必遍历整个已有索引。
             let removed = !scopes.isEmpty && self.removeMissingNow(present: Set(files), scopes: scopes)
@@ -284,13 +348,110 @@ final class ContentIndex: ObservableObject {
         }
     }
 
+    /// 扫描队列传来紧凑的目录数据；到写队列实际处理时，才展开本批的完整路径。
+    func sync<S: Sequence>(folders: S) where S.Element == (key: String, value: FolderEntries) {
+        workQueue.async {
+            guard self.database != nil else { return }
+            var batch: [(String, ContentExtractor.Kind)] = []
+            do {
+                for (folder, entries) in folders {
+                    try FileIndex.forEachContentName(in: folder, entries: entries) { name, kind in
+                        batch.append((folder == "/" ? "/" + name : folder + "/" + name, kind))
+                        if batch.count == 512 {
+                            try autoreleasepool { try self.checkDocuments(batch) }
+                            batch.removeAll(keepingCapacity: true)
+                        }
+                    }
+                }
+                if !batch.isEmpty { try self.checkDocuments(batch) }
+            } catch { Log.app.error("内容索引：无法核对文件属性") }
+            self.publish(force: false)
+            self.scheduleWork()
+        }
+    }
+
+    private func checkDocuments(_ candidates: [(String, ContentExtractor.Kind)]) throws {
+        let paths = candidates.map(\.0)
+        var docs = try self.documents(for: paths)
+        let infos = Self.fileInfos(paths)
+        for ((path, kind), info) in zip(candidates, infos) {
+            guard let info, !info.isDataless else { continue }
+            if info.size == 0 || info.size > kind.maxFileSize {
+                self.todo[path] = nil
+                if let doc = docs.removeValue(forKey: path) {
+                    self.transaction { try self.remove(id: doc.id, hasText: doc.hasText) }
+                }
+            } else if let doc = docs[path], doc.mtime == info.mtime, doc.size == info.size {
+                self.todo[path] = nil
+            } else {
+                self.enqueue(path, kind: kind)
+            }
+        }
+    }
+
+    /// 数据库按路径排序。逐目录展开名称，用完即释放，无需再造一份全盘的完整路径集合。
+    func removeMissing(in folders: IndexedFolders, scopes: [Scope]) {
+        workQueue.async {
+            guard self.database != nil else { return }
+            var lastFolder: String?
+            var names = Set<String>()
+            let removed = self.removeMissingNow(scopes: scopes, pending: self.todo.keys.sorted()) { path in
+                let bytes = path.utf8
+                guard let slash = bytes.lastIndex(of: 0x2F) else { return false }
+                let folder = slash == bytes.startIndex ? "/" : String(decoding: bytes[..<slash], as: UTF8.self)
+                if folder != lastFolder {
+                    names.removeAll()
+                    if let entries = folders[folder] {
+                        FileIndex.forEachContentName(in: folder, entries: entries) { name, _ in names.insert(name) }
+                    }
+                    lastFolder = folder
+                }
+                return names.contains(String(decoding: bytes[bytes.index(after: slash)...], as: UTF8.self))
+            }
+            if removed { self.publish(force: true) }
+        }
+    }
+
     private func removeMissingNow(present: Set<String>, scopes: [Scope]) -> Bool {
-        let scopes = ScopeSet(scopes)
-        let gone = known.keys.filter { !present.contains($0) && scopes.contains($0) }
-        for path in todo.keys where !present.contains(path) && scopes.contains(path) { todo[path] = nil }
-        guard !gone.isEmpty else { return false }
-        transaction { gone.forEach(remove) }
-        return true
+        removeMissingNow(scopes: scopes, pending: todo.keys, isPresent: present.contains)
+    }
+
+    private func removeMissingNow(scopes: [Scope], pending: some Sequence<String>, isPresent: (String) -> Bool) -> Bool {
+        guard let database else { return false }
+        let covered = ScopeSet(scopes)
+        for path in pending where covered.contains(path) && !isPresent(path) { todo[path] = nil }
+        // path 上原有的唯一索引同时覆盖 rowid。先收集消失的行号，关闭游标后再改表。
+        guard let paths = database.prepare("SELECT id, key FROM doc_keys WHERE key >= ? AND key < ? ORDER BY key")
+        else { return false }
+        var gone = Set<Int64>()
+        do {
+            for scope in scopes {
+                var lower = scope.prefix.precomposedStringWithCanonicalMapping
+                let prefixLength = lower.utf8.count
+                let upper = String(lower.dropLast()) + "0"  // BINARY 排序中 "/" 的下一个字节
+                while true {
+                    paths.bind(1, lower)
+                    paths.bind(2, upper)
+                    var skipSubtree = false
+                    while try paths.next() {
+                        let path = paths.string(1)
+                        if !scope.recursive, let slash = path.utf8.dropFirst(prefixLength).firstIndex(of: 0x2F) {
+                            // 只核对直接子文件时，从索引跳过整个孙目录。下一条可能恰好等于新下界。
+                            lower = String(decoding: path.utf8[..<slash], as: UTF8.self) + "0"
+                            skipSubtree = true
+                            break
+                        }
+                        if !isPresent(path) { gone.insert(paths.int(0)) }
+                    }
+                    paths.reset()
+                    if !skipSubtree { break }
+                }
+            }
+        } catch {
+            Log.app.error("内容索引：无法核对目录")
+            return false
+        }
+        return removeDocuments(gone)
     }
 
     /// 去掉 scopes 范围里、不在 present 里的文件（全部扫完以后调用，前面分批 sync 时只增不删）。
@@ -305,11 +466,16 @@ final class ContentIndex: ObservableObject {
     func prune(keeping roots: [String]) {
         let scopes = roots.map { Scope(folder: $0, recursive: true) }
         workQueue.async {
-            guard self.database != nil else { return }
-            let outside = self.known.keys.filter { path in !scopes.contains { $0.contains(path) } }
-            for path in self.todo.keys where !scopes.contains(where: { $0.contains(path) }) { self.todo[path] = nil }
-            guard !outside.isEmpty else { return }
-            self.transaction { outside.forEach(self.remove) }
+            guard let database = self.database, let rows = database.prepare("SELECT id, path FROM docs ORDER BY path") else { return }
+            let keeping = ScopeSet(scopes)
+            for path in self.todo.keys where !keeping.contains(path) { self.todo[path] = nil }
+            var outside: [Int64] = []
+            do {
+                while try rows.next() {
+                    if !keeping.contains(rows.string(1)) { outside.append(rows.int(0)) }
+                }
+            } catch { return }
+            guard self.removeDocuments(outside) else { return }
             Log.app.notice("内容索引：去掉范围外的 \(outside.count, privacy: .public) 个文件")
             self.publish(force: true)
         }
@@ -332,7 +498,8 @@ final class ContentIndex: ObservableObject {
     /// 读完在一个事务里写进数据库；读满半秒就让出队列，让排在后面的文件变化先处理，搜索也能尽早搜到。
     private func workBatch() {
         working = false
-        guard database != nil, !todo.isEmpty else { return }
+        guard database != nil else { return }
+        guard !todo.isEmpty else { publish(force: true); return }
         let begin = Date()
         while Date().timeIntervalSince(begin) < 0.5 {
             guard !quitting.get() else { return }
@@ -351,10 +518,11 @@ final class ContentIndex: ObservableObject {
             transaction {
                 for (task, result) in zip(tasks, results) {
                     switch result {
-                    case .missing: remove(task.path)
+                    case .missing:
+                        if let doc = try document(at: task.path) { try remove(id: doc.id, hasText: doc.hasText) }
                     case .skipped: break
                     case let .read(info, compressed, body):
-                        upsert(task.path, mtime: info.mtime, size: info.size, compressed: compressed, body: body)
+                        try upsert(task.path, mtime: info.mtime, size: info.size, compressed: compressed, body: body)
                     }
                 }
             }
@@ -444,88 +612,111 @@ final class ContentIndex: ObservableObject {
 
     // MARK: - 数据库读写（workQueue 上）
 
-    /// 一个事务里写。有一步失败（例如磁盘满）就整个回滚，重新读出数据库里的文件列表，免得和数据库对不上。
-    private func transaction(_ body: () -> Void) {
-        guard let database else { return }
-        transactionFailed = !database.execute("BEGIN")
-        if !transactionFailed { body() }
-        if transactionFailed || !database.execute("COMMIT") {
+    /// 数据库是元数据的唯一来源。回滚时只需恢复尚未发布的计数和通知状态。
+    @discardableResult
+    private func transaction(_ body: () throws -> Void) -> Bool {
+        guard let database, database.execute("BEGIN") else { return false }
+        let oldCount = textCount, oldChanged = resultsChanged
+        do {
+            try body()
+            guard database.execute("COMMIT") else { throw SQLiteFailure() }
+            return true
+        } catch {
             database.execute("ROLLBACK")
-            transactionFailed = false
+            textCount = oldCount
+            resultsChanged = oldChanged
             Log.app.error("内容索引：写入失败，已回滚")
-            _ = loadKnown()
+            return false
         }
     }
 
-    private func upsert(_ path: String, mtime: Double, size: Int, compressed: Data?, body: String?) {
-        guard let database else { return }
+    private func upsert(_ path: String, mtime: Double, size: Int, compressed: Data?, body: String?) throws {
+        guard let database else { throw SQLiteFailure() }
+        let old = try document(at: path)
         let id: Int64
-        if let old = known[path] {
-            deleteFromFTS(old)
-            guard let statement = database.prepare("UPDATE docs SET mtime = ?, size = ?, text = ? WHERE id = ?") else { return }
+        if let old {
+            if old.hasText { try deleteFromFTS(old.id) }
+            guard let statement = database.prepare("UPDATE docs SET mtime = ?, size = ?, text = ? WHERE id = ?") else { throw SQLiteFailure() }
             statement.bind(1, mtime)
             statement.bind(2, Int64(size))
             statement.bind(3, compressed)
             statement.bind(4, old.id)
-            guard statement.run() else {
-                transactionFailed = true
-                return
-            }
+            guard statement.run() else { throw SQLiteFailure() }
             id = old.id
             if old.hasText { textCount -= 1 }
         } else {
-            guard let statement = database.prepare("INSERT INTO docs (path, mtime, size, text) VALUES (?, ?, ?, ?)") else { return }
+            guard let statement = database.prepare("INSERT INTO docs (path, mtime, size, text) VALUES (?, ?, ?, ?)") else { throw SQLiteFailure() }
             statement.bind(1, path)
             statement.bind(2, mtime)
             statement.bind(3, Int64(size))
             statement.bind(4, compressed)
-            guard statement.run() else {
-                transactionFailed = true
-                return
-            }
+            guard statement.run() else { throw SQLiteFailure() }
             id = database.lastInsertID
+            let key = path.precomposedStringWithCanonicalMapping
+            if !key.utf8.elementsEqual(path.utf8) {
+                guard let alias = database.prepare("INSERT INTO path_aliases (id, key) VALUES (?, ?)") else { throw SQLiteFailure() }
+                alias.bind(1, id)
+                alias.bind(2, key)
+                guard alias.run() else { throw SQLiteFailure() }
+            }
         }
-        let hasText = compressed != nil && body != nil
-        if hasText, let body, let statement = database.prepare("INSERT INTO docs_fts (rowid, body) VALUES (?, ?)") {
+        if let body {
+            guard let statement = database.prepare("INSERT INTO docs_fts (rowid, body) VALUES (?, ?)") else { throw SQLiteFailure() }
             statement.bind(1, id)
             statement.bind(2, body)
-            guard statement.run() else {
-                transactionFailed = true
-                return
-            }
+            guard statement.run() else { throw SQLiteFailure() }
             textCount += 1
         }
-        known[path] = Document(id: id, mtime: mtime, size: size, hasText: hasText)
+        if old?.hasText == true || body != nil { resultsChanged = true }
     }
 
-    private func remove(_ path: String) {
-        guard let database, let doc = known[path] else { return }
-        deleteFromFTS(doc)
-        if doc.hasText { textCount -= 1 }
-        if let statement = database.prepare("DELETE FROM docs WHERE id = ?") {
-            statement.bind(1, doc.id)
-            if !statement.run() { transactionFailed = true }
+    private func removeDocuments<C: Collection>(_ ids: C) -> Bool where C.Element == Int64 {
+        guard !ids.isEmpty, let query = database?.prepare("SELECT text IS NOT NULL FROM docs WHERE id = ?") else { return false }
+        return transaction {
+            for id in ids {
+                query.bind(1, id)
+                guard try query.next() else { throw SQLiteFailure() }
+                let hasText = query.int(0) != 0
+                query.reset()
+                try autoreleasepool { try remove(id: id, hasText: hasText) }
+            }
         }
-        known[path] = nil
     }
 
-    /// 没有存原文的全文索引（contentless），删除时要交回当初存进去的同样的文字，所以从原文重新算一遍。
-    private func deleteFromFTS(_ doc: Document) {
-        guard doc.hasText, let database,
-              let select = database.prepare("SELECT text FROM docs WHERE id = ?") else { return }
-        select.bind(1, doc.id)
-        guard select.step(), let text = Self.decompress(select.data(0)),
+    private func remove(id: Int64, hasText: Bool) throws {
+        guard let statement = database?.prepare("DELETE FROM docs WHERE id = ?") else { throw SQLiteFailure() }
+        if hasText {
+            try deleteFromFTS(id)
+            textCount -= 1
+            resultsChanged = true
+        }
+        statement.bind(1, id)
+        guard statement.run() else { throw SQLiteFailure() }
+    }
+
+    /// contentless FTS5 删除时需交回原分词；任一步失败都必须保留原记录和词条。
+    private func deleteFromFTS(_ id: Int64) throws {
+        guard let database, let select = database.prepare("SELECT text FROM docs WHERE id = ?") else { throw SQLiteFailure() }
+        select.bind(1, id)
+        guard try select.next(), let text = Self.decompress(select.data(0)),
               let delete = database.prepare("INSERT INTO docs_fts (docs_fts, rowid, body) VALUES ('delete', ?, ?)")
-        else { return }
-        delete.bind(1, doc.id)
+        else { throw SQLiteFailure() }
+        delete.bind(1, id)
         delete.bind(2, Self.ftsText(text))
-        if !delete.run() { transactionFailed = true }
+        guard delete.run() else { throw SQLiteFailure() }
     }
 
     private func publish(force: Bool) {
-        guard force || Date().timeIntervalSince(lastPublish) > 0.5 else { return }
+        // 初扫队列清空后，释放字典容量及已取消、尚未从 buckets 弹出的路径。
+        if todo.isEmpty {
+            todo = [:]
+            buckets = []
+        }
+        guard force || (resultsChanged && todo.isEmpty) || Date().timeIntervalSince(lastPublish) > 0.5 else { return }
         lastPublish = Date()
         let documents = textCount, pending = todo.count
+        let notifySearch = resultsChanged
+        resultsChanged = false
         let size = ["", "-wal"].reduce(Int64(0)) { total, suffix in
             let attributes = try? FileManager.default.attributesOfItem(atPath: databasePath + suffix)
             return total + ((attributes?[.size] as? NSNumber)?.int64Value ?? 0)
@@ -534,6 +725,7 @@ final class ContentIndex: ObservableObject {
             if self.documentCount != documents { self.documentCount = documents }
             if self.pendingCount != pending { self.pendingCount = pending }
             if self.diskSize != size { self.diskSize = size }
+            if notifySearch { self.resultsDidChange.send() }
         }
     }
 
@@ -844,6 +1036,8 @@ final class SQLiteDatabase {
     var lastInsertID: Int64 { sqlite3_last_insert_rowid(handle) }
 }
 
+private struct SQLiteFailure: Error {}
+
 final class SQLiteStatement {
     private let handle: OpaquePointer
     /// 让 SQLite 自己复制一份绑定的数据
@@ -865,6 +1059,14 @@ final class SQLiteStatement {
 
     /// 还有下一行时返回 true
     func step() -> Bool { sqlite3_step(handle) == SQLITE_ROW }
+    /// 在写入和删除核对中区分正常结束与读取失败，避免提交不完整的事务。
+    func next() throws -> Bool {
+        switch sqlite3_step(handle) {
+        case SQLITE_ROW: return true
+        case SQLITE_DONE: return false
+        default: throw SQLiteFailure()
+        }
+    }
     /// 执行不返回结果的语句，成功时返回 true
     func run() -> Bool { sqlite3_step(handle) == SQLITE_DONE }
     /// 重新执行前调用

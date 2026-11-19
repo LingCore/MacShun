@@ -51,6 +51,31 @@ struct FolderEntries: Equatable {
     /// 文件和文件夹的个数（不算显示名字）
     private(set) var count = 0
 
+    private var namePairs: UInt64 = 0
+    private var hasPronunciations = false
+    /// 读取索引时的目录标记，只用于判断是否要再列一次，不参与名称结果比较。
+    var directoryFingerprint = 0
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.count == rhs.count && lhs.items == rhs.items && lhs.bytes == rhs.bytes
+    }
+
+    /// 两个相邻字节散列为一位。缺位可确定排除，碰撞仍交由完整匹配核实。
+    static func pairMask(_ bytes: [UInt8]) -> UInt64 {
+        var mask: UInt64 = 0
+        for i in bytes.indices.dropFirst() {
+            let pair = UInt32(bytes[i - 1]) << 8 | UInt32(bytes[i])
+            mask |= 1 << ((pair &* 2_654_435_761) >> 26)
+        }
+        return mask
+    }
+
+    func mightMatch(_ term: FileMatcher.Term) -> Bool {
+        if !hasPronunciations && !term.isASCII { return false }
+        if hasPronunciations && (term.isASCII || term.pronunciation != nil) { return true }
+        return namePairs & term.namePairs == term.namePairs
+    }
+
     init() {}
 
     init(_ entries: [FileEntry]) {
@@ -109,19 +134,34 @@ struct FolderEntries: Equatable {
 
     func isTraversable(at index: Int) -> Bool { items[index].flags & Self.traversableFlag != 0 }
 
+    /// 外接盘没有单独的访达显示名。逐字节比较，大小写或 Unicode 拼写变化也要重新收录。
+    func matchesDriveEntry(_ entry: FileEntry, at index: Int, mayDescend: Bool) -> Bool {
+        guard index < items.count else { return false }
+        let item = items[index]
+        let flags = (entry.isDirectory ? Self.directoryFlag : 0) | (entry.isPackage ? Self.packageFlag : 0)
+            | (mayDescend ? Self.traversableFlag : 0)
+        let start = Int(item.nameStart)
+        return item.flags == flags && bytes[start..<start + Int(item.nameLength)].elementsEqual(entry.name.utf8)
+    }
+
     /// 这个名字是不是允许扫描的子文件夹
     func containsFolder(named name: String) -> Bool {
+        index(ofName: name, requiring: Self.traversableFlag) != nil
+    }
+
+    /// 精确比较磁盘名字的原始字节，跳过仅用于搜索的访达显示名。
+    func index(ofName name: String, requiring flags: UInt8 = 0) -> Int? {
         let target = Array(name.utf8)
         var i = 0
         while i < items.count {
             let item = items[i]
-            if isTraversable(at: i), Int(item.nameLength) == target.count {
+            if item.flags & flags == flags, Int(item.nameLength) == target.count {
                 let start = Int(item.nameStart)
-                if bytes[start ..< start + target.count].elementsEqual(target) { return true }
+                if bytes[start ..< start + target.count].elementsEqual(target) { return i }
             }
             i += item.flags & Self.hasDisplayNameFlag != 0 ? 2 : 1
         }
-        return false
+        return nil
     }
 
     /// 每个文件（不含显示名字）的位置
@@ -136,7 +176,8 @@ struct FolderEntries: Equatable {
         let dotNamesOnly = terms.count == 1 && terms[0].bytes == [0x2E]
         bytes.withUnsafeBufferPointer { buffer in
             var i = 0
-            var nextCheck = 0
+            // 调用方在目录之间检查取消；大目录内仍按条目检查。
+            var nextCheck = 512
             while i < items.count {
                 if i >= nextCheck {
                     if isCancelled() { return }
@@ -170,6 +211,7 @@ struct FolderEntries: Equatable {
         bytes.append(contentsOf: name)
         // 小写、合成形式（NFC）：名字可能是分解形式存的（“デ” 存成 “テ” 加浊点），输入法打出来的是合成形式
         let lower = Array(Self.matchForm(text, isASCII: !name.contains(where: { $0 >= 0x80 })).utf8.prefix(limit))
+        namePairs |= Self.pairMask(lower)
         var lowerStart = nameStart
         if lower != name {
             lowerStart = bytes.count
@@ -179,6 +221,7 @@ struct FolderEntries: Equatable {
         if let dot = lower.lastIndex(of: 0x2E), dot > 0 { stem = dot }
         var pinyinStart = 0, pinyinLength = 0
         if name.contains(where: { $0 >= 0x80 }) {
+            hasPronunciations = true
             let pinyin = Self.encodePinyin(text).prefix(limit)
             pinyinStart = bytes.count
             pinyinLength = pinyin.count
@@ -308,15 +351,24 @@ enum FileMatcher {
 
     struct Term {
         let text: String
-        let bytes: [UInt8]
+        private(set) var bytes: [UInt8]
         let isASCII: Bool
-        let pronunciation: [UInt8]?
+        let namePairs: UInt64
+        private(set) var pronunciation: [UInt8]?
 
         init(_ text: String, pronunciation: [UInt8]? = nil) {
             self.text = FolderEntries.matchForm(text, isASCII: text.utf8.allSatisfy { $0 < 0x80 })
             bytes = Array(self.text.utf8)
+            namePairs = FolderEntries.pairMask(bytes)
             isASCII = bytes.allSatisfy { $0 < 0x80 }
             self.pronunciation = pronunciation
+        }
+
+        func workerCopy() -> Self {
+            var copy = self
+            copy.bytes = bytes.withUnsafeBufferPointer { Array($0) }
+            copy.pronunciation = pronunciation?.withUnsafeBufferPointer { Array($0) }
+            return copy
         }
     }
 
@@ -432,6 +484,11 @@ enum FileMatcher {
             return Self(copying: self, terms: spoken)
         }
 
+        /// 各个工作线程反复读取词的字节，独立存储避免在每条记录上争用同一引用计数。
+        func workerCopy() -> Self {
+            Self(copying: self, terms: terms.map { $0.workerCopy() })
+        }
+
         private init(copying query: Self, terms: [Term]) {
             filters = query.filters
             contentText = query.contentText
@@ -527,18 +584,16 @@ final class FileIndex: ObservableObject {
     /// 这次要扫描的位置（包括还没扫到的外接硬盘），只在 queue 上读写
     private var plannedRoots: [String] = []
 
-    private let queue = DispatchQueue(label: "MacShun.FileIndex", qos: .utility)
+    private let queue: DispatchQueue
     private let scanQueue = DispatchQueue(label: "MacShun.FileIndex.scan", qos: .utility)
+    private let watchQueue = DispatchQueue(label: "MacShun.FileIndex.watches", qos: .utility)
     private let driveQueue = DispatchQueue(label: "MacShun.FileIndex.drives", qos: .background)
     private let networkQueue = DispatchQueue(label: "MacShun.FileIndex.network", qos: .utility, attributes: .concurrent)
     private let temporaryNetworkSearchQueue = DispatchQueue(label: "MacShun.FileIndex.networkSearch", qos: .utility)
 
     /// 以下只在 queue 上读写
     /// 文件夹路径 → 里面的文件
-    private var folders: [String: FolderEntries] = [:]
-    private var networkSnapshots: [UUID: NetworkSearchSnapshot] = [:]
-    private var networkRoutes: [(location: FileSearchLocation, mounted: String?)] = []
-    private var failedNetworkRoots: Set<UUID> = []
+    private var folders = IndexedFolders()
     /// 这次扫描的位置（判断 FSEvents 的变化在不在范围里时用）
     private var scannedRoots: [String] = []
     /// 第几次建立索引。重新建立后，上一次还没扫完的结果作废
@@ -546,12 +601,37 @@ final class FileIndex: ObservableObject {
     /// 正在扫描、还没并进索引的位置。这期间这些位置下的变化先记下来，扫完再处理，免得漏掉或被扫描结果盖掉
     private var pendingRoots: [String] = []
     private var deferredChanges: [String: Bool] = [:]
+    private var pendingDriveChanges = FileIndexChanges()
     /// 搜索只读一次快照，避免匹配和后台索引更新互相占住队列。
     private let searchQueue = DispatchQueue(label: "MacShun.FileIndex.search", qos: .userInitiated)
+    /// 仅在 searchQueue 上缓存已读过的直系子项。事件发布新快照时也会重新核对。
+    private var recentListings: [String: (stamp: DirectoryStamp, indexed: FolderEntries, listing: FolderEntries)] = [:]
+    private var finderTitleMatches: (title: String, setID: UUID, revisions: [UInt64], paths: [[String]])?
+    /// 查询先看到了索引之外的变化。文件事件到达后要核对已经显示的结果。
+    private let pendingRecentFolders = Locked(Set<String>())
+
+    /// 文件名查询读取最近发布的完整批次。文件系统事件可能花几秒读盘，不能占住查询入口。
+    private struct SearchSnapshot {
+        var generation = 0
+        var localRoots: [String] = []
+        var folders = IndexedFolders()
+        var network: [UUID: NetworkSearchSnapshot] = [:]
+        var routes: [(location: FileSearchLocation, mounted: String?)] = []
+        var failedShares: Set<UUID> = []
+    }
+    private let searchable = Locked(SearchSnapshot())
+
+    /// Stream 持有回调上下文。晚到的回调通过弱引用访问索引，关停后不会访问已释放的对象。
+    private final class WatchContext {
+        weak var index: FileIndex?
+        init(_ index: FileIndex) { self.index = index }
+    }
+
+    /// 只在 watchQueue 上启动、冲刷及关闭，回调由索引队列处理。
+    private var streams: [FSEventStreamRef] = []
 
     /// 以下只在主线程上读写
     private var generation = 0
-    private var stream: FSEventStreamRef?
     private var started = false
     private var volumeObservers: [NSObjectProtocol] = []
     /// 这次扫描的外接硬盘
@@ -562,14 +642,24 @@ final class FileIndex: ObservableObject {
     private var networkPoll: Timer?
 
     private let mainRoots: [String]
+    private let recentFolders: [String]
+    private let externalRoots: () -> [String]
     private let mountedVolumes: () -> [SearchVolume]
 
-    init(mainRoots: [String] = FileIndex.defaultRoots, mountedVolumes: @escaping () -> [SearchVolume] = SearchVolume.mounted) {
+    init(mainRoots: [String] = FileIndex.defaultRoots, mountedVolumes: @escaping () -> [SearchVolume] = SearchVolume.mounted,
+         externalRoots: @escaping () -> [String] = FileIndex.driveRoots,
+         recentFolders: [String] = FileIndex.defaultRecentFolders,
+         indexQueue: DispatchQueue = DispatchQueue(label: "MacShun.FileIndex", qos: .utility)) {
+        queue = indexQueue
+        self.externalRoots = externalRoots
         self.mainRoots = mainRoots
+        self.recentFolders = recentFolders
         self.mountedVolumes = mountedVolumes
     }
 
     static let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+    private static let defaultRecentFolders = ["Desktop", "Documents", "Downloads"].map { home + "/" + $0 }
 
     /// 第一轮扫描的位置。Safari 的真身在 Cryptexes 里，“应用程序”里只有一个带隐藏标记的替身
     private static let defaultRoots = [
@@ -616,7 +706,7 @@ final class FileIndex: ObservableObject {
                 // 只有外接硬盘真的变了才重新扫描（例如系统挂载了不显示的卷时不用）
                 guard let self, self.started else { return }
                 self.pollNetworkLocations()
-                if self.includeExternalDrives, Self.driveRoots() != self.currentDrives { self.rebuild() }
+                if self.includeExternalDrives, self.externalRoots() != self.currentDrives { self.rebuild() }
             })
         }
     }
@@ -627,7 +717,13 @@ final class FileIndex: ObservableObject {
         started = false
         generation += 1
         let gen = generation
-        stopWatching()
+        searchable.set(SearchSnapshot(generation: gen))
+        searchQueue.async {
+            self.recentListings.removeAll()
+            self.finderTitleMatches = nil
+            self.pendingRecentFolders.set([])
+        }
+        watchQueue.async { self.stopWatching() }
         volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         volumeObservers = []
         networkPoll?.invalidate()
@@ -637,13 +733,11 @@ final class FileIndex: ObservableObject {
         locationStatuses = [:]
         queue.async {
             self.activeGeneration = gen
-            self.folders = [:]
+            self.folders = IndexedFolders()
             self.scannedRoots = []
             self.pendingRoots = []
             self.deferredChanges = [:]
-            self.networkSnapshots = [:]
-            self.networkRoutes = []
-            self.failedNetworkRoots = []
+            self.pendingDriveChanges = FileIndexChanges()
             self.plannedRoots = []
         }
         fileCount = 0
@@ -658,10 +752,22 @@ final class FileIndex: ObservableObject {
         generation += 1
         let gen = generation
         let locals = indexedLocations.filter { $0.share == nil }
-        let mainRoots = Self.uniquePaths(self.mainRoots + locals.map(\.path))
-        let drives = includeExternalDrives ? Self.driveRoots() : []
-        currentDrives = drives
-        updateLocalStatuses(locals, result: nil)
+        let configured = Self.uniquePaths(self.mainRoots + locals.map(\.path))
+        let volumes = includeExternalDrives ? externalRoots() : []
+        searchable.update {
+            $0.generation = gen
+            $0.localRoots = configured + volumes
+        }
+        currentDrives = volumes
+        func onDrive(_ path: String) -> Bool {
+            path.hasPrefix("/Volumes/") || volumes.contains { SearchVolume.contains(path, under: $0) }
+        }
+        let mainRoots = configured.filter { !onDrive($0) }
+        let drives = Self.uniquePaths(volumes + configured.filter(onDrive))
+        let mainLocations = locals.filter { !onDrive($0.path) }
+        let driveLocations = locals.filter { onDrive($0.path) }
+        updateLocalStatuses(locals, available: nil)
+        let isFirstScan = lastIndexed == nil
         isIndexing = true
         isScanningDrives = !drives.isEmpty
         let keepDrives = includeExternalDrives
@@ -672,39 +778,64 @@ final class FileIndex: ObservableObject {
             self.plannedRoots = roots
             self.pendingRoots = roots
             self.deferredChanges = [:]
+            self.pendingDriveChanges = FileIndexChanges()
             self.contentIndex?.setSearchRoots(roots)
             if !retired.isEmpty {
-                self.folders = self.folders.filter { folder, _ in roots.contains { SearchVolume.contains(folder, under: $0) } }
+                for (folder, _) in self.folders where !roots.contains(where: { SearchVolume.contains(folder, under: $0) }) {
+                    self.folders[folder] = nil
+                }
                 self.publishCount()
             }
             // 关掉了“包括外接硬盘”时，内容索引里外接硬盘上的文件也去掉；只是拔掉了的留着，插回来不用重新读
-            self.contentIndex?.prune(keeping: mainRoots + (keepDrives ? ["/Volumes"] : []))
+            self.contentIndex?.prune(keeping: configured + (keepDrives ? ["/Volumes"] : []))
         }
-        restartWatching(mainRoots + drives)
-
         scanQueue.async {
+            self.watchQueue.sync {
+                if self.isCurrentScan(gen) { self.restartWatching(mainRoots + drives) }
+            }
             let begin = Date()
             var result: [String: FolderEntries] = [:]
             var denied: [String] = []
-            for root in mainRoots where result[root] == nil { Self.scanTree(root, into: &result, denied: &denied) }
+            let cancelled = { !self.isCurrentScan(gen) }
+            Self.scanLocalRoots(mainRoots, denied: &denied, isCancelled: cancelled) { batch in
+                result.merge(batch) { _, new in new }
+                // 冷启动还没有上一轮快照。已经读完的目录先供查询，正文仍在主盘扫描结束后统一核对。
+                if isFirstScan {
+                    self.queue.sync {
+                        guard self.isCurrentScan(gen) else { return }
+                        self.folders.merge(batch)
+                        self.publishCount()
+                    }
+                }
+            }
+            guard !cancelled() else { return }
             Log.app.notice("文件索引：第一轮 \(result.values.reduce(0) { $0 + $1.count }, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 2), privacy: .public) 秒")
             self.queue.async {
-                guard gen == self.activeGeneration else { return }
-                self.folders = result
+                guard self.isCurrentScan(gen) else { return }
+                var unvisited = Set<String>()
+                if !isFirstScan && drives.isEmpty {
+                    self.folders = IndexedFolders(result)
+                } else {
+                    // 主盘扫描结束时，外接盘的旧目录仍可搜索。扫描批次会逐项核销。
+                    for (path, _) in self.folders where result[path] == nil {
+                        if drives.contains(where: { SearchVolume.contains(path, under: $0) }) { unvisited.insert(path) }
+                        else { self.folders[path] = nil }
+                    }
+                    if !isFirstScan { self.folders.merge(result) }
+                }
                 self.scannedRoots = mainRoots
-                self.sendContent(result, scopes: mainRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
-                self.finishedScanning(mainRoots)
-                malloc_zone_pressure_relief(nil, 0)
-                self.publishCount { count in
-                    guard self.generation == gen else { return }
+                let available = Set(mainLocations.lazy.map(\.path).filter { result[$0] != nil })
+                self.publishCount { _ in
                     self.isIndexing = false
                     self.lastIndexed = Date()
                     self.deniedFolders = denied
-                    self.updateLocalStatuses(locals, result: result)
-                    _ = count
+                    self.updateLocalStatuses(mainLocations, available: available)
                 }
+                self.sendContent(result, scopes: mainRoots.map { ContentIndex.Scope(folder: $0, recursive: true) })
+                self.finishedScanning(mainRoots)
+                malloc_zone_pressure_relief(nil, 0)
                 guard !drives.isEmpty else { return }
-                self.driveQueue.async { self.scanDrives(drives, generation: gen) }
+                self.driveQueue.async { self.scanDrives(drives, unvisited: unvisited, locations: driveLocations, generation: gen) }
             }
         }
     }
@@ -714,10 +845,10 @@ final class FileIndex: ObservableObject {
         return paths.filter { seen.insert($0).inserted }
     }
 
-    private func updateLocalStatuses(_ locals: [FileSearchLocation], result: [String: FolderEntries]?) {
+    private func updateLocalStatuses(_ locals: [FileSearchLocation], available: Set<String>?) {
         var statuses = locationStatuses.filter { id, _ in indexedLocations.contains { $0.id == id } }
         for location in locals {
-            statuses[location.id] = result.map { $0[location.path] == nil ? .unavailable : .ready } ?? .indexing
+            statuses[location.id] = available.map { $0.contains(location.path) ? .ready : .unavailable } ?? .indexing
         }
         if locationStatuses != statuses { locationStatuses = statuses }
     }
@@ -747,13 +878,14 @@ final class FileIndex: ObservableObject {
         }
         networkPaths = paths
         if statuses != locationStatuses { locationStatuses = statuses }
-        queue.async {
-            self.networkRoutes = routes
-            let stale = self.networkSnapshots.keys.filter { self.networkSnapshots[$0]?.root != paths[$0] }
-            for id in stale { self.networkSnapshots[id] = nil }
-            self.failedNetworkRoots.formIntersection(Set(paths.keys))
-            if !stale.isEmpty { self.publishCount() }
+        let removed = searchable.update { state in
+            state.routes = routes
+            let stale = state.network.keys.filter { state.network[$0]?.root != paths[$0] }
+            for id in stale { state.network[id] = nil }
+            state.failedShares.formIntersection(Set(paths.keys))
+            return !stale.isEmpty
         }
+        if removed { queue.async { self.publishCount() } }
         for route in routes {
             guard let path = route.mounted, networkJobs[route.location.id] == nil else { continue }
             startNetworkScan(id: route.location.id, path: path)
@@ -774,25 +906,24 @@ final class FileIndex: ObservableObject {
                     return
                 }
                 self.locationStatuses[id] = snapshot == nil ? .offline : .ready
-                self.queue.async {
-                    self.networkSnapshots[id] = snapshot
-                    if snapshot == nil { self.failedNetworkRoots.insert(id) }
-                    else { self.failedNetworkRoots.remove(id) }
-                    self.publishCount()
+                self.searchable.update { state in
+                    state.network[id] = snapshot
+                    if snapshot == nil { state.failedShares.insert(id) }
+                    else { state.failedShares.remove(id) }
                 }
+                self.queue.async { self.publishCount() }
             }
         }
     }
 
     func isFolderIndexed(_ path: String, completion: @escaping (Bool) -> Void) {
-        queue.async {
-            let indexed = self.folders[path] != nil || self.networkSnapshots.values.contains { $0.folders[path] != nil }
-                || self.networkRoutes.contains { route in
-                    SearchVolume.contains(path, under: route.location.path)
-                        || route.mounted.map { SearchVolume.contains(path, under: $0) } == true
-                }
-            DispatchQueue.main.async { completion(indexed) }
-        }
+        let snapshot = searchable.get()
+        let indexed = snapshot.folders[path] != nil || snapshot.network.values.contains { $0.folders[path] != nil }
+            || snapshot.routes.contains { route in
+                SearchVolume.contains(path, under: route.location.path)
+                    || route.mounted.map { SearchVolume.contains(path, under: $0) } == true
+            }
+        DispatchQueue.main.async { completion(indexed) }
     }
 
     func activePath(for location: FileSearchLocation) -> String {
@@ -805,33 +936,75 @@ final class FileIndex: ObservableObject {
         return activePath(for: location) + path.dropFirst(location.path.count)
     }
 
+    private func isCurrentScan(_ gen: Int) -> Bool {
+        searchable.update { $0.generation == gen }
+    }
+
     /// 第二轮：几块外接硬盘一起扫。边扫边并进索引、交给内容索引去读，不用等全部扫完。
-    private func scanDrives(_ drives: [String], generation gen: Int) {
+    private func scanDrives(_ drives: [String], unvisited: Set<String>, locations: [FileSearchLocation], generation gen: Int) {
         let begin = Date()
-        Self.scanTreesInParallel(drives, threads: 4) { batch in
-            self.queue.async {
-                guard gen == self.activeGeneration else { return }
-                self.folders.merge(batch) { _, new in new }
-                // 只增不删：还没扫到的文件不能当成删掉了
-                self.sendContent(batch, scopes: [])
-                self.publishCount()
+        var remaining = unvisited
+        Self.scanTreesInParallel(drives, threads: 4, previous: { path in
+            self.searchable.update { $0.folders[path] }
+        }, isCancelled: { !self.isCurrentScan(gen) }) { batch in
+            // 等这一批并入后才继续读盘，限制排队的批次，同时保留独立的查询队列。
+            self.queue.sync {
+                guard self.isCurrentScan(gen) else { return }
+                self.mergeDriveBatch(batch, remaining: &remaining)
             }
         }
+        // 等待扫描期间已发生的文件事件送达索引队列，再合并其最终状态。
+        watchQueue.sync { flushWatchedChanges(gen) }
         queue.async {
-            guard gen == self.activeGeneration else { return }
+            guard self.isCurrentScan(gen) else { return }
             self.scannedRoots.append(contentsOf: drives)
-            // 全部扫完，再把内容索引里已经不存在的文件去掉
-            let scopes = drives.map { ContentIndex.Scope(folder: $0, recursive: true) }
-            var files: [String] = []
-            for (folder, entries) in self.folders where scopes.contains(where: { $0.folder == folder || $0.contains(folder) }) {
-                Self.collectContentFiles(folder, entries, into: &files)
-            }
-            self.contentIndex?.removeMissing(present: Set(files), scopes: scopes)
+            self.applyPendingDriveChanges()
+            self.finishDriveScan(drives, remaining: remaining)
             self.finishedScanning(drives)
-            let count = self.folders.values.reduce(0) { $0 + $1.count }
+            let count = self.folders.fileCount
             Log.app.notice("文件索引：外接硬盘扫完，共 \(count, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 1), privacy: .public) 秒")
             malloc_zone_pressure_relief(nil, 0)
-            self.publishCount { _ in self.isScanningDrives = false }
+            let available = Set(locations.lazy.map(\.path).filter { self.folders[$0] != nil })
+            self.publishCount { _ in
+                self.isScanningDrives = false
+                self.updateLocalStatuses(locations, available: available)
+            }
+        }
+    }
+
+    private func mergeDriveBatch(_ batch: [String: FolderEntries], remaining: inout Set<String>) {
+        var changed = false
+        for (path, entries) in batch {
+            remaining.remove(path)
+            if folders[path] != entries {
+                folders[path] = entries
+                changed = true
+            }
+        }
+        if changed { publishCount() }
+        contentIndex?.sync(folders: batch)
+    }
+
+    private func finishDriveScan(_ roots: [String], remaining: Set<String>) {
+        for path in remaining { folders[path] = nil }
+        if !remaining.isEmpty { publishCount() }
+        contentIndex?.removeMissing(in: folders, scopes: roots.map { .init(folder: $0, recursive: true) })
+    }
+
+    /// MustScanSubDirs 已在索引队列上执行。单个遍历器分批更新，查询始终使用最近发布的快照。
+    private func rescanDriveSubtree(_ root: String, isCancelled: () -> Bool) {
+        var remaining = Set(folders.lazy.map(\.key).filter { SearchVolume.contains($0, under: root) })
+        // 显式收录的位置可能位于这个卷的包或不自动进入的目录中。
+        let roots = [root] + scannedRoots.filter { $0 != root && SearchVolume.contains($0, under: root) }
+        Self.scanTreesInParallel(roots, threads: 1, previous: { self.folders[$0] }, isCancelled: isCancelled) { batch in
+            self.mergeDriveBatch(batch, remaining: &remaining)
+        }
+        guard !isCancelled() else { return }
+        finishDriveScan([root], remaining: remaining)
+        let gen = activeGeneration
+        watchQueue.async {
+            self.flushWatchedChanges(gen)
+            self.queue.async { if self.isCurrentScan(gen) { self.applyPendingDriveChanges() } }
         }
     }
 
@@ -861,11 +1034,10 @@ final class FileIndex: ObservableObject {
     private static let systemContentRoots = ["/Applications", "/System"]
 
     /// 把这些文件夹里要读内容的文件交给内容索引（在 queue 上）。
-    private func sendContent(_ folders: [String: FolderEntries], scopes: [ContentIndex.Scope]) {
+    private func sendContent<S: Sequence>(_ folders: S, scopes: [ContentIndex.Scope]) where S.Element == (key: String, value: FolderEntries) {
         guard let contentIndex else { return }
-        var files: [String] = []
-        for (folder, entries) in folders { Self.collectContentFiles(folder, entries, into: &files) }
-        contentIndex.sync(files: files, scopes: scopes)
+        contentIndex.sync(folders: folders)
+        if !scopes.isEmpty { contentIndex.removeMissing(in: self.folders, scopes: scopes) }
     }
 
     static func indexesContents(in folder: String) -> Bool {
@@ -876,25 +1048,130 @@ final class FileIndex: ObservableObject {
     }
 
     private static func collectContentFiles(_ folder: String, _ entries: FolderEntries, into files: inout [String]) {
+        forEachContentName(in: folder, entries: entries) { name, _ in
+            files.append(folder == "/" ? "/" + name : folder + "/" + name)
+        }
+    }
+
+    static func forEachContentName(in folder: String, entries: FolderEntries, _ body: (String, ContentExtractor.Kind) throws -> Void) rethrows {
         guard indexesContents(in: folder) else { return }
         for index in entries.indices where !entries.isDirectory(at: index) {
             let name = entries.name(at: index)
-            guard !name.hasPrefix("."), ContentExtractor.kind(ofFileNamed: name) != nil else { continue }
-            files.append(folder == "/" ? "/" + name : folder + "/" + name)
+            if !name.hasPrefix("."), let kind = ContentExtractor.kind(ofFileNamed: name) { try body(name, kind) }
+        }
+    }
+
+    private func publishSearchSnapshot() {
+        searchable.update { state in
+            if state.generation == activeGeneration { state.folders = folders }
         }
     }
 
     /// 在 queue 上数一下总数，回到主线程更新界面。
     private func publishCount(then: @escaping (Int) -> Void = { _ in }) {
         var networkFolders = Set<String>()
-        let networkCount = networkSnapshots.values.reduce(0) { total, snapshot in
+        let networkCount = searchable.get().network.values.reduce(0) { total, snapshot in
             total + snapshot.folders.reduce(0) { $0 + (networkFolders.insert($1.key).inserted ? $1.value.count : 0) }
         }
-        let count = folders.values.reduce(networkCount) { $0 + $1.count }
+        let count = folders.fileCount + networkCount
+        publishSearchSnapshot()
+        let gen = activeGeneration
         DispatchQueue.main.async {
+            guard self.generation == gen else { return }
             self.fileCount = count
             then(count)
         }
+    }
+
+    /// 空访达窗口有时只有标题。保留所有同名目录；有歧义时不指定排序优先位置。
+    private func foldersWithFinderTitle(_ title: String, in snapshot: SearchSnapshot,
+                                        isCancelled: () -> Bool) -> [String] {
+        let folders = snapshot.folders
+        let previous = finderTitleMatches.flatMap { $0.title == title && $0.setID == folders.directorySetID ? $0 : nil }
+        var paths = previous?.paths ?? Array(repeating: [], count: folders.partitions.count)
+        let suffix = "/" + title
+        // 文件内容变化不改变目录位置；目录被增删时也只核对相应分区。
+        for i in folders.partitions.indices where previous?.revisions[i] != folders.pathRevisions[i] {
+            var matches: [String] = []
+            for (offset, path) in folders.partitions[i].keys.enumerated() {
+                if offset.isMultiple(of: 256), isCancelled() { return [] }
+                if path.hasSuffix(suffix) { matches.append(path) }
+            }
+            paths[i] = matches
+        }
+        finderTitleMatches = (title, folders.directorySetID, folders.pathRevisions, paths)
+        return paths.flatMap { $0 }
+    }
+
+    /// 受关注的访达目录可能比快照更新，甚至初扫还没发布。只在配置范围内沿可进入的目录查找。
+    private func canReadFinderFolder(_ path: String, in snapshot: SearchSnapshot, isCancelled: () -> Bool) -> Bool {
+        guard let root = snapshot.localRoots.filter({ SearchVolume.contains(path, under: $0) }).max(by: { $0.count < $1.count })
+        else { return false }
+        var folder = path
+        while folder != root && snapshot.folders[folder] == nil {
+            guard !isCancelled(), FileSearchDirectory.mayReadNewFolder(folder) else { return false }
+            folder = (folder as NSString).deletingLastPathComponent
+        }
+        return true
+    }
+
+    /// 常用目录和呼出面板时的访达目录都只核对直接子项。只读取收录范围内的本地目录，
+    /// 并将改动用于本次查询；主索引和全文更新继续由文件事件维护。
+    private func withRecentListings(_ snapshot: SearchSnapshot, finderPaths: [String], within requested: String?,
+                                    isCancelled: () -> Bool) -> IndexedFolders {
+        var paths = Set(recentFolders.filter { snapshot.folders[$0] != nil })
+        if !finderPaths.isEmpty {
+            let mounts = mountedVolumes()
+            let remote = mounts.filter { !$0.isLocal }
+            for finder in finderPaths {
+                if isCancelled() { return snapshot.folders }
+                if let requested, requested != finder { continue }
+                if remote.contains(where: { $0.contains(finder) }) { continue }
+                guard canReadFinderFolder(finder, in: snapshot, isCancelled: isCancelled) else { continue }
+                paths.insert(finder)
+            }
+            pendingRecentFolders.update { $0.formIntersection(paths) }
+        }
+        // 切换搜索上下文时释放旧列表。待核对标记独立于缓存，索引事件仍能刷新结果。
+        for old in recentListings.keys where !paths.contains(old) {
+            recentListings.removeValue(forKey: old)
+        }
+        var current = snapshot.folders
+        for path in paths {
+            if isCancelled() { break }
+            if let requested, requested != path { continue }
+            guard let stamp = DirectoryStamp(path: path) else {
+                recentListings[path] = nil
+                continue
+            }
+            let indexed = snapshot.folders[path] ?? FolderEntries()
+            if finderPaths.count > 1 && !recentFolders.contains(path),
+               indexed.directoryFingerprint != 0 && indexed.directoryFingerprint == stamp.hashValue {
+                recentListings[path] = nil
+                continue
+            }
+            let listing: FolderEntries
+            if let cached = recentListings[path], cached.stamp == stamp, cached.indexed == indexed {
+                listing = cached.listing
+            } else {
+                guard let entries = autoreleasepool(invoking: { FileSearchDirectory.read(path, isCancelled: isCancelled)?.entries }),
+                      !isCancelled(), DirectoryStamp(path: path) == stamp else { continue }
+                listing = entries == indexed ? indexed : entries
+                // 变化再多也逐个核对；只留少量访达目录的完整列表供连续输入复用。
+                if recentFolders.contains(path) || recentListings[path] != nil || recentListings.count < recentFolders.count + 4 {
+                    recentListings[path] = (stamp, indexed, listing)
+                }
+            }
+            // 在记录待核对目录的同时确认它仍然是刚读过的状态，避免错过并行发布的文件事件。
+            if listing != indexed, pendingRecentFolders.update({ pending in
+                guard DirectoryStamp(path: path) == stamp else { return false }
+                pending.insert(path)
+                return true
+            }) {
+                current[path] = listing
+            }
+        }
+        return current
     }
 
     /// 搜索，结果在主线程上回调。boosts：常打开的文件加的分（见 OpenHistory）
@@ -906,47 +1183,53 @@ final class FileIndex: ObservableObject {
     }
 
     func searchPage(_ query: FileMatcher.Query, limit: Int = 60, boosts: [String: Double] = [:],
-                    preferredFolder: String? = nil, within: FileSearchFolder? = nil, options: FileSearchOptions = .init(),
+                    preferredFolder: String? = nil, finderTitle: String? = nil, within: FileSearchFolder? = nil, options: FileSearchOptions = .init(),
                     isCancelled: @escaping () -> Bool = { false },
                     completion: @escaping (FileNameSearch.Page) -> Void) {
         guard limit > 0, !query.terms.isEmpty || !query.filters.isEmpty || query.directoryInput != nil || within != nil || options.hasFilters else {
             completion(.init(results: []))
             return
         }
-        queue.async {
+        let snapshot = searchable.get()
+        let requested = within?.path ?? query.directoryInput?.folder
+        let route = requested.flatMap { path in
+            snapshot.routes.filter { route in
+                SearchVolume.contains(path, under: route.location.path) ||
+                    route.mounted.map { SearchVolume.contains(path, under: $0) } == true
+            }.max { $0.location.path.count < $1.location.path.count }
+        }
+        var effectiveFolder = within
+        if let route {
+            guard let mounted = route.mounted, snapshot.network[route.location.id] != nil else {
+                let status: FileNameSearch.DirectoryStatus = route.mounted == nil || snapshot.failedShares.contains(route.location.id)
+                    ? .offline : .indexing
+                DispatchQueue.main.async { if !isCancelled() { completion(.init(results: [], directory: status)) } }
+                return
+            }
+            if let within, mounted != route.location.path, SearchVolume.contains(within.path, under: route.location.path) {
+                effectiveFolder = FileSearchFolder(path: mounted + within.path.dropFirst(route.location.path.count))
+            }
+        }
+        let folder = effectiveFolder
+        let isTemporaryNetworkSearch = route == nil && requested.map { path in
+            mountedVolumes().contains { !$0.isLocal && $0.contains(path) }
+        } == true
+        let worker = isTemporaryNetworkSearch ? temporaryNetworkSearchQueue : searchQueue
+        worker.async {
             guard !isCancelled() else { return }
-            let folders = self.folders
-            let network = Array(self.networkSnapshots.values)
-            let requested = within?.path ?? query.directoryInput?.folder
-            let route = requested.flatMap { path in
-                self.networkRoutes.filter { route in
-                    SearchVolume.contains(path, under: route.location.path) ||
-                        route.mounted.map { SearchVolume.contains(path, under: $0) } == true
-                }.max { $0.location.path.count < $1.location.path.count }
-            }
-            var effectiveFolder = within
-            if let route {
-                guard let mounted = route.mounted, self.networkSnapshots[route.location.id] != nil else {
-                    let status: FileNameSearch.DirectoryStatus = route.mounted == nil || self.failedNetworkRoots.contains(route.location.id)
-                        ? .offline : .indexing
-                    DispatchQueue.main.async { if !isCancelled() { completion(.init(results: [], directory: status)) } }
-                    return
+            var finderPaths = preferredFolder.map { [$0] } ?? []
+            var folders = snapshot.folders
+            if route == nil && !isTemporaryNetworkSearch {
+                if preferredFolder == nil, let finderTitle, requested == nil {
+                    finderPaths = self.foldersWithFinderTitle(finderTitle, in: snapshot, isCancelled: isCancelled)
                 }
-                if let within, mounted != route.location.path, SearchVolume.contains(within.path, under: route.location.path) {
-                    effectiveFolder = FileSearchFolder(path: mounted + within.path.dropFirst(route.location.path.count))
-                }
+                folders = self.withRecentListings(snapshot, finderPaths: finderPaths, within: requested, isCancelled: isCancelled)
             }
-            let folder = effectiveFolder
-            let isTemporaryNetworkSearch = route == nil && requested.map { path in
-                self.mountedVolumes().contains { !$0.isLocal && $0.contains(path) }
-            } == true
-            let worker = isTemporaryNetworkSearch ? self.temporaryNetworkSearchQueue : self.searchQueue
-            worker.async {
-                let search = FileNameSearch(query: query, limit: limit, boosts: boosts, preferredFolder: preferredFolder,
-                                            within: folder, options: options, network: network)
-                guard let page = search.run(in: folders, isCancelled: isCancelled) else { return }
-                DispatchQueue.main.async { completion(page) }
-            }
+            let preferred = finderPaths.count == 1 ? finderPaths.first : nil
+            let search = FileNameSearch(query: query, limit: limit, boosts: boosts, preferredFolder: preferred,
+                                        within: folder, options: options, network: Array(snapshot.network.values))
+            guard let page = search.run(in: folders, isCancelled: isCancelled) else { return }
+            DispatchQueue.main.async { if !isCancelled() { completion(page) } }
         }
     }
 
@@ -970,19 +1253,23 @@ final class FileIndex: ObservableObject {
 
     // MARK: - 扫描（不碰索引数据，哪个队列都可以）
 
-    /// 几个线程一起扫这些位置（外接硬盘）。每个线程攒够一批（或者过了一秒）就交给 onBatch，可能在不同线程上调用。
-    private static func scanTreesInParallel(_ roots: [String], threads: Int,
-                                            onBatch: @escaping ([String: FolderEntries]) -> Void) {
+    /// 几个线程一起扫这些位置（外接硬盘）。每个线程攒够一批（或达到时间上限）就交给 onBatch，可能在不同线程上调用。
+    static func scanTreesInParallel(_ roots: [String], threads: Int,
+                                    previous: (String) -> FolderEntries? = { _ in nil }, isCancelled: () -> Bool,
+                                    onBatch: @escaping ([String: FolderEntries]) -> Void) {
         let lock = NSLock()
+        let explicitRoots = Set(roots)
         var pending = roots
         var busy = 0
         DispatchQueue.concurrentPerform(iterations: threads) { _ in
             var local: [String: FolderEntries] = [:]
+            var entryCount = 0
             var lastFlush = Date()
-            while true {
-                if !local.isEmpty && (local.count >= 2000 || Date().timeIntervalSince(lastFlush) > 1) {
+            while !isCancelled() {
+                if !local.isEmpty && (local.count >= 256 || entryCount >= 8192 || Date().timeIntervalSince(lastFlush) > 0.5) {
                     onBatch(local)
                     local = [:]
+                    entryCount = 0
                     lastFlush = Date()
                 }
                 lock.lock()
@@ -995,98 +1282,238 @@ final class FileIndex: ObservableObject {
                 }
                 busy += 1
                 lock.unlock()
-                let listed = autoreleasepool { FileSearchDirectory.read(folder) }
-                lock.lock()
+                let listed = autoreleasepool {
+                    FileSearchDirectory.readDrive(folder, reusing: previous(folder), recordStamp: true, isCancelled: isCancelled)
+                }
                 if let listed {
                     local[folder] = listed.entries
-                    pending.append(contentsOf: listed.subfolders)
+                    entryCount += listed.entries.count
+                }
+                lock.lock()
+                if let listed {
+                    // 单独收录的子根已在初始队列中，包括不从父根自动进入的目录。
+                    if explicitRoots.count == 1 { pending.append(contentsOf: listed.subfolders) }
+                    else { pending.append(contentsOf: listed.subfolders.lazy.filter { !explicitRoots.contains($0) }) }
                 }
                 busy -= 1
                 lock.unlock()
             }
-            if !local.isEmpty { onBatch(local) }
+            if !isCancelled(), !local.isEmpty { onBatch(local) }
         }
     }
 
-    private static func scanTree(_ root: String, into result: inout [String: FolderEntries], denied: inout [String]) {
+    static func scanTree(_ root: String, into result: inout [String: FolderEntries], denied: inout [String], isCancelled: () -> Bool) {
         var stack = [root]
-        while let folder = stack.popLast() {
-            // 每个文件夹读完就释放 FileManager 产生的临时对象，不然要等整个扫描结束，峰值高、留下很多内存碎片
-            guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder) }) else {
-                // 个人文件夹下第一层读不了，多半是没给权限（桌面、文稿、下载）
-                if (folder as NSString).deletingLastPathComponent == home {
-                    denied.append(FileManager.default.displayName(atPath: folder))
-                }
-                continue
-            }
-            result[folder] = listed.entries
-            stack.append(contentsOf: listed.subfolders)
+        while !isCancelled(), let folder = stack.popLast() {
+            guard let listing = readLocalFolder(folder, denied: &denied, isCancelled: isCancelled) else { continue }
+            result[folder] = listing.entries
+            stack.append(contentsOf: listing.subfolders)
         }
+    }
+
+    private static func readLocalFolder(_ folder: String, denied: inout [String], isCancelled: () -> Bool) -> FileSearchDirectory? {
+        // 每个目录读完就释放 FileManager 的临时对象。
+        let listing = autoreleasepool { FileSearchDirectory.read(folder, recordStamp: true, isCancelled: isCancelled) }
+        if listing == nil, !isCancelled(), (folder as NSString).deletingLastPathComponent == home {
+            denied.append(FileManager.default.displayName(atPath: folder))
+        }
+        return listing
+    }
+
+    /// 逐层扫描常用目录，再扫描隐藏目录和依赖。首层可立即搜索，后续限频发布。
+    private static func scanLocalRoots(_ roots: [String], denied: inout [String], isCancelled: () -> Bool,
+                                       onBatch: ([String: FolderEntries]) -> Void) {
+        let explicitRoots = Set(roots)
+        var level = uniquePaths(roots)
+        var deferred: [String] = []
+        var batch: [String: FolderEntries] = [:]
+        var firstLevel = true
+        var lastPublish = ContinuousClock.now
+        func publish() {
+            guard !batch.isEmpty, !isCancelled() else { return }
+            onBatch(batch)
+            batch.removeAll(keepingCapacity: true)
+            lastPublish = .now
+        }
+
+        while !level.isEmpty {
+            var next: [String] = []
+            for folder in level {
+                guard !isCancelled() else { return }
+                guard let listed = readLocalFolder(folder, denied: &denied, isCancelled: isCancelled) else { continue }
+                batch[folder] = listed.entries
+                for child in listed.subfolders where !explicitRoots.contains(child) {
+                    let name = (child as NSString).lastPathComponent
+                    if name.hasPrefix(".") || skippedForContent.contains(name) { deferred.append(child) }
+                    else { next.append(child) }
+                }
+                if lastPublish.duration(to: .now) >= .milliseconds(150) { publish() }
+            }
+            if firstLevel { publish(); firstLevel = false }
+            if next.isEmpty { swap(&next, &deferred) }
+            level = next
+        }
+        publish()
     }
 
     // MARK: - 跟踪变化
 
+    private func flushWatchedChanges(_ gen: Int) {
+        guard isCurrentScan(gen) else { return }
+        for stream in streams { FSEventStreamFlushSync(stream) }
+    }
+
     private func stopWatching() {
-        guard let stream else { return }
-        FSEventStreamStop(stream)
-        FSEventStreamInvalidate(stream)
-        FSEventStreamRelease(stream)
-        self.stream = nil
+        for stream in streams {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
+        streams.removeAll()
     }
 
     private func restartWatching(_ roots: [String]) {
         stopWatching()
+        let external = roots.filter { $0.hasPrefix("/Volumes/") }
+        // 主盘仍按目录合并通知。缩短这条流的等待，让已经打开的面板更快刷新。
+        let directories = roots.filter { !$0.hasPrefix("/Volumes/") }
+        if !external.isEmpty, !startWatching(external, fileEvents: true, latency: 1),
+           !startWatching(external, fileEvents: false, latency: 1) {
+            Log.app.error("文件索引：无法跟踪外接盘变化")
+        }
+        if !directories.isEmpty, !startWatching(directories, fileEvents: false, latency: 0.25) {
+            Log.app.error("文件索引：无法跟踪文件变化")
+        }
+    }
+
+    private func startWatching(_ roots: [String], fileEvents: Bool, latency: TimeInterval) -> Bool {
+        let owner = WatchContext(self)
+        defer { withExtendedLifetime(owner) {} }
         var context = FSEventStreamContext(
-            version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil
+            version: 0, info: Unmanaged.passUnretained(owner).toOpaque(),
+            retain: { info in
+                if let info { _ = Unmanaged<WatchContext>.fromOpaque(info).retain() }
+                return info
+            },
+            release: { info in
+                if let info { Unmanaged<WatchContext>.fromOpaque(info).release() }
+            },
+            copyDescription: nil
         )
         let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
-            guard let info else { return }
-            let index = Unmanaged<FileIndex>.fromOpaque(info).takeUnretainedValue()
+            guard let info, let index = Unmanaged<WatchContext>.fromOpaque(info).takeUnretainedValue().index else { return }
             let list = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as? [String] ?? []
-            var changes: [(String, Bool)] = []
-            for i in 0..<min(count, list.count) {
-                let mustScan = flags[i] & UInt32(kFSEventStreamEventFlagMustScanSubDirs) != 0
-                changes.append((list[i], mustScan))
+            var changes = FileIndexChanges()
+            for i in 0..<min(count, list.count) { changes.record(list[i], flags: flags[i]) }
+            if !changes.files.isEmpty || list.first?.hasPrefix("/Volumes/") == true {
+                index.enqueueDriveChanges(changes)
+            } else {
+                index.apply(changes.directories)
             }
-            index.apply(changes)
         }
-        let flags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
+        var flags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
+        if fileEvents { flags |= UInt32(kFSEventStreamCreateFlagFileEvents) }
         guard let stream = FSEventStreamCreate(
             nil, callback, &context, roots as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1.0, FSEventStreamCreateFlags(flags)
-        ) else {
-            Log.app.error("文件索引：无法跟踪文件变化")
-            return
-        }
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
+        ) else { return false }
         FSEventStreamSetDispatchQueue(stream, queue)
-        FSEventStreamStart(stream)
-        self.stream = stream
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return false
+        }
+        streams.append(stream)
+        return true
     }
 
     /// 本程序自己动了这个文件夹里的文件（右键“移到废纸篓”）：马上重新列出来，不等 FSEvents。
     func refresh(folder: String) {
-        queue.async { self.apply([(folder, false)]) }
+        queue.async { self.apply([folder: false]) }
     }
 
-    /// FSEvents 告诉我们哪些文件夹里有变化（在 queue 上）。重新列出这些文件夹，新出现的子文件夹整个扫描，消失的整个删掉。
-    private func apply(_ changes: [(path: String, mustScanSubfolders: Bool)]) {
+    /// 使用从第一条通知算起的固定窗口；连续写入也不会一直推迟搜索结果更新。
+    private func enqueueDriveChanges(_ batch: FileIndexChanges) {
+        let schedule = pendingDriveChanges.isEmpty
+        pendingDriveChanges.merge(batch)
+        guard schedule, !pendingDriveChanges.isEmpty else { return }
+        let gen = activeGeneration
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) {
+            guard self.activeGeneration == gen else { return }
+            self.applyPendingDriveChanges()
+        }
+    }
+
+    private func applyPendingDriveChanges() {
+        let changes = pendingDriveChanges
+        pendingDriveChanges = FileIndexChanges()
+        if !changes.isEmpty { applyDriveChanges(changes) }
+    }
+
+    private func applyDriveChanges(_ batch: FileIndexChanges) {
+        let gen = activeGeneration
+        var modifiedContent: [String] = []
+        var changes = batch.directories
+        var probes: [String: Int] = [:]
+        for (path, change) in batch.files {
+            guard isCurrentScan(gen) else { return }
+            let folder = (path as NSString).deletingLastPathComponent
+            guard changes[folder] == nil else { continue }
+            if pendingRoots.contains(where: { SearchVolume.contains(folder, under: $0) }) {
+                // 初扫结果可能尚未发布。扫完后按该目录的最终状态核对。
+                if deferredChanges[folder] == nil { deferredChanges[folder] = false }
+                continue
+            }
+            guard let entries = folders[folder] else {
+                if isIndexed(folder) { changes[folder] = false }
+                continue
+            }
+            let name = (path as NSString).lastPathComponent
+            if change == .checkName {
+                // 原子保存也会产生改名事件。少量路径直接核实；批量变动只列一次父目录。
+                probes[folder, default: 0] += 1
+                if probes[folder, default: 0] > 8 || !FileSearchDirectory.matchesDriveFile(at: path, name: name, in: entries) {
+                    changes[folder] = false
+                    continue
+                }
+            }
+            if contentIndex != nil, !name.hasPrefix("."), ContentExtractor.kind(ofFileNamed: name) != nil,
+               Self.indexesContents(in: folder), FileSearchDirectory.includesDriveFile(name, in: folder) {
+                modifiedContent.append(path)
+            }
+        }
+
+        // 单文件通知不描述目录的完整内容。随后目录核对的 present 只能包含实际列到的文件。
+        if !modifiedContent.isEmpty { contentIndex?.sync(files: modifiedContent, scopes: []) }
+        if !changes.isEmpty { apply(changes) }
+    }
+
+    private func apply(_ changes: [String: Bool]) {
+        let gen = activeGeneration
+        let cancelled = { !self.isCurrentScan(gen) }
         var touched = false
-        // 交给内容索引的：这些范围里现在有的文件
         var contentFiles: [String] = []
         var contentScopes: [ContentIndex.Scope] = []
-        for (rawPath, recursive) in changes {
-            let folder = rawPath.count > 1 && rawPath.hasSuffix("/") ? String(rawPath.dropLast()) : rawPath
+        for (folder, recursive) in changes {
+            guard !cancelled() else { return }
             if pendingRoots.contains(where: { folder == $0 || folder.hasPrefix($0 + "/") }) {
                 deferredChanges[folder] = (deferredChanges[folder] ?? false) || recursive
                 continue
             }
             guard isIndexed(folder) else { continue }
-            // 系统说要整个重新扫描时，先把这个文件夹下面的全部去掉
+            // 在目录事件上核销查询提前显示的变化。创建和删除可能被合并，最终快照数量不变。
+            if pendingRecentFolders.update({ $0.remove(folder) }) != nil { touched = true }
+            if recursive, folder.hasPrefix("/Volumes/") {
+                rescanDriveSubtree(folder, isCancelled: cancelled)
+                continue
+            }
+            // 主盘沿用整树替换
             if recursive {
                 touched = true
                 removeSubtree(folder)
             }
-            guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder) }) else {
+            guard let listed = autoreleasepool(invoking: { FileSearchDirectory.read(folder, recordStamp: true, isCancelled: cancelled) }) else {
+                if cancelled() { return }
                 if folders[folder] != nil { touched = true }
                 removeSubtree(folder)   // 文件夹被删了
                 contentScopes.append(ContentIndex.Scope(folder: folder, recursive: true))
@@ -1105,18 +1532,23 @@ final class FileIndex: ObservableObject {
                     }
                 }
             }
-            // 只改正文也会收到事件。仍同步内容，但无需让面板重新搜一遍文件名。
-            if folders[folder] != listed.entries { touched = true }
-            folders[folder] = listed.entries
-            Self.collectContentFiles(folder, listed.entries, into: &contentFiles)
+            // 只改正文时仍同步内容；通常不必刷新文件名。
+            if folders[folder] != listed.entries {
+                touched = true
+                folders[folder] = listed.entries
+            }
+            if contentIndex != nil { Self.collectContentFiles(folder, listed.entries, into: &contentFiles) }
             contentScopes.append(ContentIndex.Scope(folder: folder, recursive: recursive))
             var denied: [String] = []
             for sub in listed.subfolders where folders[sub] == nil {
                 var scanned: [String: FolderEntries] = [:]
-                Self.scanTree(sub, into: &scanned, denied: &denied)
+                Self.scanTree(sub, into: &scanned, denied: &denied, isCancelled: cancelled)
+                guard !cancelled() else { return }
                 if !scanned.isEmpty { touched = true }
-                folders.merge(scanned) { _, new in new }
-                for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }
+                folders.merge(scanned)
+                if contentIndex != nil {
+                    for (path, entries) in scanned { Self.collectContentFiles(path, entries, into: &contentFiles) }
+                }
                 if !recursive { contentScopes.append(ContentIndex.Scope(folder: sub, recursive: true)) }
             }
             if !recursive { contentScopes += gone.map { ContentIndex.Scope(folder: $0, recursive: true) } }
@@ -1142,12 +1574,13 @@ final class FileIndex: ObservableObject {
         let changes = deferredChanges.filter { change in roots.contains { change.key == $0 || change.key.hasPrefix($0 + "/") } }
         guard !changes.isEmpty else { return }
         changes.keys.forEach { deferredChanges[$0] = nil }
-        apply(changes.map { ($0.key, $0.value) })
+        apply(changes)
     }
 
     /// 去掉这个文件夹和它下面所有的文件夹（按列着的子文件夹往下找，不用把所有文件夹比一遍）。
     private func removeSubtree(_ folder: String) {
-        guard let entries = folders.removeValue(forKey: folder) else { return }
+        guard let entries = folders[folder] else { return }
+        folders[folder] = nil
         for index in entries.indices where entries.isTraversable(at: index) {
             let name = entries.name(at: index)
             removeSubtree(folder == "/" ? "/" + name : folder + "/" + name)

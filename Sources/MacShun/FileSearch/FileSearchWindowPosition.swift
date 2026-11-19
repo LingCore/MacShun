@@ -52,16 +52,18 @@ struct FileSearchWindowGrip: View {
         let hovering = interaction.hovering
         let pressed = interaction.pressed
         let changesSize = !reduceMotion && (hovering || pressed)
+        let fill = hovering || pressed ? Color.accentColor.opacity(pressed ? 0.68 : 1) : Color.primary.opacity(0.24)
         return Capsule()
-            .fill(Color.primary.opacity(pressed ? 0.68 : hovering ? 0.46 : 0.24))
+            .fill(fill)
             .frame(width: changesSize ? (pressed ? 36 : 43) : 31, height: changesSize ? 4 : 3)
             .frame(width: 84, height: height)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hovering)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: pressed)
             .overlay {
-                FileSearchDragRegion(toggle: toggle, onHover: { interaction.hovering = $0 },
-                                     onPress: { interaction.pressed = $0 })
+                FileSearchDragRegion(toggle: toggle, onPress: { interaction.pressed = $0 })
             }
+            .contentShape(Rectangle())
+            .onHover { interaction.hovering = $0 }
             .accessibilityHidden(true)
     }
 
@@ -74,7 +76,6 @@ struct FileSearchWindowGrip: View {
 /// Only this hit area moves the window. The field editor and list handle their own drags.
 struct FileSearchDragRegion: NSViewRepresentable {
     let toggle: () -> Void
-    var onHover: ((Bool) -> Void)? = nil
     var onPress: ((Bool) -> Void)? = nil
 
     func makeNSView(context: Context) -> DragView {
@@ -85,15 +86,12 @@ struct FileSearchDragRegion: NSViewRepresentable {
 
     func updateNSView(_ view: DragView, context: Context) {
         view.toggle = toggle
-        view.onHover = onHover
         view.onPress = onPress
     }
 
     final class DragView: NSView {
         var toggle: () -> Void = {}
-        var onHover: ((Bool) -> Void)?
         var onPress: ((Bool) -> Void)?
-        private var pointerTracking: NSTrackingArea?
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -113,21 +111,8 @@ struct FileSearchDragRegion: NSViewRepresentable {
         private func releaseGrip() {
             onPress?(false)
             let inside = window.map { visibleRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
-            onHover?(inside)
             if inside { NSCursor.openHand.set() }
         }
-
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-            if let pointerTracking { removeTrackingArea(pointerTracking) }
-            let tracking = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .inVisibleRect, .activeInKeyWindow],
-                                          owner: self, userInfo: nil)
-            addTrackingArea(tracking)
-            pointerTracking = tracking
-        }
-
-        override func mouseEntered(with event: NSEvent) { onHover?(true) }
-        override func mouseExited(with event: NSEvent) { onHover?(false) }
 
         override func resetCursorRects() {
             addCursorRect(bounds, cursor: .openHand)
