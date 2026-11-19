@@ -7,6 +7,11 @@ import SwiftUI
 /// 剪贴板历史：记录、弹出面板、选中后粘贴（C1–C5）。只在主线程上使用。
 @MainActor
 final class ClipboardController {
+    private static let quickPasteKeys = [
+        KeyCode.one, KeyCode.two, KeyCode.three, KeyCode.four, KeyCode.five,
+        KeyCode.six, KeyCode.seven, KeyCode.eight, KeyCode.nine,
+    ]
+
     let store: ClipboardStore
     private let pasteboard: NSPasteboard
     private let watcher: ClipboardWatcher
@@ -83,6 +88,7 @@ final class ClipboardController {
         let placement = placement(at: pointer, beside: host?.anchor)
         watcher.recordPendingChange()
         model.prepareForShow(opensAbove: placement.opensAbove)
+        model.showsQuickPasteNumbers = NSEvent.modifierFlags.contains(.option)
         self.host = host
         previewOffset = nil
         panel.setFrame(placement.frame, display: false)
@@ -219,11 +225,21 @@ final class ClipboardController {
     /// 面板快捷键在搜索框之前处理，组字时由输入法优先处理。
     private func installKeyMonitor() {
         removeKeyMonitor()
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.panel else { return event }
+        let events: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+            guard let self else { return event }
             let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            if event.type == .flagsChanged, self.panel.isKeyWindow {
+                self.model.showsQuickPasteNumbers = mods.contains(.option)
+            }
+            guard event.window === self.panel else { return event }
+            guard event.type == .keyDown else { return event }
             let key = CGKeyCode(event.keyCode)
             if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() { return event }
+            if mods == .option, let index = Self.quickPasteKeys.firstIndex(of: key) {
+                if !event.isARepeat { self.model.pasteVisibleRow(index + 1) }
+                return nil
+            }
             if key == KeyCode.escape, mods.isEmpty {
                 self.model.cancel()
                 return nil

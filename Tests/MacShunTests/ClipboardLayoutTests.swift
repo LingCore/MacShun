@@ -60,4 +60,33 @@ struct ClipboardLayoutTests {
         model.move(1)
         #expect(model.selectedItem?.text == "Older")
     }
+
+    @Test @MainActor func quickPasteTracksVisibleRowsFromTheSearchEdge() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = ClipboardStore(directory: directory)
+        defer {
+            store.saveNow()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        for n in 1...12 {
+            store.add(.init(kind: .text, text: "Row \(n)", fingerprint: "\(n)"), maxItems: 12,
+                      now: Date(timeIntervalSince1970: Double(n)))
+        }
+        let model = ClipboardPanelModel(store: store)
+        model.prepareForShow(opensAbove: true)
+        model.showsQuickPasteNumbers = true
+        let rows = model.results
+        model.updateVisibleRows(Set(rows.dropFirst(2).map(\.id)))
+        #expect(model.quickPasteNumber(for: rows[0].id) == nil)
+        #expect(model.quickPasteNumber(for: rows[2].id) == 1)
+        #expect(model.quickPasteNumber(for: rows.last!.id) == nil)
+
+        var pasted: ClipboardItem?
+        model.onPaste = { pasted = $0 }
+        model.updateVisibleRows(Set(rows.dropFirst(3).map(\.id)))
+        model.pasteVisibleRow(1)
+        #expect(pasted == rows[3])
+        model.pasteVisibleRow(10)
+        #expect(pasted == rows[3])
+    }
 }

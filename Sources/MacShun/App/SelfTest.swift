@@ -266,8 +266,9 @@ final class SelfTest {
 
             let terminalWindow = WindowElement.focused()
             let samples = ["ls -l", "第一行中文\nPY\n", "printf '%s' \"a~b\"\n"]
+            let option: Mod = mapper.altFlag == .maskAlternate ? .alt : .win
             for payload in (0..<3).flatMap({ _ in samples }) {
-                for mode in 0..<3 {
+                for mode in 0..<4 {
                     let before = (try? Data(contentsOf: bytes).count) ?? 0
                     pasteboard.clearContents()
                     pasteboard.setString(payload, forType: .string)
@@ -289,13 +290,17 @@ final class SelfTest {
                             continue
                         }
                         await pause(80)
-                        await press(KeyCode.returnKey)
+                        if mode == 3 {
+                            await press(KeyCode.one, [option])
+                        } else {
+                            await press(KeyCode.returnKey)
+                        }
                     }
                     let expected = Data(("\u{1b}[200~" + payload.replacingOccurrences(of: "\n", with: "\r") + "\u{1b}[201~").utf8)
                     _ = await waitUntil(timeout: 3) { ((try? Data(contentsOf: bytes).count) ?? 0) >= before + expected.count }
                     await pause(100)
                     let received = (try? Data(contentsOf: bytes).dropFirst(before)) ?? Data().dropFirst(0)
-                    let name = ["原生粘贴", "Ctrl+Shift+V", "历史回车粘贴"][mode]
+                    let name = ["原生粘贴", "Ctrl+Shift+V", "历史回车粘贴", "历史数字键粘贴"][mode]
                     check("\(name)：\(payload.debugDescription)", Data(received) == expected,
                           "收到 \(String(decoding: received, as: UTF8.self).debugDescription)；历史面板仍显示：\(clipboard.isVisible)；前台：\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "无")")
                 }

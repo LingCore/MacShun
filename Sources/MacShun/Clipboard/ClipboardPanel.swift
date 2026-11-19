@@ -58,6 +58,8 @@ final class ClipboardPanelModel: ObservableObject {
     @Published var selection = 0
     /// 鼠标停在哪一条上
     @Published var hoveredID: UUID?
+    @Published var showsQuickPasteNumbers = false
+    @Published private(set) var visibleRowIDs: Set<UUID> = []
     /// 每次打开面板时加一，搜索框据此重新获得焦点。
     @Published private(set) var focusToken = 0
 
@@ -158,6 +160,25 @@ final class ClipboardPanelModel: ObservableObject {
         onPreviewChange(open)
     }
 
+    func updateVisibleRows(_ ids: Set<UUID>) {
+        if visibleRowIDs != ids { visibleRowIDs = ids }
+    }
+
+    private var quickPasteRows: [ClipboardItem] {
+        Array(results.lazy.filter { self.visibleRowIDs.contains($0.id) }.prefix(9))
+    }
+
+    func quickPasteNumber(for id: UUID) -> Int? {
+        guard showsQuickPasteNumbers else { return nil }
+        return quickPasteRows.firstIndex { $0.id == id }.map { $0 + 1 }
+    }
+
+    func pasteVisibleRow(_ number: Int) {
+        let rows = quickPasteRows
+        guard number > 0, number <= rows.count else { return }
+        onPaste(rows[number - 1])
+    }
+
     func cancel() {
         if isPreviewOpen {
             setPreviewOpen(false)
@@ -244,6 +265,7 @@ struct ClipboardPanelView: View {
         }
         .frame(idealWidth: ClipboardPanel.size.width, idealHeight: ClipboardPanel.size.height)
         .background(VisualEffectBackground())
+        .onPreferenceChange(VisibleClipboardRows.self) { model.updateVisibleRows($0) }
     }
 
     private var history: some View {
@@ -258,7 +280,7 @@ struct ClipboardPanelView: View {
             if model.results.isEmpty {
                 emptyState
             } else {
-                list
+                list.id(model.opensAbove)
             }
             Divider().opacity(0.6)
             if model.opensAbove {
@@ -375,7 +397,17 @@ struct ClipboardPanelView: View {
                 else if let id { proxy.scrollTo(id) }
             }
             .onChange(of: model.focusToken) {
-                if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
+                // Reopening can resize the native panel as SwiftUI lays out the list.
+                // Wait for the new viewport before restoring the edge near the search field.
+                DispatchQueue.main.async {
+                    if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
+                }
+            }
+            .onAppear {
+                guard model.opensAbove else { return }
+                DispatchQueue.main.async {
+                    if model.selection == 0 { proxy.scrollTo(ListEdge.nearest, anchor: nearestEdge) }
+                }
             }
         }
     }
@@ -384,6 +416,12 @@ struct ClipboardPanelView: View {
         VStack(alignment: .leading, spacing: 1) {
             if !model.opensAbove { groupHeading(at: index) }
             ClipboardRow(model: model, item: item, isSelected: index == model.selection)
+                .background(GeometryReader { geometry in
+                    let frame = geometry.frame(in: .scrollView)
+                    let viewport = CGRect(origin: .zero, size: geometry.bounds(of: .scrollView)?.size ?? .zero)
+                    let visible = frame.height > 0 && viewport.intersection(frame).height >= frame.height / 2
+                    Color.clear.preference(key: VisibleClipboardRows.self, value: visible ? [item.id] : [])
+                })
             if model.opensAbove { groupHeading(at: index) }
         }
         .id(item.id)
@@ -464,6 +502,14 @@ struct ClipboardPanelView: View {
     }
 }
 
+private struct VisibleClipboardRows: PreferenceKey {
+    static let defaultValue: Set<UUID> = []
+
+    static func reduce(value: inout Set<UUID>, nextValue: () -> Set<UUID>) {
+        value.formUnion(nextValue())
+    }
+}
+
 /// 底部的按键提示，按键画成键帽的样子。
 struct KeyHint: View {
     let key: String
@@ -504,7 +550,18 @@ private struct ClipboardRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            sourceIcon
+            ZStack {
+                if let number = model.quickPasteNumber(for: item.id) {
+                    Text("\(number)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .frame(width: 24, height: 24)
+                        .background(Color.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+                        .accessibilityHidden(true)
+                } else {
+                    sourceIcon
+                }
+            }
+            .frame(width: 26, height: 26)
             VStack(alignment: .leading, spacing: 4) {
                 content
                 HStack(spacing: 6) {
