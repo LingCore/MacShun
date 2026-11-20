@@ -101,28 +101,56 @@ struct SearchVolume {
 }
 
 struct NetworkSearchSnapshot {
+    static let metadataMaxAge: TimeInterval = 1800
+
     let root: String
     let folders: IndexedFolders
     let metadata: [String: FileSearchMetadata]
+    let stamps: [String: DirectoryStamp]
+    let metadataRefreshedAt: Date
 
-    static func read(_ root: String, cancelled: () -> Bool) -> Self? {
+    /// 复用上一轮目录标记未变的目录条目；文件元数据每 30 分钟或显式刷新时重读，避免原地覆盖文件导致大小/修改时间永久陈旧。
+    static func read(_ root: String, reusing previous: Self? = nil, cancelled: () -> Bool) -> Self? {
+        let reuse = previous?.root == root ? previous : nil
+        let now = Date()
+        let reuseMetadata = reuse.map { now.timeIntervalSince($0.metadataRefreshedAt) < metadataMaxAge } ?? false
         var pending = [root]
         var folders = IndexedFolders()
         var metadata: [String: FileSearchMetadata] = [:]
+        var stamps: [String: DirectoryStamp] = [:]
         while let folder = pending.popLast() {
             guard !cancelled() else { return nil }
-            guard let listing = autoreleasepool(invoking: { FileSearchDirectory.read(folder, isCancelled: cancelled) }) else {
+            let stamp = DirectoryStamp(path: folder)
+            if let reuse, let stamp, reuse.stamps[folder] == stamp, let cachedEntries = reuse.folders[folder] {
+                folders[folder] = cachedEntries
+                stamps[folder] = stamp
+                for index in cachedEntries.indices {
+                    guard !cancelled() else { return nil }
+                    let name = cachedEntries.name(at: index)
+                    let path = folder == "/" ? "/" + name : folder + "/" + name
+                    if reuseMetadata, let meta = reuse.metadata[path] {
+                        metadata[path] = meta
+                    } else {
+                        metadata[path] = FileSearchMetadata.read(path)
+                    }
+                    if cachedEntries.isTraversable(at: index) { pending.append(path) }
+                }
+                continue
+            }
+            guard let listing = autoreleasepool(invoking: { FileSearchDirectory.read(folder, recordStamp: true, isCancelled: cancelled) }) else {
                 if folder == root { return nil }
                 continue
             }
             folders[folder] = listing.entries
+            if let stamp { stamps[folder] = stamp }
             pending.append(contentsOf: listing.subfolders)
             for index in listing.entries.indices {
                 guard !cancelled() else { return nil }
-                let path = folder + "/" + listing.entries.name(at: index)
+                let path = folder == "/" ? "/" + listing.entries.name(at: index) : folder + "/" + listing.entries.name(at: index)
                 metadata[path] = FileSearchMetadata.read(path)
             }
         }
-        return Self(root: root, folders: folders, metadata: metadata)
+        let refreshedAt = reuseMetadata ? (reuse?.metadataRefreshedAt ?? now) : now
+        return Self(root: root, folders: folders, metadata: metadata, stamps: stamps, metadataRefreshedAt: refreshedAt)
     }
 }

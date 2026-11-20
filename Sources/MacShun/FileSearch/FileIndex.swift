@@ -3,6 +3,8 @@
 import AppKit
 import Combine
 import CoreServices
+import IOKit
+import IOKit.storage
 
 /// 一个文件或文件夹。扫描时先这样拿到，再存进 FolderEntries；测试打分时也用它。
 struct FileEntry {
@@ -171,17 +173,18 @@ struct FolderEntries: Equatable {
 
     /// 和查询匹配的文件，回调位置和得分。
     func forEachMatch(_ terms: [FileMatcher.Term], depth: Int, folderTerms: [Bool] = [], filters: FileSearchFilters = .init(), allowEmpty: Bool = false,
-                      isCancelled: () -> Bool = { false }, _ body: (Int, Double) -> Void) {
+                      cancelCheckInterval: Int = 512, isCancelled: () -> Bool = { false }, _ body: (Int, Double) -> Void) {
         // 单独输入点号时只列点号开头的名字，避免把所有带扩展名的文件都列出来。
         let dotNamesOnly = terms.count == 1 && terms[0].bytes == [0x2E]
+        let step = max(1, cancelCheckInterval)
         bytes.withUnsafeBufferPointer { buffer in
             var i = 0
-            // 调用方在目录之间检查取消；大目录内仍按条目检查。
-            var nextCheck = 512
+            // 调用方在目录之间检查取消；大目录或带元数据筛选时按更小步长检查。
+            var nextCheck = step
             while i < items.count {
                 if i >= nextCheck {
                     if isCancelled() { return }
-                    nextCheck = i + 512
+                    nextCheck = i + step
                 }
                 let hasDisplay = items[i].flags & Self.hasDisplayNameFlag != 0
                 let index = i
@@ -628,11 +631,15 @@ final class FileIndex: ObservableObject {
     }
 
     /// 只在 watchQueue 上启动、冲刷及关闭，回调由索引队列处理。
-    private var streams: [FSEventStreamRef] = []
+    private var localStreams: [FSEventStreamRef] = []
+    private var externalStreams: [FSEventStreamRef] = []
 
     /// 以下只在主线程上读写
     private var generation = 0
     private var started = false
+    private var suspended = false
+    private var activeDriveScans = 0
+    private let driveRootTokens = Locked<(next: Int, byRoot: [String: Int])>((0, [:]))
     private var volumeObservers: [NSObjectProtocol] = []
     /// 这次扫描的外接硬盘
     private var currentDrives: [String] = []
@@ -661,7 +668,7 @@ final class FileIndex: ObservableObject {
         volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         networkPoll?.invalidate()
         networkJobs.values.forEach { $0.set(true) }
-        let existing = streams
+        let existing = localStreams + externalStreams
         if !existing.isEmpty {
             watchQueue.async {
                 for stream in existing {
@@ -682,7 +689,34 @@ final class FileIndex: ObservableObject {
         home, "/Applications", "/System/Applications", "/System/Cryptexes/App/System/Applications", "/Users/Shared",
     ]
 
-    /// 外接硬盘（本地的、在访达里能看到的，不含系统盘）
+    /// 判断挂载点是不是虚拟磁盘映像（.dmg 等）：安装包挂载时不该触发整盘扫描。
+    private static func isDiskImage(mountPath: String) -> Bool {
+        var info = statfs()
+        guard statfs(mountPath, &info) == 0 else { return false }
+        let device = withUnsafePointer(to: info.f_mntfromname) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
+        }
+        guard device.hasPrefix("/dev/") else { return false }
+        let bsdName = String(device.dropFirst(5))
+        guard let matching = IOBSDNameMatching(kIOMainPortDefault, 0, bsdName) else { return false }
+        var service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
+        while service != 0 {
+            let current = service
+            if IOObjectConformsTo(current, "IOHDIXHDDrive") != 0
+                || IOObjectConformsTo(current, "AppleDiskImageDevice") != 0 {
+                IOObjectRelease(current)
+                return true
+            }
+            var parent: io_registry_entry_t = 0
+            let status = IORegistryEntryGetParentEntry(current, kIOServicePlane, &parent)
+            IOObjectRelease(current)
+            guard status == KERN_SUCCESS else { break }
+            service = parent
+        }
+        return false
+    }
+
+    /// 外接硬盘（本地的、在访达里能看到的，不含系统盘和临时挂载的 .dmg 映像）
     private static func driveRoots() -> [String] {
         let keys: [URLResourceKey] = [.volumeIsRootFileSystemKey, .volumeIsLocalKey, .volumeIsBrowsableKey]
         let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: [.skipHiddenVolumes]) ?? []
@@ -690,7 +724,7 @@ final class FileIndex: ObservableObject {
         return volumes.compactMap { volume in
             guard local.contains(volume.path), let values = try? volume.resourceValues(forKeys: Set(keys)),
                   values.volumeIsRootFileSystem != true, values.volumeIsLocal == true, values.volumeIsBrowsable == true,
-                  volume.path.hasPrefix("/Volumes/")
+                  volume.path.hasPrefix("/Volumes/"), !Self.isDiskImage(mountPath: volume.path)
             else { return nil }
             return volume.path
         }.sorted()
@@ -713,16 +747,36 @@ final class FileIndex: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        suspended = false
         rebuild()
         pollNetworkLocations()
-        // 接上或拔掉外接硬盘后，扫描位置变了，重新来一遍
+        // 接上或拔掉外接硬盘时只增量增删变化的那块盘，不重扫整个个人文件夹。
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
-            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                // 只有外接硬盘真的变了才重新扫描（例如系统挂载了不显示的卷时不用）
+            self.volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 guard let self, self.started else { return }
                 self.pollNetworkLocations()
-                if self.includeExternalDrives, self.externalRoots() != self.currentDrives { self.rebuild() }
+                if self.includeExternalDrives || self.indexedLocations.contains(where: { $0.share == nil && $0.path.hasPrefix("/Volumes/") }) {
+                    self.reconcileDrives()
+                }
+            })
+        }
+        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
+            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.started else { return }
+                self.suspended = true
+                self.networkPoll?.invalidate()
+                self.networkPoll = nil
+            })
+        }
+        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
+            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.started, self.suspended else { return }
+                self.suspended = false
+                self.pollNetworkLocations()
+                if self.includeExternalDrives || self.indexedLocations.contains(where: { $0.share == nil && $0.path.hasPrefix("/Volumes/") }) {
+                    self.reconcileDrives()
+                }
             })
         }
     }
@@ -731,6 +785,8 @@ final class FileIndex: ObservableObject {
     func stop() {
         guard started else { return }
         started = false
+        suspended = false
+        activeDriveScans = 0
         generation += 1
         let gen = generation
         searchable.set(SearchSnapshot(generation: gen))
@@ -745,6 +801,7 @@ final class FileIndex: ObservableObject {
         networkPoll?.invalidate()
         networkPoll = nil
         networkJobs.values.forEach { $0.set(true) }
+        networkJobs.removeAll()
         networkPaths = [:]
         locationStatuses = [:]
         queue.async {
@@ -763,6 +820,98 @@ final class FileIndex: ObservableObject {
         deniedFolders = []
     }
 
+    private func assignDriveToken(for roots: [String]) -> Int {
+        driveRootTokens.update { state in
+            state.next &+= 1
+            let token = state.next
+            for root in roots { state.byRoot[root] = token }
+            return token
+        }
+    }
+
+    private func revokeDriveTokens(under removedRoots: [String]) {
+        guard !removedRoots.isEmpty else { return }
+        driveRootTokens.update { state in
+            for key in Array(state.byRoot.keys) where removedRoots.contains(where: { SearchVolume.contains(key, under: $0) }) {
+                state.byRoot.removeValue(forKey: key)
+            }
+        }
+    }
+
+    private func activeDriveRoots(_ roots: [String], token: Int) -> [String] {
+        driveRootTokens.withLock { state in
+            roots.filter { state.byRoot[$0] == token }
+        }
+    }
+
+    /// 接上或拔掉外接硬盘时只增删对应外接盘，不重扫个人文件夹和应用程序。
+    private func reconcileDrives() {
+        let newVolumes = includeExternalDrives ? externalRoots() : []
+        let locals = indexedLocations.filter { $0.share == nil }
+        let configured = Self.uniquePaths(self.mainRoots + locals.map(\.path))
+        let mountedExplicit = configured.filter { path in
+            newVolumes.contains { SearchVolume.contains(path, under: $0) }
+                || (path.hasPrefix("/Volumes/") && FileManager.default.fileExists(atPath: path))
+        }
+        let allNewDrives = Self.uniquePaths(newVolumes + mountedExplicit)
+        guard allNewDrives != currentDrives else { return }
+        // 主盘初扫还没完成时直接重扫，保持状态简单一致。
+        guard !isIndexing, lastIndexed != nil else { rebuild(); return }
+        let oldDrives = currentDrives
+        currentDrives = allNewDrives
+        func isVolumePath(_ path: String) -> Bool {
+            path.hasPrefix("/Volumes/") || newVolumes.contains { SearchVolume.contains(path, under: $0) }
+        }
+        let addedRoots = allNewDrives.filter { !oldDrives.contains($0) }
+        let removedRoots = oldDrives.filter { !allNewDrives.contains($0) }
+        let addedLocations = locals.filter { loc in addedRoots.contains { SearchVolume.contains(loc.path, under: $0) } }
+        let removedLocations = locals.filter { loc in removedRoots.contains { SearchVolume.contains(loc.path, under: $0) } }
+        revokeDriveTokens(under: removedRoots)
+        let driveToken = addedRoots.isEmpty ? 0 : assignDriveToken(for: addedRoots)
+        let gen = generation
+        let mainRoots = configured.filter { !isVolumePath($0) }
+        let allRoots = Self.uniquePaths(mainRoots + allNewDrives)
+        searchable.update {
+            $0.localRoots = allRoots
+        }
+        if !removedLocations.isEmpty { updateLocalStatuses(removedLocations, available: []) }
+        if !addedLocations.isEmpty { updateLocalStatuses(addedLocations, available: nil) }
+        if !addedRoots.isEmpty {
+            activeDriveScans += 1
+            isScanningDrives = true
+        }
+        queue.async {
+            guard self.activeGeneration == gen else { return }
+            self.plannedRoots = allRoots
+            self.contentIndex?.setSearchRoots(allRoots)
+            if !removedRoots.isEmpty {
+                self.scannedRoots.removeAll { r in removedRoots.contains { SearchVolume.contains(r, under: $0) } }
+                self.pendingRoots.removeAll { r in removedRoots.contains { SearchVolume.contains(r, under: $0) } }
+                var removedAny = false
+                for (folder, _) in self.folders where removedRoots.contains(where: { SearchVolume.contains(folder, under: $0) }) {
+                    self.folders[folder] = nil
+                    removedAny = true
+                }
+                if removedAny { self.publishCount() }
+            }
+            if !addedRoots.isEmpty {
+                self.pendingRoots.append(contentsOf: addedRoots.filter { !self.pendingRoots.contains($0) })
+            }
+            let watchExternal = allNewDrives.filter { $0.hasPrefix("/Volumes/") }
+            let unvisited = Set(self.folders.lazy.map(\.key).filter { path in
+                addedRoots.contains { SearchVolume.contains(path, under: $0) }
+            })
+            self.watchQueue.async {
+                guard self.isCurrentScan(gen) else { return }
+                self.restartExternalWatching(watchExternal)
+                guard !addedRoots.isEmpty else { return }
+                self.driveQueue.async {
+                    self.scanDrives(addedRoots, unvisited: unvisited, locations: addedLocations, generation: gen, driveToken: driveToken)
+                }
+            }
+        }
+    }
+
     /// 重新扫描一遍：先扫个人文件夹和应用程序，扫完就能搜；再在后台扫外接硬盘。只在主线程上调用。
     func rebuild() {
         generation += 1
@@ -770,21 +919,28 @@ final class FileIndex: ObservableObject {
         let locals = indexedLocations.filter { $0.share == nil }
         let configured = Self.uniquePaths(self.mainRoots + locals.map(\.path))
         let volumes = includeExternalDrives ? externalRoots() : []
-        searchable.update {
-            $0.generation = gen
-            $0.localRoots = configured + volumes
-        }
-        currentDrives = volumes
         func onDrive(_ path: String) -> Bool {
             path.hasPrefix("/Volumes/") || volumes.contains { SearchVolume.contains(path, under: $0) }
         }
         let mainRoots = configured.filter { !onDrive($0) }
-        let drives = Self.uniquePaths(volumes + configured.filter(onDrive))
+        let mountedExplicit = configured.filter { path in
+            volumes.contains { SearchVolume.contains(path, under: $0) }
+                || (path.hasPrefix("/Volumes/") && FileManager.default.fileExists(atPath: path))
+        }
+        let drives = Self.uniquePaths(volumes + mountedExplicit)
         let mainLocations = locals.filter { !onDrive($0.path) }
         let driveLocations = locals.filter { onDrive($0.path) }
+        searchable.update {
+            $0.generation = gen
+            $0.localRoots = Self.uniquePaths(mainRoots + drives)
+        }
+        currentDrives = drives
+        driveRootTokens.update { $0.byRoot.removeAll() }
+        let driveToken = drives.isEmpty ? 0 : assignDriveToken(for: drives)
         updateLocalStatuses(locals, available: nil)
         let isFirstScan = lastIndexed == nil
         isIndexing = true
+        activeDriveScans = drives.isEmpty ? 0 : 1
         isScanningDrives = !drives.isEmpty
         let keepDrives = includeExternalDrives
         queue.async {
@@ -851,7 +1007,7 @@ final class FileIndex: ObservableObject {
                 self.finishedScanning(mainRoots)
                 malloc_zone_pressure_relief(nil, 0)
                 guard !drives.isEmpty else { return }
-                self.driveQueue.async { self.scanDrives(drives, unvisited: unvisited, locations: driveLocations, generation: gen) }
+                self.driveQueue.async { self.scanDrives(drives, unvisited: unvisited, locations: driveLocations, generation: gen, driveToken: driveToken) }
             }
         }
     }
@@ -870,16 +1026,19 @@ final class FileIndex: ObservableObject {
     }
 
     /// SMB changes are reconciled off the local scan queue. A stalled share keeps at most one scan in flight.
-    func pollNetworkLocations() {
-        guard started else { return }
+    func pollNetworkLocations(forceRefresh: Bool = false) {
+        guard started, !suspended else { return }
         let locations = indexedLocations.filter { $0.share != nil }
         if locations.isEmpty {
             networkPoll?.invalidate()
             networkPoll = nil
         } else if networkPoll == nil {
-            networkPoll = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 300, repeats: true) { [weak self] _ in
                 self?.pollNetworkLocations()
             }
+            timer.tolerance = 30
+            RunLoop.main.add(timer, forMode: .default)
+            networkPoll = timer
         }
         let mounts = locations.isEmpty ? [] : mountedVolumes()
         let routes = locations.map { (location: $0, mounted: $0.mountedPath(in: mounts)) }
@@ -904,21 +1063,22 @@ final class FileIndex: ObservableObject {
         if removed { queue.async { self.publishCount() } }
         for route in routes {
             guard let path = route.mounted, networkJobs[route.location.id] == nil else { continue }
-            startNetworkScan(id: route.location.id, path: path)
+            startNetworkScan(id: route.location.id, path: path, forceRefresh: forceRefresh)
         }
     }
 
-    private func startNetworkScan(id: UUID, path: String) {
+    private func startNetworkScan(id: UUID, path: String, forceRefresh: Bool = false) {
         let cancelled = Locked(false)
         networkJobs[id] = cancelled
         if locationStatuses[id] != .ready { locationStatuses[id] = .indexing }
+        let previous = forceRefresh ? nil : searchable.update { $0.network[id] }
         networkQueue.async {
-            let snapshot = NetworkSearchSnapshot.read(path, cancelled: cancelled.get)
+            let snapshot = NetworkSearchSnapshot.read(path, reusing: previous, cancelled: { cancelled.get() })
             DispatchQueue.main.async {
                 self.networkJobs[id] = nil
                 guard self.started else { return }
                 guard !cancelled.get(), self.networkPaths[id] == path else {
-                    if let replacement = self.networkPaths[id] { self.startNetworkScan(id: id, path: replacement) }
+                    if !self.suspended, let replacement = self.networkPaths[id] { self.startNetworkScan(id: id, path: replacement) }
                     return
                 }
                 self.locationStatuses[id] = snapshot == nil ? .offline : .ready
@@ -957,48 +1117,65 @@ final class FileIndex: ObservableObject {
     }
 
     /// 第二轮：几块外接硬盘一起扫。边扫边并进索引、交给内容索引去读，不用等全部扫完。
-    private func scanDrives(_ drives: [String], unvisited: Set<String>, locations: [FileSearchLocation], generation gen: Int) {
+    private func scanDrives(_ drives: [String], unvisited: Set<String>, locations: [FileSearchLocation], generation gen: Int, driveToken: Int) {
         let begin = Date()
         var remaining = unvisited
+        let isStillActive: () -> Bool = {
+            self.isCurrentScan(gen) && !self.activeDriveRoots(drives, token: driveToken).isEmpty
+        }
         Self.scanTreesInParallel(drives, threads: 4, previous: { path in
             self.searchable.update { $0.folders[path] }
-        }, isCancelled: { !self.isCurrentScan(gen) }) { batch in
+        }, isCancelled: { !isStillActive() }) { batch in
             // 等这一批并入后才继续读盘，限制排队的批次，同时保留独立的查询队列。
             self.queue.sync {
                 guard self.isCurrentScan(gen) else { return }
-                self.mergeDriveBatch(batch, remaining: &remaining)
+                let allowed = self.activeDriveRoots(drives, token: driveToken).filter { self.plannedRoots.contains($0) }
+                guard !allowed.isEmpty else { return }
+                self.mergeDriveBatch(batch, allowedRoots: allowed, remaining: &remaining)
             }
         }
         // 等待扫描期间已发生的文件事件送达索引队列，再合并其最终状态。
         watchQueue.sync { flushWatchedChanges(gen) }
         queue.async {
             guard self.isCurrentScan(gen) else { return }
-            self.scannedRoots.append(contentsOf: drives)
+            let stillPlanned = self.activeDriveRoots(drives, token: driveToken).filter { self.plannedRoots.contains($0) }
+            for root in stillPlanned where !self.scannedRoots.contains(root) {
+                self.scannedRoots.append(root)
+            }
             self.applyPendingDriveChanges()
-            self.finishDriveScan(drives, remaining: remaining)
-            self.finishedScanning(drives)
+            if !stillPlanned.isEmpty {
+                let validRemaining = remaining.filter { path in stillPlanned.contains { SearchVolume.contains(path, under: $0) } }
+                self.finishDriveScan(stillPlanned, remaining: validRemaining)
+                self.finishedScanning(stillPlanned)
+            }
             let count = self.folders.fileCount
             Log.app.notice("文件索引：外接硬盘扫完，共 \(count, privacy: .public) 个，用时 \(Date().timeIntervalSince(begin), format: .fixed(precision: 1), privacy: .public) 秒")
             malloc_zone_pressure_relief(nil, 0)
-            let available = Set(locations.lazy.map(\.path).filter { self.folders[$0] != nil })
+            let activeLocations = locations.filter { loc in stillPlanned.contains { SearchVolume.contains(loc.path, under: $0) } }
+            let available = Set(activeLocations.lazy.map(\.path).filter { self.folders[$0] != nil })
             self.publishCount { _ in
-                self.isScanningDrives = false
-                self.updateLocalStatuses(locations, available: available)
+                self.activeDriveScans = max(0, self.activeDriveScans - 1)
+                self.isScanningDrives = self.activeDriveScans > 0
+                if !activeLocations.isEmpty { self.updateLocalStatuses(activeLocations, available: available) }
             }
         }
     }
 
-    private func mergeDriveBatch(_ batch: [String: FolderEntries], remaining: inout Set<String>) {
+    private func mergeDriveBatch(_ batch: [String: FolderEntries], allowedRoots: [String]? = nil, remaining: inout Set<String>) {
+        let roots = allowedRoots ?? plannedRoots
         var changed = false
+        var accepted: [String: FolderEntries] = [:]
         for (path, entries) in batch {
+            guard roots.contains(where: { SearchVolume.contains(path, under: $0) }) else { continue }
             remaining.remove(path)
+            accepted[path] = entries
             if folders[path] != entries {
                 folders[path] = entries
                 changed = true
             }
         }
         if changed { publishCount() }
-        contentIndex?.sync(folders: batch)
+        if !accepted.isEmpty { contentIndex?.sync(folders: accepted) }
     }
 
     private func finishDriveScan(_ roots: [String], remaining: Set<String>) {
@@ -1378,16 +1555,33 @@ final class FileIndex: ObservableObject {
 
     private func flushWatchedChanges(_ gen: Int) {
         guard isCurrentScan(gen) else { return }
-        for stream in streams { FSEventStreamFlushSync(stream) }
+        for stream in localStreams { FSEventStreamFlushSync(stream) }
+        for stream in externalStreams { FSEventStreamFlushSync(stream) }
     }
 
-    private func stopWatching() {
-        for stream in streams {
+    private func stopStreams(_ list: inout [FSEventStreamRef]) {
+        for stream in list {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
         }
-        streams.removeAll()
+        list.removeAll()
+    }
+
+    private func stopWatching() {
+        stopStreams(&localStreams)
+        stopStreams(&externalStreams)
+    }
+
+    private func restartExternalWatching(_ external: [String]) {
+        stopStreams(&externalStreams)
+        guard !external.isEmpty else { return }
+        if let stream = startWatching(external, fileEvents: true, latency: 1)
+            ?? startWatching(external, fileEvents: false, latency: 1) {
+            externalStreams.append(stream)
+        } else {
+            Log.app.error("文件索引：无法跟踪外接盘变化")
+        }
     }
 
     private func restartWatching(_ roots: [String]) {
@@ -1395,16 +1589,17 @@ final class FileIndex: ObservableObject {
         let external = roots.filter { $0.hasPrefix("/Volumes/") }
         // 主盘仍按目录合并通知。缩短这条流的等待，让已经打开的面板更快刷新。
         let directories = roots.filter { !$0.hasPrefix("/Volumes/") }
-        if !external.isEmpty, !startWatching(external, fileEvents: true, latency: 1),
-           !startWatching(external, fileEvents: false, latency: 1) {
-            Log.app.error("文件索引：无法跟踪外接盘变化")
-        }
-        if !directories.isEmpty, !startWatching(directories, fileEvents: false, latency: 0.25) {
-            Log.app.error("文件索引：无法跟踪文件变化")
+        restartExternalWatching(external)
+        if !directories.isEmpty {
+            if let stream = startWatching(directories, fileEvents: false, latency: 0.25) {
+                localStreams.append(stream)
+            } else {
+                Log.app.error("文件索引：无法跟踪文件变化")
+            }
         }
     }
 
-    private func startWatching(_ roots: [String], fileEvents: Bool, latency: TimeInterval) -> Bool {
+    private func startWatching(_ roots: [String], fileEvents: Bool, latency: TimeInterval) -> FSEventStreamRef? {
         let owner = WatchContext(self)
         defer { withExtendedLifetime(owner) {} }
         var context = FSEventStreamContext(
@@ -1434,15 +1629,21 @@ final class FileIndex: ObservableObject {
         guard let stream = FSEventStreamCreate(
             nil, callback, &context, roots as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
-        ) else { return false }
+        ) else { return nil }
+        if !fileEvents && roots.contains(Self.home) {
+            let excluded = [Self.home + "/Library", Self.home + "/.Trash"]
+                .filter { excl in !roots.contains { SearchVolume.contains($0, under: excl) } }
+            if !excluded.isEmpty {
+                FSEventStreamSetExclusionPaths(stream, excluded as CFArray)
+            }
+        }
         FSEventStreamSetDispatchQueue(stream, queue)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
             FSEventStreamRelease(stream)
-            return false
+            return nil
         }
-        streams.append(stream)
-        return true
+        return stream
     }
 
     /// 本程序自己动了这个文件夹里的文件（右键“移到废纸篓”）：马上重新列出来，不等 FSEvents。

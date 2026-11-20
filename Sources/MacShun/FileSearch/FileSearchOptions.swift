@@ -228,7 +228,8 @@ enum FileSearchRangeKind {
 
     func label(_ value: Double?) -> String {
         guard let value else { return "" }
-        return self == .date ? dateFormatter.string(from: Date(timeIntervalSince1970: value))
+        // 上界存为次日 00:00 的 nextDown，向下取整到整秒避免 ICU DateFormatter 毫秒舍入回次日导致每次重开弹窗 +1 天。
+        return self == .date ? dateFormatter.string(from: Date(timeIntervalSince1970: floor(value)))
             : String(format: "%.10g", value / 1_048_576)
     }
 }
@@ -236,8 +237,12 @@ enum FileSearchRangeKind {
 struct FileSearchOptions: Equatable, Codable {
     private enum CodingKeys: String, CodingKey { case kind, kinds, modified, size, order, dateBounds, sizeBounds }
     private(set) var kinds: Set<FileSearchKind> = []
-    var modified: FileSearchModified = .any
-    var size: FileSearchSize = .any
+    var modified: FileSearchModified = .any {
+        didSet { if modified != .custom { dateBounds = nil } }
+    }
+    var size: FileSearchSize = .any {
+        didSet { if size != .custom { sizeBounds = nil } }
+    }
     var order: FileSearchOrder = .relevance
     var dateBounds: FileSearchBounds?
     var sizeBounds: FileSearchBounds?
@@ -263,8 +268,8 @@ struct FileSearchOptions: Equatable, Codable {
         modified = try values.decodeIfPresent(FileSearchModified.self, forKey: .modified) ?? .any
         size = try values.decodeIfPresent(FileSearchSize.self, forKey: .size) ?? .any
         order = try values.decodeIfPresent(FileSearchOrder.self, forKey: .order) ?? .relevance
-        dateBounds = try values.decodeIfPresent(FileSearchBounds.self, forKey: .dateBounds)
-        sizeBounds = try values.decodeIfPresent(FileSearchBounds.self, forKey: .sizeBounds)
+        dateBounds = modified == .custom ? try values.decodeIfPresent(FileSearchBounds.self, forKey: .dateBounds) : nil
+        sizeBounds = size == .custom ? try values.decodeIfPresent(FileSearchBounds.self, forKey: .sizeBounds) : nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -273,8 +278,8 @@ struct FileSearchOptions: Equatable, Codable {
         try values.encode(modified, forKey: .modified)
         try values.encode(size, forKey: .size)
         try values.encode(order, forKey: .order)
-        try values.encodeIfPresent(dateBounds, forKey: .dateBounds)
-        try values.encodeIfPresent(sizeBounds, forKey: .sizeBounds)
+        if modified == .custom { try values.encodeIfPresent(dateBounds, forKey: .dateBounds) }
+        if size == .custom { try values.encodeIfPresent(sizeBounds, forKey: .sizeBounds) }
     }
 
     var foldersOnly: Bool { kinds.contains(.folders) }

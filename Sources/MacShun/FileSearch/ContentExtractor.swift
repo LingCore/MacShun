@@ -3,6 +3,7 @@
 import Foundation
 import ImageIO
 import PDFKit
+import UniformTypeIdentifiers
 import Vision
 
 /// 从文件里读出纯文本，给内容索引（F2）用。哪个线程都可以调用。
@@ -182,18 +183,21 @@ enum ContentExtractor {
                     } else if (0xDC00...0xDFFF).contains(value), let high = pendingHigh {
                         pendingHigh = nil
                         if let scalar = Unicode.Scalar(0x10000 + (high - 0xD800) << 10 + (value - 0xDC00)) { out.append(scalar) }
-                    } else if let scalar = Unicode.Scalar(value) {
-                        out.append(scalar)
+                    } else {
+                        pendingHigh = nil
+                        if let scalar = Unicode.Scalar(value) { out.append(scalar) }
                     }
                     i += 6
                     continue
                 }
+                pendingHigh = nil
                 // 其他转义（\" \\ \n）原样保留，跳过两个字符，免得 \\u 被当成转义
                 out.append(scalars[i])
                 out.append(scalars[i + 1])
                 i += 2
                 continue
             }
+            pendingHigh = nil
             out.append(scalars[i])
             i += 1
         }
@@ -203,8 +207,12 @@ enum ContentExtractor {
     /// 网页里的文字：去掉脚本、样式、注释和标签，段落处换行，换回常见的字符实体。
     static func htmlText(_ html: String) -> String {
         var text = html
-        // (?s)：. 也匹配换行，脚本、样式、注释几乎都占好几行
-        for pattern in ["(?s)<script\\b[^>]*>.*?</script\\s*>", "(?s)<style\\b[^>]*>.*?</style\\s*>", "(?s)<!--.*?-->"] {
+        // (?s)：. 也匹配换行，脚本、样式、注释几乎都占好几行；同时兜底因读取上限截断而缺闭合标签的尾部。
+        for pattern in [
+            "(?s)<script\\b[^>]*>.*?(?:</script\\s*>|$)",
+            "(?s)<style\\b[^>]*>.*?(?:</style\\s*>|$)",
+            "(?s)<!--.*?(?:-->|$)",
+        ] {
             text = text.replacingOccurrences(of: pattern, with: " ", options: [.regularExpression, .caseInsensitive])
         }
         text = text.replacingOccurrences(of: "<(br|/p|/div|/li|/tr|/h[1-6]|/title)\\b[^>]*>", with: "\n",
@@ -213,16 +221,17 @@ enum ContentExtractor {
         for (entity, character) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
             text = text.replacingOccurrences(of: entity, with: character)
         }
-        // &#20013; &#x4e2d; 这类写法的字
+        // &#20013; &#x4e2d; &#X4E2D; 这类写法的字
         if text.contains("&#") {
-            let regex = try? NSRegularExpression(pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
+            let regex = try? NSRegularExpression(pattern: "&#([xX][0-9a-fA-F]+|[0-9]+);")
             let ns = text as NSString
             var out = ""
             var last = 0
             for match in regex?.matches(in: text, range: NSRange(location: 0, length: ns.length)) ?? [] {
                 out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
                 let code = ns.substring(with: match.range(at: 1))
-                let value = code.hasPrefix("x") ? UInt32(code.dropFirst(), radix: 16) : UInt32(code)
+                let isHex = code.first == "x" || code.first == "X"
+                let value = isHex ? UInt32(code.dropFirst(), radix: 16) : UInt32(code)
                 out += value.flatMap(Unicode.Scalar.init).map { String($0) } ?? ns.substring(with: match.range)
                 last = match.range.location + match.range.length
             }
@@ -256,12 +265,13 @@ enum ContentExtractor {
     }
 
     /// 依次解压几个部分取文字，文字够多了或者解压得太多了就停。
-    private static func collect(_ zip: ZipReader, _ names: [String], _ extract: (Data) -> String?) -> [String] {
+    private static func collect(_ zip: ZipReader, _ names: [String], budget: Int = maxTextBytes,
+                                _ extract: (Data) -> String?) -> [String] {
         var parts: [String] = []
         var textBytes = 0
         var unzipped = 0
         for name in names {
-            guard textBytes < maxTextBytes, unzipped < maxUnzippedBytes else { break }
+            guard textBytes < budget, unzipped < maxUnzippedBytes else { break }
             guard let data = zip.read(name) else { continue }
             unzipped += data.count
             guard let text = extract(data) else { continue }
@@ -273,16 +283,20 @@ enum ContentExtractor {
 
     private static func xlsxText(_ zip: ZipReader) -> String? {
         var parts: [String] = []
+        var usedBytes = 0
         // 文字格子都存在 sharedStrings 里；rPh 是日文注音，不要
         if let shared = zip.read("xl/sharedStrings.xml"),
            let text = xmlText(shared, text: ["t"], breaks: ["si"], skip: ["rPh"]) {
+            usedBytes = text.utf8.count
             parts.append(text)
         }
-        // 有的程序把文字直接写在表格里（inlineStr），只有这时才去读表格，表格本身可能很大
-        let marker = Data("inlineStr".utf8)
-        let sheets = zip.names.filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
-        parts += collect(zip, sheets) { sheet in
-            sheet.range(of: marker) == nil ? nil : xmlText(sheet, text: ["t"], breaks: ["c"], skip: ["rPh"])
+        // sharedStrings 已经达到全文上限时不再解压可能高达上百 MB 的纯数字工作表 XML。
+        if usedBytes < maxTextBytes {
+            let marker = Data("inlineStr".utf8)
+            let sheets = zip.names.filter { $0.hasPrefix("xl/worksheets/sheet") && $0.hasSuffix(".xml") }
+            parts += collect(zip, sheets, budget: maxTextBytes - usedBytes) { sheet in
+                sheet.range(of: marker) == nil ? nil : xmlText(sheet, text: ["t"], breaks: ["c"], skip: ["rPh"])
+            }
         }
         return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
@@ -331,14 +345,15 @@ enum ContentExtractor {
         }
     }
 
-    // MARK: - PDF 和图片（子进程）
+    // MARK: - PDF 和图片（可复用短命子进程）
 
     static let helperArguments: [Kind: String] = [.pdf: "--extract-pdf-text", .image: "--extract-image-text"]
+    static let workerArgument = "--extract-worker"
 
     /// 扫描版 PDF 要不要认字（跟着“认图片里的文字”）
     static let ocrArgument = "--ocr"
 
-    /// 是读 PDF 或认图片文字的子进程时，返回要读的种类和文件
+    /// 是读 PDF 或认图片文字的单次子进程时，返回要读的种类和文件（保留兼容）。
     static func helperRequest(in arguments: [String]) -> (kind: Kind, path: String, ocr: Bool)? {
         for (kind, argument) in helperArguments {
             if let index = arguments.firstIndex(of: argument), index + 1 < arguments.count {
@@ -348,9 +363,8 @@ enum ContentExtractor {
         return nil
     }
 
-    /// 子进程：把文字写到标准输出后退出。
+    /// 单次子进程（保留兼容）：把文字写到标准输出后退出。
     static func runHelper(kind: Kind, path: String, ocr: Bool) -> Never {
-        // 主程序一分钟就会结束卡住的子进程；主程序退出或崩了没人管时，自己最多活一分半
         alarm(90)
         let url = URL(fileURLWithPath: path)
         guard let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageText(at: url) else { exit(1) }
@@ -359,114 +373,511 @@ enum ContentExtractor {
         exit(0)
     }
 
+    struct WorkerRequest: Codable {
+        enum Op: String, Codable { case pdf, image, redact }
+        let op: Op
+        let path: String
+        let ocr: Bool
+    }
+
+    struct WorkerResponse: Codable {
+        let ok: Bool
+        let text: String?
+        let rects: [[Double]]?
+    }
+
+    /// 供子进程与单测共用：执行一次单文件请求。
+    static func executeWorkerRequest(_ request: WorkerRequest) -> WorkerResponse {
+        autoreleasepool {
+            let url = URL(fileURLWithPath: request.path)
+            switch request.op {
+            case .pdf:
+                guard let text = pdfTextInProcess(url, ocr: request.ocr) else {
+                    return WorkerResponse(ok: false, text: nil, rects: nil)
+                }
+                return WorkerResponse(ok: true, text: truncated(text, maxBytes: maxTextBytes), rects: nil)
+            case .image:
+                guard let text = imageText(at: url) else {
+                    return WorkerResponse(ok: false, text: nil, rects: nil)
+                }
+                return WorkerResponse(ok: true, text: truncated(text, maxBytes: maxTextBytes), rects: nil)
+            case .redact:
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                      let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                      let boxes = try? CaptureRedaction.recognizeInProcess(in: cgImage)
+                else {
+                    return WorkerResponse(ok: false, text: nil, rects: nil)
+                }
+                let encoded = boxes.map { [Double($0.origin.x), Double($0.origin.y), Double($0.width), Double($0.height)] }
+                return WorkerResponse(ok: true, text: nil, rects: encoded)
+            }
+        }
+    }
+
+    /// 可复用短命提取子进程：按行接收 JSON 请求并返回一行 JSON；
+    /// 空闲 15 秒或累计处理 64 次后自动退出，把 Vision/CoreML/PDFKit 模型内存全部还给系统。
+    static func runWorker() -> Never {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .withoutEscapingSlashes
+        let decoder = JSONDecoder()
+        var buffer = Data()
+        var handled = 0
+        let maxRequestsPerWorker = 64
+        let idleTimeoutMs: Int32 = 15_000
+
+        while handled < maxRequestsPerWorker {
+            guard let line = readLinePoll(fd: STDIN_FILENO, buffer: &buffer, timeoutMs: idleTimeoutMs) else {
+                Darwin.close(STDIN_FILENO)
+                Darwin.close(STDOUT_FILENO)
+                _exit(0)
+            }
+            if line.isEmpty { continue }
+            guard let request = try? decoder.decode(WorkerRequest.self, from: line) else {
+                let err = WorkerResponse(ok: false, text: nil, rects: nil)
+                if !writeLine(fd: STDOUT_FILENO, data: (try? encoder.encode(err)) ?? Data("{\"ok\":false}".utf8)) {
+                    _exit(0)
+                }
+                continue
+            }
+            alarm(90)
+            let response = executeWorkerRequest(request)
+            alarm(0)
+            handled += 1
+            if request.op == .pdf || handled.isMultiple(of: 8) {
+                malloc_zone_pressure_relief(nil, 0)
+            }
+            guard let payload = try? encoder.encode(response),
+                  writeLine(fd: STDOUT_FILENO, data: payload) else {
+                _exit(0)
+            }
+        }
+        Darwin.close(STDIN_FILENO)
+        Darwin.close(STDOUT_FILENO)
+        _exit(0)
+    }
+
+    private static func readLinePoll(fd: Int32, buffer: inout Data, timeoutMs: Int32) -> Data? {
+        var chunk = [UInt8](repeating: 0, count: 16_384)
+        let deadline = ProcessInfo.processInfo.systemUptime + Double(timeoutMs) / 1000.0
+        while true {
+            if let newline = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[buffer.startIndex ..< newline])
+                buffer.removeSubrange(buffer.startIndex ... newline)
+                return line
+            }
+            let remainingMs = Int32(max(0, ((deadline - ProcessInfo.processInfo.systemUptime) * 1000).rounded(.up)))
+            if remainingMs <= 0 { return nil }
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+            let ready = poll(&pfd, 1, remainingMs)
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if ready == 0 { return nil }
+            let count = Darwin.read(fd, &chunk, chunk.count)
+            if count > 0 {
+                buffer.append(contentsOf: chunk[0 ..< count])
+            } else if count == 0 {
+                guard !buffer.isEmpty else { return nil }
+                let line = buffer
+                buffer.removeAll(keepingCapacity: false)
+                return line
+            } else if errno != EINTR {
+                return nil
+            }
+        }
+    }
+
+    private static func writeLine(fd: Int32, data: Data) -> Bool {
+        var line = data
+        line.append(0x0A)
+        return line.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return false }
+            var written = 0
+            while written < line.count {
+                let n = Darwin.write(fd, base.advanced(by: written), line.count - written)
+                if n > 0 {
+                    written += n
+                } else if n < 0 && errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
     /// 打包好的 Mac顺 用子进程读；测试和截图工具里没有 Mac顺 程序可启动，直接读。
     private static let helperExecutable: URL? =
         Bundle.main.bundleIdentifier == "io.github.lingcore.winshun" ? Bundle.main.executableURL : nil
 
-    /// 正在运行中的提取子进程：停止索引或退出程序时立即终止，避免阻塞长达 60 秒。
-    private final class RunningHelper: @unchecked Sendable {
+    /// 正在运行或空闲复用的提取子进程：停止索引或退出程序时立即终止；
+    /// 绝不从其他线程关闭 readHandle，避免与读线程发生 FD 复用竞争。
+    private final class WorkerClient: @unchecked Sendable {
         let process: Process
-        let readHandle: FileHandle
-        private let lock = NSLock()
-        private var finished = false
-        private var killed = false
-        private var killWork: DispatchWorkItem?
+        let stdinHandle: FileHandle
+        let stdoutHandle: FileHandle
+        let backgroundQoS: Bool
+        var readBuffer = Data()
+        var handled = 0
+        private let state = Locked((finished: false, cancelled: false))
 
-        init(process: Process, readHandle: FileHandle) {
+        init?(executable: URL, backgroundQoS: Bool) {
+            let process = Process()
+            process.executableURL = executable
+            process.arguments = [ContentExtractor.workerArgument]
+            process.qualityOfService = backgroundQoS ? .background : .userInitiated
+            let input = Pipe()
+            let output = Pipe()
+            process.standardInput = input
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() } catch { return nil }
             self.process = process
-            self.readHandle = readHandle
+            self.stdinHandle = input.fileHandleForWriting
+            self.stdoutHandle = output.fileHandleForReading
+            self.backgroundQoS = backgroundQoS
+            _ = fcntl(stdinHandle.fileDescriptor, F_SETNOSIGPIPE, 1)
         }
 
-        var wasKilled: Bool {
-            lock.lock()
-            defer { lock.unlock() }
-            return killed
+        var isCancelled: Bool { state.withLock { $0.cancelled } }
+
+        var isReusable: Bool {
+            guard !isCancelled, process.isRunning, handled < 60 else { return false }
+            var pfd = pollfd(fd: stdoutHandle.fileDescriptor, events: Int16(POLLHUP | POLLERR), revents: 0)
+            _ = poll(&pfd, 1, 0)
+            return (pfd.revents & Int16(POLLHUP | POLLERR)) == 0
         }
 
+        /// 可由任意线程安全调用：只设取消标记并发 SIGTERM/SIGKILL，不碰文件句柄。
         func cancel() {
-            lock.lock()
-            guard !finished else { lock.unlock(); return }
-            killed = true
-            let pid = process.processIdentifier
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.lock.lock()
-                let stillRunning = !self.finished && self.process.isRunning
-                self.lock.unlock()
-                if stillRunning, pid > 0 { kill(pid, SIGKILL) }
+            let pid: pid_t? = state.update { s in
+                guard !s.finished else { return nil }
+                s.cancelled = true
+                return process.processIdentifier
             }
-            killWork?.cancel()
-            killWork = work
-            lock.unlock()
+            guard let pid, pid > 0 else { return }
             process.terminate()
-            try? readHandle.close()
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 3, execute: work)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { return }
+                let stillAlive = self.state.withLock { !$0.finished } && self.process.isRunning
+                if stillAlive { kill(pid, SIGKILL) }
+            }
         }
 
-        func markFinished() {
-            lock.lock()
-            finished = true
-            killWork?.cancel()
-            killWork = nil
-            lock.unlock()
+        /// 只在独占该 WorkerClient 的工作线程上调用，安全关闭管道并回收子进程。
+        func shutdown(forceKill: Bool) {
+            if forceKill { cancel() }
+            state.update { $0.finished = true }
+            try? stdinHandle.close()
+            try? stdoutHandle.close()
+            if process.isRunning {
+                if !forceKill { process.terminate() }
+                let deadline = ProcessInfo.processInfo.systemUptime + 1.0
+                while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
+                    usleep(10_000)
+                }
+                if process.isRunning, process.processIdentifier > 0 {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+            process.waitUntilExit()
+        }
+
+        enum CallResult {
+            case response(WorkerResponse)
+            case pipeBroken
+            case crashed
+            case cancelled
+        }
+
+        func send(_ request: WorkerRequest, reused: Bool, timeout: TimeInterval, isCancelled externalCancel: () -> Bool) -> CallResult {
+            guard let encoded = try? JSONEncoder().encode(request) else { return .crashed }
+            guard ContentExtractor.writeLine(fd: stdinHandle.fileDescriptor, data: encoded) else {
+                return .pipeBroken
+            }
+            let fd = stdoutHandle.fileDescriptor
+            let deadline = ProcessInfo.processInfo.systemUptime + timeout
+            // JSON 对控制字符最多按 \u00XX 展开 6 倍，预留足额行长上限避免误判合法大文本响应崩溃。
+            let maxLineBytes = ContentExtractor.maxTextBytes * 6 + 65_536
+            var chunk = [UInt8](repeating: 0, count: 16_384)
+            while true {
+                if let newline = readBuffer.firstIndex(of: 0x0A) {
+                    let line = Data(readBuffer[readBuffer.startIndex ..< newline])
+                    readBuffer.removeSubrange(readBuffer.startIndex ... newline)
+                    handled += 1
+                    if let response = try? JSONDecoder().decode(WorkerResponse.self, from: line) {
+                        return .response(response)
+                    }
+                    return .crashed
+                }
+                if readBuffer.count > maxLineBytes { return .crashed }
+                if self.isCancelled || externalCancel() || ProcessInfo.processInfo.systemUptime >= deadline {
+                    return .cancelled
+                }
+                var pfd = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
+                let ready = poll(&pfd, 1, 100)
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    return .crashed
+                }
+                if ready == 0 { continue }
+                let count = Darwin.read(fd, &chunk, chunk.count)
+                if count > 0 {
+                    readBuffer.append(contentsOf: chunk[0 ..< count])
+                } else if count == 0 {
+                    if self.isCancelled || externalCancel() { return .cancelled }
+                    // 复用的空闲子进程恰好在空闲超时退出时关闭 stdout，按断管透明重试，不误判为坏文件。
+                    if readBuffer.isEmpty && (reused || (!process.isRunning && process.terminationReason == .exit && process.terminationStatus == 0)) {
+                        return .pipeBroken
+                    }
+                    return .crashed
+                } else if errno != EINTR {
+                    return .crashed
+                }
+            }
         }
     }
 
-    private static let activeHelpers = Locked<[ObjectIdentifier: RunningHelper]>([:])
+    private struct WorkerPoolState {
+        var active: [ObjectIdentifier: (worker: WorkerClient, forIndexing: Bool)] = [:]
+        var idleBackground: [WorkerClient] = []
+        var idleInteractive: [WorkerClient] = []
+        var indexEpoch = 0
+        var globalEpoch = 0
+    }
+
+    private static let pool = Locked(WorkerPoolState())
+    private static let maxIdleWorkers = 2
+
+    /// 停止全文索引时仅终止索引子进程与后台空闲池，不打断正在进行的截图取字、辅助打码或剪贴板 OCR。
+    static func terminateIndexingHelpers() {
+        let (active, idle) = pool.update { state -> ([WorkerClient], [WorkerClient]) in
+            state.indexEpoch &+= 1
+            let active = state.active.values.filter(\.forIndexing).map(\.worker)
+            let idle = state.idleBackground
+            state.idleBackground.removeAll()
+            return (active, idle)
+        }
+        active.forEach { $0.cancel() }
+        if !idle.isEmpty {
+            DispatchQueue.global(qos: .utility).async {
+                idle.forEach { $0.shutdown(forceKill: false) }
+            }
+        }
+    }
 
     static func terminateAllHelpers() {
-        let helpers = activeHelpers.withLock { Array($0.values) }
-        helpers.forEach { $0.cancel() }
+        let (active, idle) = pool.update { state -> ([WorkerClient], [WorkerClient]) in
+            state.indexEpoch &+= 1
+            state.globalEpoch &+= 1
+            let active = state.active.values.map(\.worker)
+            let idle = state.idleBackground + state.idleInteractive
+            state.idleBackground.removeAll()
+            state.idleInteractive.removeAll()
+            return (active, idle)
+        }
+        active.forEach { $0.cancel() }
+        if !idle.isEmpty {
+            DispatchQueue.global(qos: .utility).async {
+                idle.forEach { $0.shutdown(forceKill: false) }
+            }
+        }
+    }
+
+    private static func acquireWorker(
+        executable: URL,
+        backgroundQoS: Bool,
+        forIndexing: Bool
+    ) -> (worker: WorkerClient, reused: Bool, indexEpoch: Int, globalEpoch: Int)? {
+        while true {
+            enum Pick {
+                case borrowed(WorkerClient, Int, Int)
+                case stale(WorkerClient)
+                case needNew(Int, Int)
+            }
+            let pick: Pick = pool.update { state in
+                let candidate = backgroundQoS ? state.idleBackground.popLast() : state.idleInteractive.popLast()
+                if let candidate {
+                    if candidate.isReusable {
+                        state.active[ObjectIdentifier(candidate)] = (candidate, forIndexing)
+                        return .borrowed(candidate, state.indexEpoch, state.globalEpoch)
+                    }
+                    return .stale(candidate)
+                }
+                return .needNew(state.indexEpoch, state.globalEpoch)
+            }
+            switch pick {
+            case .borrowed(let worker, let indexEpoch, let globalEpoch):
+                return (worker, true, indexEpoch, globalEpoch)
+            case .stale(let stale):
+                stale.shutdown(forceKill: false)
+            case .needNew(let startIndexEpoch, let startGlobalEpoch):
+                guard let fresh = WorkerClient(executable: executable, backgroundQoS: backgroundQoS) else { return nil }
+                let registered: Bool = pool.update { state in
+                    if state.globalEpoch != startGlobalEpoch || (forIndexing && state.indexEpoch != startIndexEpoch) {
+                        return false
+                    }
+                    state.active[ObjectIdentifier(fresh)] = (fresh, forIndexing)
+                    return true
+                }
+                if registered {
+                    return (fresh, false, startIndexEpoch, startGlobalEpoch)
+                }
+                fresh.shutdown(forceKill: true)
+                return nil
+            }
+        }
+    }
+
+    private static func releaseWorker(
+        _ worker: WorkerClient,
+        reusable: Bool,
+        forIndexing: Bool,
+        indexEpoch: Int,
+        globalEpoch: Int
+    ) {
+        let shouldShutdown: WorkerClient? = pool.update { state in
+            state.active.removeValue(forKey: ObjectIdentifier(worker))
+            let epochValid = state.globalEpoch == globalEpoch && (!forIndexing || state.indexEpoch == indexEpoch)
+            guard reusable, epochValid, worker.isReusable else { return worker }
+            if worker.backgroundQoS {
+                if state.idleBackground.count < maxIdleWorkers {
+                    state.idleBackground.append(worker)
+                    return nil
+                }
+            } else {
+                if state.idleInteractive.count < maxIdleWorkers {
+                    state.idleInteractive.append(worker)
+                    return nil
+                }
+            }
+            return worker
+        }
+        shouldShutdown?.shutdown(forceKill: !reusable)
+    }
+
+    private enum WorkerOutcome {
+        case response(WorkerResponse)
+        case failed
+        case cancelledOrRetry
+    }
+
+    private static func runViaWorker(
+        _ request: WorkerRequest,
+        timeout: TimeInterval,
+        backgroundQoS: Bool,
+        forIndexing: Bool = false,
+        isCancelled: () -> Bool = { false }
+    ) -> WorkerOutcome {
+        guard let executable = helperExecutable else {
+            return .response(executeWorkerRequest(request))
+        }
+        // 若复用的空闲子进程恰好刚超时退出（EPIPE/EOF），自动透明重试一次新子进程。
+        for attempt in 0 ..< 2 {
+            guard !isCancelled() else { return .cancelledOrRetry }
+            guard let lease = acquireWorker(executable: executable, backgroundQoS: backgroundQoS, forIndexing: forIndexing) else {
+                return .cancelledOrRetry
+            }
+            let result = lease.worker.send(request, reused: lease.reused, timeout: timeout, isCancelled: isCancelled)
+            switch result {
+            case .response(let response):
+                releaseWorker(lease.worker, reusable: true, forIndexing: forIndexing, indexEpoch: lease.indexEpoch, globalEpoch: lease.globalEpoch)
+                return .response(response)
+            case .pipeBroken:
+                releaseWorker(lease.worker, reusable: false, forIndexing: forIndexing, indexEpoch: lease.indexEpoch, globalEpoch: lease.globalEpoch)
+                if attempt == 0 { continue }
+                return .cancelledOrRetry
+            case .cancelled:
+                releaseWorker(lease.worker, reusable: false, forIndexing: forIndexing, indexEpoch: lease.indexEpoch, globalEpoch: lease.globalEpoch)
+                return .cancelledOrRetry
+            case .crashed:
+                releaseWorker(lease.worker, reusable: false, forIndexing: forIndexing, indexEpoch: lease.indexEpoch, globalEpoch: lease.globalEpoch)
+                return .failed
+            }
+        }
+        return .cancelledOrRetry
     }
 
     private static func helperText(_ kind: Kind, _ url: URL) -> Outcome {
         let ocr = readsImages.get()
-        guard let executable = helperExecutable, let argument = helperArguments[kind] else {
-            let text = kind == .pdf ? pdfTextInProcess(url, ocr: ocr) : imageText(at: url)
-            return text.map { .text($0) } ?? .empty
-        }
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = [argument, url.path] + (ocr ? [ocrArgument] : [])
-        // 建索引不急（扫描版 PDF、图片还要认字），让给前台的程序
-        process.qualityOfService = .background
-        let output = Pipe()
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return .retryLater }
-        let readHandle = output.fileHandleForReading
-        let helper = RunningHelper(process: process, readHandle: readHandle)
-        let helperID = ObjectIdentifier(helper)
-        activeHelpers.update { $0[helperID] = helper }
-        defer {
-            helper.markFinished()
-            activeHelpers.update { $0.removeValue(forKey: helperID) }
-            try? readHandle.close()
-        }
-        // 卡住的文件最多等一分钟（扫描版 PDF 要认好几页）；不理 SIGTERM 时再过 3 秒强制结束
-        let timeout = DispatchWorkItem { helper.cancel() }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 60, execute: timeout)
-        let maxRead = maxTextBytes * 2
-        var data = Data()
-        while data.count < maxRead {
-            guard let chunk = try? readHandle.read(upToCount: min(65536, maxRead - data.count)), !chunk.isEmpty else { break }
-            data.append(chunk)
-        }
-        if data.count >= maxRead {
-            // 已经读够上限，关掉读端让子进程尽快退出。
-            try? readHandle.close()
-        }
-        process.waitUntilExit()
-        timeout.cancel()
-        helper.markFinished()
-        // 超时或主动取消多半是电脑太忙/正在停止，下次再读；子进程崩了是文件的问题，记下来不再读
-        if helper.wasKilled { return .retryLater }
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else {
+        let request = WorkerRequest(op: kind == .pdf ? .pdf : .image, path: url.path, ocr: ocr)
+        switch runViaWorker(request, timeout: 60, backgroundQoS: true, forIndexing: true) {
+        case .response(let response):
+            guard response.ok, let text = response.text else { return .empty }
+            return .text(text)
+        case .failed:
             Log.app.notice("内容索引：读不了 \(url.path, privacy: .public)")
             return .empty
+        case .cancelledOrRetry:
+            return .retryLater
         }
-        return .text(String(decoding: data, as: UTF8.self))
+    }
+
+    /// 供剪贴板等非全文索引模块复用子进程 OCR：隔离崩溃并避免主进程常驻百兆 Vision 模型内存。
+    static func extractImageText(at url: URL, requireTextSize: Bool = false, timeout: TimeInterval = 30) -> String? {
+        if requireTextSize && !hasTextSizedPixels(url) { return "" }
+        let request = WorkerRequest(op: .image, path: url.path, ocr: true)
+        switch runViaWorker(request, timeout: timeout, backgroundQoS: true) {
+        case .response(let response):
+            return response.ok ? response.text : nil
+        case .failed, .cancelledOrRetry:
+            return nil
+        }
+    }
+
+    /// 把内存里的截图临时落盘为私密 PNG，交给短命子进程做 Vision OCR，用完立即删除。
+    private static func withTemporaryPNG(_ image: CGImage, _ body: (URL) throws -> Void) rethrows {
+        let dir = FileManager.default.temporaryDirectory
+        let file = dir.appendingPathComponent("MacShun-ocr-\(UUID().uuidString).png")
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return }
+        guard FileManager.default.createFile(atPath: file.path, contents: data as Data, attributes: [.posixPermissions: 0o600]) else { return }
+        defer { try? FileManager.default.removeItem(at: file) }
+        try body(file)
+    }
+
+    /// 供截图取字使用：打包版走短命子进程，避免主进程常驻 Vision 模型并支持取消。
+    static func recognizeTextInSubprocess(
+        in image: CGImage,
+        timeout: TimeInterval = 30,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) -> String {
+        guard helperExecutable != nil else { return recognizeText(in: image) }
+        var output = ""
+        withTemporaryPNG(image) { url in
+            let request = WorkerRequest(op: .image, path: url.path, ocr: true)
+            if case .response(let response) = runViaWorker(request, timeout: timeout, backgroundQoS: false, isCancelled: isCancelled),
+               response.ok, let text = response.text {
+                output = text
+            }
+        }
+        return output
+    }
+
+    /// 供截图辅助打码使用：打包版走短命子进程，支持取消并释放 Vision 模型内存。
+    static func recognizeRedactionInSubprocess(
+        in image: CGImage,
+        timeout: TimeInterval = 15,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
+    ) throws -> [CGRect] {
+        guard helperExecutable != nil else { return try CaptureRedaction.recognizeInProcess(in: image) }
+        var result: [CGRect]?
+        withTemporaryPNG(image) { url in
+            let request = WorkerRequest(op: .redact, path: url.path, ocr: true)
+            if case .response(let response) = runViaWorker(request, timeout: timeout, backgroundQoS: false, isCancelled: isCancelled),
+               response.ok, let rects = response.rects {
+                result = rects.compactMap { row in
+                    guard row.count == 4 else { return nil }
+                    return CGRect(x: row[0], y: row[1], width: row[2], height: row[3])
+                }
+            }
+        }
+        guard let result else { throw CancellationError() }
+        return result
     }
 
     static func pdfTextInProcess(_ url: URL, ocr: Bool) -> String? {

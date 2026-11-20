@@ -631,4 +631,28 @@ struct ImageTextAndHistoryTests {
         history.clear()
         #expect(OpenHistory(defaults: defaults).boosts(now: now).isEmpty)
     }
+
+    @Test func extractorHardeningJSONHTMLAndZip() throws {
+        // 孤立高代理项不能吞掉或污染后续字符；合法代理对正常还原
+        #expect(ContentExtractor.unescapeJSON(#"\uD83Dabc"#) == "abc")
+        #expect(ContentExtractor.unescapeJSON(#"\uD83D\uDE00ok"#) == "😀ok")
+
+        // HTML 末尾未闭合的 script/style/注释不泄漏内容，大写 &#X 十六进制实体能正确解码
+        #expect(ContentExtractor.htmlText("<p>可见&#X4E2D;文</p><script>secret_token").trimmingCharacters(in: .whitespacesAndNewlines) == "可见中文")
+        #expect(ContentExtractor.htmlText("<p>正文</p><!--未闭合注释secret").trimmingCharacters(in: .whitespacesAndNewlines) == "正文")
+        #expect(ContentExtractor.htmlText("<p>正文</p><style>.hidden{color:red}").trimmingCharacters(in: .whitespacesAndNewlines) == "正文")
+
+        // ZipReader 拒绝 STORED 模式下 compressedSize != size 的伪造条目
+        var zip = makeZip([("a.txt", "hello")])
+        let cdSig: [UInt8] = [0x50, 0x4B, 0x01, 0x02]
+        let cdOffset = try #require(zip.range(of: Data(cdSig))?.lowerBound)
+        zip[cdOffset + 20] = 4
+        let reader = try #require(ZipReader(data: zip))
+        #expect(reader.read("a.txt") == nil)
+
+        // EOCD 末尾附加多余垃圾字节使 commentLength 不符时应拒绝
+        var trailingGarbage = makeZip([("a.txt", "hello")])
+        trailingGarbage.append(contentsOf: [0x01, 0x02, 0x03])
+        #expect(ZipReader(data: trailingGarbage) == nil)
+    }
 }

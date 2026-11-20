@@ -46,6 +46,15 @@ struct FileNameSearch {
         }) == true {
             input = .init(folder: within.path, listsChildren: true)
         }
+        let boostedFolders: [String: Double] = {
+            guard !boosts.isEmpty else { return [:] }
+            var result: [String: Double] = [:]
+            for (path, boost) in boosts where boost > 0 {
+                let dir = (path as NSString).deletingLastPathComponent
+                if boost > (result[dir] ?? 0) { result[dir] = boost }
+            }
+            return result
+        }()
         if let input {
             let directory = scopedNetwork == nil ? (within?.canonicalSpelling(of: input.folder) ?? input.folder) : input.folder
             let entries: FolderEntries?
@@ -74,7 +83,8 @@ struct FileNameSearch {
                         if let hit = accepted(hit, since: since) { best.add(hit) }
                     }
                 } else {
-                    match(entries, in: directory, using: &best, direct: true, since: since, isCancelled: isCancelled)
+                    match(entries, in: directory, using: &best, direct: true, since: since,
+                          folderMaxBoost: boostedFolders[directory] ?? 0, isCancelled: isCancelled)
                 }
                 guard !isCancelled() else { return nil }
                 return Page(results: finish(&best, preferPath: snapshot == nil && within == nil && !input.listsChildren,
@@ -107,7 +117,8 @@ struct FileNameSearch {
                     partial = true
                     continue
                 }
-                match(entries, in: folder, using: &best, direct: false, since: since, isCancelled: isCancelled)
+                match(entries, in: folder, using: &best, direct: false, since: since,
+                      folderMaxBoost: boostedFolders[folder] ?? 0, isCancelled: isCancelled)
                 guard !isCancelled() else { return nil }
                 for i in entries.indices where entries.isTraversable(at: i) {
                     pending.append(Self.child(entries.name(at: i), in: folder))
@@ -128,7 +139,8 @@ struct FileNameSearch {
                 for part in stride(from: worker, to: source.partitions.count, by: workers) {
                     for (offset, pair) in source.partitions[part].enumerated() {
                         if offset.isMultiple(of: 64), isCancelled() { return }
-                        matcher.match(pair.value, in: pair.key, using: &local, direct: false, since: since, isCancelled: isCancelled)
+                        matcher.match(pair.value, in: pair.key, using: &local, direct: false, since: since,
+                                      folderMaxBoost: boostedFolders[pair.key] ?? 0, isCancelled: isCancelled)
                     }
                 }
             }
@@ -143,7 +155,7 @@ struct FileNameSearch {
     }
 
     private func match(_ entries: FolderEntries, in folder: String, using best: inout BestFileResults, direct: Bool,
-                       since: Double?, isCancelled: () -> Bool) {
+                       since: Double?, folderMaxBoost: Double, isCancelled: () -> Bool) {
         let mixed = query.isPlainName && !query.terms.isEmpty && (query.terms.count > 1 || !query.filters.suffixes.isEmpty)
         if !mixed, query.nameTerms == nil, query.terms.count == 1, !entries.mightMatch(query.terms[0]) { return }
         // 搜索范围以上的祖先目录不参与混合词匹配或相对路径加分。
@@ -154,22 +166,26 @@ struct FileNameSearch {
         lazy var insideDotFolder = folder.contains("/.")
         lazy var asksForDotName = query.terms.contains { $0.bytes.first == 0x2E }
             || query.folders.contains { forms in forms.contains { $0.hasPrefix(".") } }
+        let cancelStep = (options.needsMetadata || query.filters.needsMetadata) ? 32 : 512
 
         func add(_ i: Int, score: Double) {
+            let exact = (query.isPlainName || direct) && entries.hasFullName(query.fullName, at: i)
+            if !exact && !best.couldAcceptPartial(maxScore: score + folderMaxBoost) { return }
             let name = entries.name(at: i)
             let path = Self.child(name, in: folder)
             let penalty = !asksForDotName && (insideDotFolder || name.hasPrefix(".")) ? 8.0 : 0
-            let exact = (query.isPlainName || direct) && entries.hasFullName(query.fullName, at: i)
+            let boost = boosts.isEmpty ? 0 : (boosts[path] ?? 0)
             var hit = FileSearchResult(path: path, name: entries.displayName(at: i) ?? name, isDirectory: entries.isDirectory(at: i),
-                                       score: score - penalty + (boosts[path] ?? 0), canSearchInside: entries.isTraversable(at: i))
+                                       score: score - penalty + boost, canSearchInside: entries.isTraversable(at: i))
             if exact { hit.nameRank = folder == preferredFolder ? .exactInFinder : .exact }
             if let hit = accepted(hit, since: since) { best.add(hit) }
         }
         entries.forEachMatch(query.terms, depth: depth, folderTerms: folderTerms, filters: query.filters,
-                             allowEmpty: options.hasFilters || options.recursive, isCancelled: isCancelled) { add($0, score: $1 + folderBonus) }
+                             allowEmpty: options.hasFilters || options.recursive,
+                             cancelCheckInterval: cancelStep, isCancelled: isCancelled) { add($0, score: $1 + folderBonus) }
         // 访达用 / 显示名字里的 : 。相对路径两种写法都搜，合并时同一路径留较高分。
         if let alternate = query.nameTerms {
-            entries.forEachMatch(alternate, depth: depth, isCancelled: isCancelled) { add($0, score: $1) }
+            entries.forEachMatch(alternate, depth: depth, cancelCheckInterval: cancelStep, isCancelled: isCancelled) { add($0, score: $1) }
         }
     }
 
@@ -233,6 +249,20 @@ struct BestFileResults {
         self.limit = max(0, limit)
         self.byName = byName
         self.order = order
+    }
+
+    /// 在解码路径、查表或读元数据前快速排除不可能进入前 limit 的非精确匹配。
+    func couldAcceptPartial(maxScore: Double) -> Bool {
+        guard order == .relevance, let cutoff else { return true }
+        if cutoff.nameRank != .partial { return false }
+        return maxScore + 1e-9 >= cutoff.score
+    }
+
+    /// 检查给定候选是否有资格进入前 limit（用于在昂贵的磁盘检查前剪枝）。
+    func couldAccept(_ hit: FileSearchResult) -> Bool {
+        guard limit > 0 else { return false }
+        if let cutoff, !precedes(hit, cutoff) { return false }
+        return true
     }
 
     mutating func add(_ hit: FileSearchResult) {

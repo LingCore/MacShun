@@ -47,8 +47,12 @@ struct FileSearchDirectory {
         name.hasPrefix(".") && (metadata.contains(name) || name.hasPrefix("._"))
     }
 
-    /// 仓库内部数据和生成缓存只收目录名，避免一次扫描几十万个对象。
-    private static let nameOnly: Set<String> = [".git", ".hg", ".svn", ".build", ".cache", ".venv"]
+    /// 仓库内部数据、依赖包与生成缓存只收目录名，避免一次扫描几十万个构建/依赖对象。
+    private static let nameOnly: Set<String> = [
+        ".git", ".hg", ".svn", ".build", ".cache", ".venv",
+        "node_modules", "Pods", "DerivedData", "site-packages", "dist-packages", "__pycache__",
+        "bower_components", "venv", "Carthage",
+    ]
     private static let toolCacheParents = ["caches": ".gradle", "registry": ".cargo", "_cacache": ".npm", "toolchains": ".rustup"]
 
     private static func mayDescend(_ entry: FileEntry, in folder: String, isSymlink: Bool = false) -> Bool {

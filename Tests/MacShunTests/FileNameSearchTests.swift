@@ -250,21 +250,32 @@ struct FileNameSearchTests {
         #expect(!options.acceptsKind("/Project/sample.txt", isFolder: false))
         #expect(!options.acceptsKind("/Project", isFolder: true))
         options.size = .custom
-        options.sizeBounds = try #require(FileSearchRangeKind.size.parse(lower: "1.5", upper: "2"))
+        let sizeBounds: FileSearchBounds = try #require(FileSearchRangeKind.size.parse(lower: "1.5", upper: "2"))
+        options.sizeBounds = sizeBounds
         options.modified = .custom
         let day = try #require(FileSearchRangeKind.date.parse(lower: "2026-01-05", upper: "2026-01-05"))
         options.dateBounds = day
         let lower = try #require(day.lower)
         let upper = try #require(day.upper)
-        #expect(options.accepts(.init(modified: lower, size: 1_572_864), since: nil))
-        #expect(options.accepts(.init(modified: upper, size: 2_097_152), since: nil))
+        let acceptsLower = options.accepts(.init(modified: lower, size: 1_572_864), since: nil)
+        let acceptsUpper = options.accepts(.init(modified: upper, size: 2_097_152), since: nil)
+        #expect(acceptsLower)
+        #expect(acceptsUpper)
         let acceptsFollowingDay = options.accepts(.init(modified: upper.nextUp, size: 2_097_152), since: nil)
         let acceptsUndersizedFile = options.accepts(.init(modified: lower, size: 1_572_863), since: nil)
         #expect(acceptsFollowingDay == false)
         #expect(acceptsUndersizedFile == false)
+        // 自定义日期范围回显不能因 nextDown 毫秒舍入而漂移到次日
+        #expect(FileSearchRangeKind.date.label(day.lower) == "2026-01-05")
+        #expect(FileSearchRangeKind.date.label(day.upper) == "2026-01-05")
         #expect(FileSearchRangeKind.date.parse(lower: "2026-02-30", upper: "") == nil)
         #expect(FileSearchRangeKind.size.parse(lower: "2", upper: "1") == nil)
         #expect(try JSONDecoder().decode(FileSearchOptions.self, from: JSONEncoder().encode(options)) == options)
+        // 离开 .custom 后陈旧边界应自动清零，避免影响已保存筛选比对
+        var cleared = options
+        cleared.modified = .any
+        cleared.size = .any
+        #expect(cleared.dateBounds == nil && cleared.sizeBounds == nil)
         options.toggle(.folders)
         #expect(options.foldersOnly && !options.selects(.images) && !options.selects(.pdf))
         options.toggle(.folders)

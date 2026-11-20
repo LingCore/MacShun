@@ -100,7 +100,7 @@ struct FileSearchFilters {
     }
 
     func accepts(fileAt path: String) -> Bool {
-        guard !isEmpty else { return true }
+        guard !suffixes.isEmpty || !excluded.isEmpty else { return true }
         let name = (path as NSString).lastPathComponent.precomposedStringWithCanonicalMapping.lowercased()
         return Array(name.utf8).withUnsafeBufferPointer { accepts($0, isDirectory: false) }
     }

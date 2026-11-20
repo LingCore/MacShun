@@ -57,6 +57,7 @@ struct ZipReader {
         let compressed = data[data.startIndex + start ..< data.startIndex + start + entry.compressedSize]
         switch entry.method {
         case 0:
+            guard entry.compressedSize == entry.size, entry.compressedSize <= Self.maxEntrySize else { return nil }
             return Data(compressed)
         case 8:
             guard entry.size > 0 else { return Data() }
@@ -87,7 +88,14 @@ struct ZipReader {
         guard data.count >= minEnd else { return nil }
         var end = data.count - minEnd
         let lowest = max(0, data.count - minEnd - 0xFFFF)
-        while end >= lowest && data.u32(at: end) != 0x0605_4B50 { end -= 1 }
+        while end >= lowest {
+            if data.u32(at: end) == 0x0605_4B50,
+               let commentLength = data.u16(at: end + 20),
+               end + minEnd + Int(commentLength) == data.count {
+                break
+            }
+            end -= 1
+        }
         guard end >= lowest,
               let count = data.u16(at: end + 10),
               let directoryOffset = data.u32(at: end + 16),

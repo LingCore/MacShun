@@ -16,14 +16,28 @@ struct FileDialogTarget {
         return element
     }
 
+    private static func isDialog(_ element: AXUIElement) -> Bool {
+        let id = timed(element).string(kAXIdentifierAttribute)
+        return id == "open-panel" || id == "save-panel"
+    }
+
     static func focused() -> Self? {
         guard AXIsProcessTrusted(), let owner = NSWorkspace.shared.frontmostApplication, owner != .current else { return nil }
         let application = AXUIElementCreateApplication(owner.processIdentifier)
         AXUIElementSetMessagingTimeout(application, 0.12)
-        guard let panel: AXUIElement = application.value(kAXFocusedWindowAttribute) else { return nil }
-        AXUIElementSetMessagingTimeout(panel, axTimeout)
-        guard let id = panel.string(kAXIdentifierAttribute), id == "open-panel" || id == "save-panel" else { return nil }
-        return Self(owner: owner, application: application, panel: panel)
+        guard let window = application.axElement(kAXFocusedWindowAttribute) else { return nil }
+        AXUIElementSetMessagingTimeout(window, axTimeout)
+        if isDialog(window) {
+            return Self(owner: owner, application: application, panel: window)
+        }
+        // 支持文稿窗口附带的表单式（beginSheetModal）打开/存储面板。
+        for sheet in window.axElements("AXSheets") where isDialog(sheet) {
+            return Self(owner: owner, application: application, panel: sheet)
+        }
+        for child in window.axElements(kAXChildrenAttribute) where timed(child).string(kAXRoleAttribute) == kAXSheetRole && isDialog(child) {
+            return Self(owner: owner, application: application, panel: child)
+        }
+        return nil
     }
 
     nonisolated static func folder(for url: URL) -> URL? {
@@ -36,14 +50,20 @@ struct FileDialogTarget {
 
     private var focusedWindow: AXUIElement? {
         guard owner.isActive, !Task.isCancelled else { return nil }
-        return (application.value(kAXFocusedWindowAttribute) as AXUIElement?).map(Self.timed)
+        return application.axElement(kAXFocusedWindowAttribute).map(Self.timed)
+    }
+
+    private func isTargetPanelActive(_ window: AXUIElement) -> Bool {
+        if CFEqual(window, panel) { return true }
+        if let parent = panel.axElement(kAXParentAttribute), CFEqual(window, parent) { return true }
+        return false
     }
 
     /// 文件面板由 AppKit 的独立服务接收键盘输入。沿当前面板的分隔条找它，不能按进程名选第一个。
     private var panelService: pid_t? {
-        let groups: [AXUIElement] = panel.value(kAXChildrenAttribute) ?? []
+        let groups = panel.axElements(kAXChildrenAttribute)
         for group in groups where Self.timed(group).string(kAXRoleAttribute) == kAXSplitGroupRole {
-            let children: [AXUIElement] = group.value(kAXChildrenAttribute) ?? []
+            let children = group.axElements(kAXChildrenAttribute)
             for splitter in children where Self.timed(splitter).string(kAXRoleAttribute) == kAXSplitterRole {
                 var pid: pid_t = 0
                 if AXUIElementGetPid(splitter, &pid) == .success, pid > 0, pid != owner.processIdentifier { return pid }
@@ -54,20 +74,21 @@ struct FileDialogTarget {
 
     private func isPathSheet(_ sheet: AXUIElement) -> Bool {
         guard Self.timed(sheet).string(kAXIdentifierAttribute) == "GoToWindow",
-              let parent: AXUIElement = sheet.value(kAXParentAttribute) else { return false }
-        return CFEqual(parent, panel)
+              let parent = sheet.axElement(kAXParentAttribute) else { return false }
+        return CFEqual(parent, panel) || isTargetPanelActive(parent)
     }
 
     /// 只认系统明确列出的目标目录；输入后系统异步补全，过早回车可能会选中上次的位置。
     private func exactRow(in sheet: AXUIElement, for folder: URL) -> AXUIElement? {
-        let children: [AXUIElement] = Self.timed(sheet).value(kAXChildrenAttribute) ?? []
+        let children = Self.timed(sheet).axElements(kAXChildrenAttribute)
         guard let scroll = children.first(where: { Self.timed($0).string(kAXRoleAttribute) == kAXScrollAreaRole }),
-              let table = (scroll.value(kAXChildrenAttribute) as [AXUIElement]?)?.first(where: { Self.timed($0).string(kAXRoleAttribute) == kAXTableRole }),
-              let rows: [AXUIElement] = table.value(kAXRowsAttribute) else { return nil }
+              let table = scroll.axElements(kAXChildrenAttribute).first(where: { Self.timed($0).string(kAXRoleAttribute) == kAXTableRole })
+        else { return nil }
+        let rows = table.axElements(kAXRowsAttribute)
         for row in rows.prefix(20) {
-            let cells: [AXUIElement] = Self.timed(row).value(kAXChildrenAttribute) ?? []
+            let cells = Self.timed(row).axElements(kAXChildrenAttribute)
             for cell in cells {
-                let items: [AXUIElement] = Self.timed(cell).value(kAXChildrenAttribute) ?? []
+                let items = Self.timed(cell).axElements(kAXChildrenAttribute)
                 if items.contains(where: { item in
                     guard let id = Self.timed(item).string(kAXIdentifierAttribute), id.hasPrefix("/") else { return false }
                     return URL(fileURLWithPath: id).standardizedFileURL.path == folder.path
@@ -81,25 +102,23 @@ struct FileDialogTarget {
 
     func navigate(to folder: URL) async -> Navigation {
         let service = panelService
-        guard let window = focusedWindow, CFEqual(window, panel) else { return .interrupted }
+        guard let window = focusedWindow, isTargetPanelActive(window) else { return .interrupted }
         let receiver = service ?? owner.processIdentifier
         send(KeyStroke(KeyCode.g, [.maskCommand, .maskShift]), to: receiver)
         guard let (sheet, field) = await waitForPathField(),
               AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, folder.path as CFString) == .success else {
             return .interrupted
         }
-        // 部分系统版本只提供路径输入框，此时让人在原生面板确认。
-        guard let service else { return .readyForConfirmation }
         let deadline = ContinuousClock.now + .seconds(2)
         let destination = folder.standardizedFileURL
         repeat {
             try? await Task.sleep(for: .milliseconds(35))
             guard let window = focusedWindow, CFEqual(window, sheet),
-                  let focus: AXUIElement = application.value(kAXFocusedUIElementAttribute), CFEqual(field, focus),
+                  let focus = application.axElement(kAXFocusedUIElementAttribute), CFEqual(field, focus),
                   field.string(kAXValueAttribute) == folder.path else { return .interrupted }
             if let row = exactRow(in: sheet, for: destination), row.value(kAXSelectedAttribute) == true {
                 guard let window = focusedWindow, CFEqual(window, sheet) else { return .interrupted }
-                send(KeyStroke(KeyCode.returnKey), to: service)
+                send(KeyStroke(KeyCode.returnKey), to: receiver)
                 return .submitted
             }
         } while ContinuousClock.now < deadline
@@ -112,12 +131,12 @@ struct FileDialogTarget {
             guard owner.isActive, !Task.isCancelled else { return nil }
             if let window = focusedWindow {
                 if isPathSheet(window) {
-                    if let field: AXUIElement = application.value(kAXFocusedUIElementAttribute),
+                    if let field = application.axElement(kAXFocusedUIElementAttribute),
                        Self.timed(field).string(kAXIdentifierAttribute) == "PathTextField",
-                       (window.value(kAXChildrenAttribute) as [AXUIElement]? ?? []).contains(where: { CFEqual($0, field) }) {
+                       window.axElements(kAXChildrenAttribute).contains(where: { CFEqual($0, field) }) {
                         return (window, field)
                     }
-                } else if !CFEqual(window, panel) { return nil }
+                } else if !isTargetPanelActive(window) { return nil }
             }
             // 两个窗口交接焦点时，AXFocusedWindow 会短暂为空。
             try? await Task.sleep(for: .milliseconds(35))

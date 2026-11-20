@@ -31,6 +31,8 @@ final class FileSearchController {
     private let contentIndex = ContentIndex.shared
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
+    private var modelLoaded = false
+    private var panelLoaded = false
     private var subscriptions: Set<AnyCancellable> = []
     /// 接住 Ctrl+Enter 的事件监听（见 makePanel）
     private var keyMonitor: Any?
@@ -46,11 +48,17 @@ final class FileSearchController {
         self.configStore = configStore
     }
 
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        fileTypesFade?.cancel()
+        dialogNavigation?.cancel()
+    }
+
     /// 按配置开始或停止建立索引。
     func applyConfig() {
         let cfg = configStore.config.fileSearch
         index.setIndexedLocations(cfg.indexedLocations)
-        model.indexedLocations = cfg.indexedLocations
+        if modelLoaded { model.indexedLocations = cfg.indexedLocations }
         if index.includeExternalDrives != cfg.includeExternalDrives {
             index.includeExternalDrives = cfg.includeExternalDrives
             if cfg.enabled && cfg.activated && (index.isIndexing || index.lastIndexed != nil) { index.rebuild() }
@@ -80,13 +88,13 @@ final class FileSearchController {
             index.setContentIndex(nil)
             contentIndex.stop(deleteData: true)
         }
-        model.searchesContent = searchesContent
+        if modelLoaded { model.searchesContent = searchesContent }
     }
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panelLoaded && panel.isVisible }
     /// 自测用
     var currentQuery: String { model.query }
-    var isKey: Bool { panel.isKeyWindow }
+    var isKey: Bool { panelLoaded && panel.isKeyWindow }
     var visibleResults: [FileSearchResult] { model.results }
     var selectedIndex: Int { model.selection }
     var windowNumber: Int { panel.windowNumber }
@@ -169,7 +177,7 @@ final class FileSearchController {
     /// 连按两下 Ctrl 打开；已经开着就保留查询，必要时移到指针所在屏幕。
     func summon(at pointer: CGPoint = NSEvent.mouseLocation) {
         guard !showingModal else { return }
-        guard panel.isVisible else { show(at: pointer); return }
+        guard panelLoaded && panel.isVisible else { show(at: pointer); return }
         if !panel.isDraggingFromHandle, let screen = WindowPlacement.pointerScreen(at: pointer),
            windowPosition.map({ $0.isOn(screen.frame) }) != true {
             position(on: screen)
@@ -209,11 +217,15 @@ final class FileSearchController {
 
     func hide() {
         FrontAppTracker.shared.fileSearchPanelActive.set(false)
-        panel.endHandleDrag()
         cancelFileTypesFade()
+        guard panelLoaded || modelLoaded else {
+            dialog = nil
+            return
+        }
+        if panelLoaded { panel.endHandleDrag() }
         // 先关闭模型状态（停止在途搜索并拆除 QuickLook），再隐藏窗口；避免窗口先隐掉导致 QLPreviewView 析构顺序异常。
-        model.isShown = false
-        if panel.isVisible {
+        if modelLoaded { model.isShown = false }
+        if panelLoaded && panel.isVisible {
             // orderOut 会保留正在组字的编辑器；下次打开面板应从空查询开始。
             panel.endEditing(for: nil)
             panel.orderOut(nil)
@@ -281,7 +293,11 @@ final class FileSearchController {
     // MARK: - 面板
 
     private func makeModel() -> FileSearchModel {
+        modelLoaded = true
+        let cfg = configStore.config.fileSearch
         let model = FileSearchModel(index: index, contentIndex: contentIndex, pinDefaults: SelfTest.isRequested ? nil : .standard)
+        model.indexedLocations = cfg.indexedLocations
+        model.searchesContent = cfg.enabled && cfg.activated && cfg.searchContents
         model.history = history
         model.onAction = { [weak self] result, action in self?.perform(action, on: result) }
         model.onFeature = { [weak self] feature in
@@ -314,6 +330,7 @@ final class FileSearchController {
     }
 
     private func makePanel() -> FileSearchPanel {
+        panelLoaded = true
         let panel = FileSearchPanel()
         let host = NSHostingView(rootView: FileSearchView(model: model, index: index, contentIndex: contentIndex))
         host.sizingOptions = []
@@ -754,13 +771,32 @@ final class FileSearchModel: ObservableObject {
             closeQuickLook(refocus: false)
             cancelDelete()
             pendingSelectionAction = nil
+            pendingStaleClear?.cancel()
+            pendingStaleClear = nil
             invalidateContentSearch()
             parsedQuery = FileMatcher.Query(query)
             directoryStatus = nil
             restoreFolderSelection = nil
             updateFeatures()
-            merge(resetSelection: true)
-            searchNames(resetSelection: false)
+            let keepPreviousFiles = !changingFolder && searchesNames && !hasConflictingFolders
+                && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && featureResults.isEmpty && !rows.isEmpty && rows.allSatisfy { $0.file != nil }
+            if keepPreviousFiles {
+                searchNames(resetSelection: true)
+                if activeNameSearch != nil {
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, self.waitingForNames else { return }
+                        self.merge(resetSelection: true)
+                    }
+                    pendingStaleClear = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100), execute: work)
+                } else {
+                    merge(resetSelection: true)
+                }
+            } else {
+                merge(resetSelection: true)
+                searchNames(resetSelection: false)
+            }
             scheduleContentSearch()
         }
     }
@@ -843,7 +879,7 @@ final class FileSearchModel: ObservableObject {
     }
     private var searchOptions: FileSearchOptions {
         var options = appliedPanelOptions
-        options.showsMetadata = usesPanelResults
+        options.showsMetadata = isExpanded
         options.recursive = filterFolder != nil
         return options
     }
@@ -906,6 +942,8 @@ final class FileSearchModel: ObservableObject {
 
     private func refreshScope() {
         closeQuickLook(refocus: false)
+        pendingStaleClear?.cancel()
+        pendingStaleClear = nil
         invalidateContentSearch()
         pendingSelectionAction = nil
         if fileScopeKinds {
@@ -931,6 +969,10 @@ final class FileSearchModel: ObservableObject {
             if !isShown {
                 closeQuickLook(refocus: false)
                 pendingSelectionAction = nil
+                pendingStaleClear?.cancel()
+                pendingStaleClear = nil
+                pendingIndexRefresh?.cancel()
+                pendingIndexRefresh = nil
                 invalidateContentSearch()
                 if folder != nil {
                     activeNameSearch?.set(true)
@@ -944,6 +986,7 @@ final class FileSearchModel: ObservableObject {
                 }
                 returnPoints.removeAll()
                 restoreFolderSelection = nil
+                iconCache.removeAllObjects()
             }
         }
     }
@@ -968,6 +1011,8 @@ final class FileSearchModel: ObservableObject {
     private var parsedQuery = FileMatcher.Query("")
     @Published private var activeNameSearch: Locked<Bool>?
     private var namesNeedRefresh = false
+    private var pendingStaleClear: DispatchWorkItem?
+    private var pendingIndexRefresh: DispatchWorkItem?
     private var nameResults: [FileSearchResult] = []
     private var nameResultsQuery: String?
     private enum SelectionAction { case open, reveal, preview }
@@ -980,7 +1025,8 @@ final class FileSearchModel: ObservableObject {
     private var deleteTimeout: DispatchWorkItem?
     private let iconCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 800
+        cache.countLimit = 300
+        cache.totalCostLimit = 16 * 1024 * 1024
         return cache
     }()
     private static let typeIconCache: NSCache<NSString, NSImage> = {
@@ -1002,21 +1048,29 @@ final class FileSearchModel: ObservableObject {
         filtersOnTop = pinDefaults?.bool(forKey: "fileSearch.panelFiltersOnTop") ?? false
         pins = PinnedSearchFolders(defaults: pinDefaults)
         savedSearches = SavedFileSearches(defaults: pinDefaults)
-        // 索引建好、文件有变化时，按现在的关键词重新搜一次。扫描外接硬盘时一秒会有好几次，选中的那条不动
+        // 索引建好、文件有变化时，按现在的关键词重新搜一次。扫描外接硬盘时一秒会有好几次，合并防抖且选中的那条不动。
         index.$fileCount
+            .dropFirst()
             // 改名和移动常常不改变数量，也要刷新当前搜索。
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self, self.isShown else { return }
-                self.refreshFolderCoverage()
-                guard self.searchesNames,
-                      !self.query.isEmpty || self.folder != nil || self.hasPanelFilters else { return }
-                // 只重搜文件名：内容搜索不跟着重来，不然文件一直在变时（扫描外接硬盘、装依赖）内容结果总被丢掉
-                if self.activeNameSearch == nil {
-                    self.searchNames(resetSelection: false)
-                } else {
-                    self.namesNeedRefresh = true
+                self.pendingIndexRefresh?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.isShown else { return }
+                    self.pendingIndexRefresh = nil
+                    self.refreshFolderCoverage()
+                    guard self.searchesNames,
+                          !self.query.isEmpty || self.folder != nil || self.hasPanelFilters else { return }
+                    // 只重搜文件名：内容搜索不跟着重来，不然文件一直在变时（扫描外接硬盘、装依赖）内容结果总被丢掉
+                    if self.activeNameSearch == nil {
+                        self.searchNames(resetSelection: false)
+                    } else {
+                        self.namesNeedRefresh = true
+                    }
                 }
+                self.pendingIndexRefresh = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(120), execute: work)
             }
             .store(in: &subscriptions)
         // 正文改写、收录范围变化也需要刷新，即使文档总数相同。
@@ -1095,6 +1149,13 @@ final class FileSearchModel: ObservableObject {
             merge(resetSelection: false)
             searchNames(resetSelection: false)
             scheduleContentSearch()
+        } else if isExpanded {
+            if nameResults.contains(where: { $0.metadata == nil }) {
+                searchNames(resetSelection: false)
+            }
+            if contentResults.contains(where: { $0.metadata == nil }) {
+                scheduleContentSearch()
+            }
         }
         focusSearch()
     }
@@ -1257,6 +1318,8 @@ final class FileSearchModel: ObservableObject {
                          isCancelled: cancelled.get) { [weak self] page in
             guard let self, self.activeNameSearch === cancelled else { return }
             self.activeNameSearch = nil
+            self.pendingStaleClear?.cancel()
+            self.pendingStaleClear = nil
             self.directoryStatus = page.directory
             self.nameResults = page.results
             self.nameResultsQuery = self.query
@@ -1640,7 +1703,7 @@ final class FileSearchModel: ObservableObject {
 
     /// 零磁盘 I/O 的即时类型图标，避免在网络盘或慢速外接盘上滚列表时阻塞主线程。
     func placeholderIcon(for result: FileSearchResult) -> NSImage {
-        let ext = (result.name as NSString).pathExtension.lowercased()
+        let ext = (result.path as NSString).pathExtension.lowercased()
         let key: String = if result.isDirectory && ext != "app" {
             "__folder__"
         } else if ext.isEmpty {
@@ -1673,8 +1736,9 @@ final class FileSearchModel: ObservableObject {
         }
         Self.iconQueue.async { [weak self] in
             let image = NSWorkspace.shared.icon(forFile: path)
+            let cost = max(32_768, Int(image.size.width * image.size.height * 16))
             DispatchQueue.main.async {
-                self?.iconCache.setObject(image, forKey: path as NSString)
+                self?.iconCache.setObject(image, forKey: path as NSString, cost: cost)
                 completion(image)
             }
         }
@@ -2474,6 +2538,26 @@ private struct FileResultRow: View {
     let columns: FileResultColumns
 
     private static let home = FileManager.default.homeDirectoryForCurrentUser.path
+    private static let sizeFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        return formatter
+    }()
+    private static var dateFormatterLocale: String?
+    private static var cachedDateFormatter: DateFormatter?
+
+    private static func formatModified(_ timestamp: Double) -> String {
+        let locale = AppLanguage.uiLocale
+        if cachedDateFormatter == nil || dateFormatterLocale != locale.identifier {
+            let formatter = DateFormatter()
+            formatter.locale = locale
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            cachedDateFormatter = formatter
+            dateFormatterLocale = locale.identifier
+        }
+        return cachedDateFormatter!.string(from: Date(timeIntervalSince1970: timestamp))
+    }
 
     /// 所在的文件夹，个人文件夹写成 ~
     private var fullFolder: String {
@@ -2487,27 +2571,24 @@ private struct FileResultRow: View {
     private var folderTruncation: Text.TruncationMode { distinctFolder == nil ? .head : .tail }
 
     private var modified: String? {
-        result.metadata.map {
-            Date(timeIntervalSince1970: $0.modified).formatted(
-                Date.FormatStyle(date: .numeric, time: .shortened).locale(AppLanguage.uiLocale)
-            )
-        }
+        result.metadata.map { Self.formatModified($0.modified) }
     }
 
     private var size: String? {
-        result.metadata?.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .binary) }
+        result.metadata?.size.map { Self.sizeFormatter.string(fromByteCount: $0) }
     }
 
     var body: some View {
         let iconSize = FileSearchRowStyle.iconSize(expanded: expanded)
         let folderText = folder
         let fullFolderText = fullFolder
-        let modifiedText = (columns.showsDate || expanded || distinctFolder != nil) ? modified : nil
-        let sizeText = (columns.showsSize || expanded || distinctFolder != nil) ? size : nil
-        let helpText = (expanded || distinctFolder != nil)
-            ? ([result.path] + [modifiedText, sizeText].compactMap { $0 }).joined(separator: "\n")
-            : ""
         return HoverReader { hovering in
+            let wantsHelp = hovering && (expanded || distinctFolder != nil)
+            let modifiedText = (columns.showsDate || wantsHelp) ? modified : nil
+            let sizeText = (columns.showsSize || wantsHelp) ? size : nil
+            let helpText = wantsHelp
+                ? ([result.path] + [modifiedText, sizeText].compactMap { $0 }).joined(separator: "\n")
+                : ""
             HStack(spacing: FileSearchRowStyle.spacing) {
                 FileResultIcon(model: model, result: result, size: iconSize)
                 if let snippet = result.snippet {

@@ -15,9 +15,11 @@ final class FileSearchFolder {
         let device: dev_t
         let changed: timespec
         let entries: FolderEntries
+        var lastAccess: UInt64
     }
     private var listings: [String: Listing] = [:]
-    private static let maxCachedListings = 256
+    private var accessCounter: UInt64 = 0
+    private static let maxCachedListings = 512
 
     init(path: String) {
         self.path = path
@@ -89,18 +91,27 @@ final class FileSearchFolder {
         var info = stat()
         guard lstat(directory, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return nil }
         lock.lock()
-        let saved = listings[directory]
-        lock.unlock()
-        if let saved, saved.inode == info.st_ino, saved.device == info.st_dev,
-           saved.changed.tv_sec == info.st_ctimespec.tv_sec, saved.changed.tv_nsec == info.st_ctimespec.tv_nsec {
-            return saved.entries
+        var saved = listings[directory]
+        if let existing = saved, existing.inode == info.st_ino, existing.device == info.st_dev,
+           existing.changed.tv_sec == info.st_ctimespec.tv_sec, existing.changed.tv_nsec == info.st_ctimespec.tv_nsec {
+            accessCounter &+= 1
+            saved?.lastAccess = accessCounter
+            listings[directory] = saved
+            lock.unlock()
+            return existing.entries
         }
+        lock.unlock()
         guard let listing = autoreleasepool(invoking: { FileSearchDirectory.read(directory, isCancelled: isCancelled) }),
               !isCancelled() else { return nil }
-        let fresh = Listing(inode: info.st_ino, device: info.st_dev, changed: info.st_ctimespec, entries: listing.entries)
         lock.lock()
+        accessCounter &+= 1
+        let fresh = Listing(inode: info.st_ino, device: info.st_dev, changed: info.st_ctimespec,
+                            entries: listing.entries, lastAccess: accessCounter)
         if listings.count >= Self.maxCachedListings, listings[directory] == nil {
-            listings.removeAll(keepingCapacity: true)
+            // 淘汰最久未访问的四分之一，避免目录超过上限时每次按键都全清抖动。
+            let evictCount = max(1, Self.maxCachedListings / 4)
+            let oldest = listings.sorted { $0.value.lastAccess < $1.value.lastAccess }.prefix(evictCount).map(\.key)
+            for key in oldest { listings.removeValue(forKey: key) }
         }
         listings[directory] = fresh
         lock.unlock()

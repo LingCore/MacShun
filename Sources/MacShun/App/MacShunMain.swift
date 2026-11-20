@@ -13,7 +13,12 @@ enum MacShunMain {
             return
         }
         #endif
-        // 被自己启动来读 PDF、认图片文字的子进程：读完就退出，不启动界面（见 ContentExtractor）
+        // 被自己启动来读 PDF、认图片文字的子进程：读完或空闲自动退出，不启动界面（见 ContentExtractor）
+        if CommandLine.arguments.contains(ContentExtractor.workerArgument) {
+            signal(SIGTERM, SIG_DFL)
+            signal(SIGPIPE, SIG_IGN)
+            ContentExtractor.runWorker()
+        }
         if let request = ContentExtractor.helperRequest(in: CommandLine.arguments) {
             // 主程序忽略了 SIGTERM（见 AppDelegate），子进程会继承；恢复默认，超时时才结束得了
             signal(SIGTERM, SIG_DFL)

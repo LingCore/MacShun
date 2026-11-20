@@ -111,7 +111,7 @@ struct FileSearchDragRegion: NSViewRepresentable {
         private func releaseGrip() {
             onPress?(false)
             let inside = window.map { visibleRect.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil)) } ?? false
-            if inside { NSCursor.openHand.set() }
+            (inside ? NSCursor.openHand : .arrow).set()
         }
 
         override func resetCursorRects() {

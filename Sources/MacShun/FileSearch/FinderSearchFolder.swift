@@ -25,7 +25,7 @@ struct FinderSearchFolder {
             return Self(path: path, title: title)
         }
         let windowOnly = Self(path: nil, title: title)
-        guard let view: AXUIElement = app.value(kAXFocusedUIElementAttribute) else { return windowOnly }
+        guard let view = app.axElement(kAXFocusedUIElementAttribute) else { return windowOnly }
         AXUIElementSetMessagingTimeout(view, 0.03)
         let identifier = view.string(kAXIdentifierAttribute)
         let column = identifier == nil && view.string(kAXRoleAttribute) == kAXListRole

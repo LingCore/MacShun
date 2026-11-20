@@ -15,6 +15,9 @@ struct SystemFeatureTests {
         ("在哪儿改系统语言", "语言与地区"), ("摄像头用不了", "摄像头权限"), ("请帮我打开录屏权限", "屏幕录制权限"),
         ("lanya", "蓝牙"), ("hdjsq", "活动监视器"), ("Ｗｉ－Ｆｉ", "无线局域网"),
         ("How do I pair headphones?", "蓝牙"), ("How can I free up space?", "储存空间"),
+        ("调大音量", "声音输出"), ("调小声音", "声音输出"), ("调暗屏幕", "显示器"),
+        ("怎么调亮屏幕", "显示器"), ("我想改时间", "日期与时间"), ("怎么调整显示器位置", "排列显示器"),
+        ("我想改成英文", "语言与地区"), ("怎么换成中文", "语言与地区"), ("我想换个网络", "无线局域网"),
     ])
     func firstHit(_ phrase: (String, String)) {
         #expect(SystemFeature.search(phrase.0, browse: false).first?.title == phrase.1)
