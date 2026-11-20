@@ -11,6 +11,12 @@ final class ClipboardWatcher {
     private let store: ClipboardStore
     private let config: () -> ClipboardConfig
     private var timer: Timer?
+    private var running = false
+    private var asleep = false
+    private var screenAsleep = false
+    private var sessionInactive = false
+    private var paused: Bool { asleep || screenAsleep || sessionInactive }
+    private var observers: [NSObjectProtocol] = []
     private var lastChangeCount: Int
     /// 本程序自己写进剪贴板时的计数，看到它就不再记录。
     private var ownChangeCount: Int?
@@ -39,26 +45,85 @@ final class ClipboardWatcher {
         lastChangeCount = pasteboard.changeCount
     }
 
+    deinit {
+        timer?.invalidate()
+        observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+    }
+
     func start() {
-        guard timer == nil else { return }
+        guard !running else { return }
+        running = true
+        asleep = false
+        screenAsleep = false
+        sessionInactive = false
         lastChangeCount = pasteboard.changeCount
-        // 计时器加在主运行循环上，回调一定在主线程
-        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.check() }
-        }
-        t.tolerance = 0.1
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+        installObservers()
+        scheduleTimer()
     }
 
     func stop() {
+        running = false
+        asleep = false
+        screenAsleep = false
+        sessionInactive = false
         timer?.invalidate()
         timer = nil
+        observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        observers = []
     }
 
-    /// 复制后立刻呼出面板时，先收下这次复制，不等下一轮计时器。
-    func recordPendingChange() {
-        if timer != nil { check() }
+    private func scheduleTimer() {
+        guard running, !paused, timer == nil else { return }
+        // 计时器加在主运行循环上，回调一定在主线程；.default 模式避免在菜单跟踪或滚动时频繁唤醒。
+        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check() }
+        }
+        t.tolerance = 0.2
+        RunLoop.main.add(t, forMode: .default)
+        timer = t
+    }
+
+    private func setLifecycleFlag(_ update: (ClipboardWatcher) -> Void) {
+        guard running else { return }
+        let wasPaused = paused
+        update(self)
+        let nowPaused = paused
+        guard wasPaused != nowPaused else { return }
+        if nowPaused {
+            timer?.invalidate()
+            timer = nil
+        } else {
+            check()
+            scheduleTimer()
+        }
+    }
+
+    private func installObservers() {
+        guard observers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.asleep = true } }
+        })
+        observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.asleep = false } }
+        })
+        observers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.screenAsleep = true } }
+        })
+        observers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.screenAsleep = false } }
+        })
+        observers.append(center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.sessionInactive = true } }
+        })
+        observers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.sessionInactive = false } }
+        })
+    }
+
+    /// 复制后立刻呼出面板或切换应用时，先收下这次复制，不等下一轮计时器。
+    func recordPendingChange(sourceApp: String? = nil) {
+        if running { check(sourceAppOverride: sourceApp) }
     }
 
     /// 本程序写完剪贴板后调用，避免把自己写的内容又记一遍。
@@ -67,7 +132,7 @@ final class ClipboardWatcher {
         lastChangeCount = pasteboard.changeCount
     }
 
-    private func check() {
+    private func check(sourceAppOverride: String? = nil) {
         let count = pasteboard.changeCount
         guard count != lastChangeCount else { return }
         lastChangeCount = count
@@ -77,42 +142,45 @@ final class ClipboardWatcher {
         let cfg = config()
         // 没有“始终允许”读取剪贴板时不读，否则每次复制都会弹出系统询问。
         guard cfg.enabled, pasteboard.name != .general || PasteboardAccess.status == .allowed else { return }
-        guard let capture = Self.capture(from: pasteboard, recordImages: cfg.recordImages) else { return }
+        guard let capture = Self.capture(from: pasteboard, recordImages: cfg.recordImages, sourceApp: sourceAppOverride) else { return }
         guard pasteboard.changeCount == count else { return }
         store.add(capture, maxItems: cfg.maxItems)
     }
 
-    static func capture(from pasteboard: NSPasteboard, recordImages: Bool) -> ClipboardCapture? {
+    static func capture(from pasteboard: NSPasteboard, recordImages: Bool, sourceApp: String? = nil) -> ClipboardCapture? {
         guard let item = pasteboard.pasteboardItems?.first else { return nil }
         let types = Set(pasteboard.types?.map(\.rawValue) ?? [])
         if !types.isDisjoint(with: ignoredTypes) { return nil }
-        let source = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let source = sourceApp ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         if types.contains(NSPasteboard.PasteboardType.fileURL.rawValue) {
             let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-            let files = urls.map(\.standardizedFileURL)
-            guard !files.isEmpty, files.count == pasteboard.pasteboardItems?.count else { return nil }
-            let paths = Data(files.map(\.path).joined(separator: "\0").utf8)
-            guard paths.count <= maxTextBytes else { return nil }
-            return ClipboardCapture(kind: .files, text: nil, fileURLs: files,
-                                    fingerprint: ClipboardStore.fingerprint([Data("files".utf8), paths]), sourceApp: source)
+            let files = urls.filter(\.isFileURL).map(\.standardizedFileURL)
+            if !files.isEmpty, files.count == pasteboard.pasteboardItems?.count {
+                let paths = Data(files.map(\.path).joined(separator: "\0").utf8)
+                // 超长文件列表明确拒收，不回落把访达附带的首个文件名或图标误录成文本/图片。
+                guard paths.count <= maxTextBytes else { return nil }
+                return ClipboardCapture(kind: .files, text: nil, fileURLs: files,
+                                        fingerprint: ClipboardStore.fingerprint([Data("files".utf8), paths]), sourceApp: source)
+            }
         }
 
         if let text = item.string(forType: .string) {
-            // 先按 UTF-8 长度和首个非空白字符过滤，避免对超大剪贴板文本做整串拷贝或 trim。
-            guard text.utf8.count <= maxTextBytes,
-                  text.contains(where: { !$0.isWhitespace && !$0.isNewline }) else { return nil }
-            let utf8 = Data(text.utf8)
-            var extras: [String: Data] = [:]
-            for type in [NSPasteboard.PasteboardType.rtf, .html] {
-                if let data = item.data(forType: type), data.count <= maxExtraBytes {
-                    extras[type.rawValue] = data
+            // 超大文本明确拒收，不回落成预览图；空白占位串（部分应用复制图片时附带）则继续检查图片。
+            guard text.utf8.count <= maxTextBytes else { return nil }
+            if text.contains(where: { !$0.isWhitespace && !$0.isNewline }) {
+                let utf8 = Data(text.utf8)
+                var extras: [String: Data] = [:]
+                for type in [NSPasteboard.PasteboardType.rtf, .html] {
+                    if let data = item.data(forType: type), data.count <= maxExtraBytes {
+                        extras[type.rawValue] = data
+                    }
                 }
+                return ClipboardCapture(
+                    kind: .text, text: text, extras: extras,
+                    fingerprint: ClipboardStore.fingerprint([Data("text".utf8), utf8]),
+                    sourceApp: source
+                )
             }
-            return ClipboardCapture(
-                kind: .text, text: text, extras: extras,
-                fingerprint: ClipboardStore.fingerprint([Data("text".utf8), utf8]),
-                sourceApp: source
-            )
         }
 
         guard recordImages else { return nil }

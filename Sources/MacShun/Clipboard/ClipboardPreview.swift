@@ -122,7 +122,7 @@ struct ClipboardPreview: View {
             }
             Spacer(minLength: 0)
             Button { model.pastePreview(item) } label: {
-                Label(model.previewSelection == nil ? L("粘贴") : L("粘贴选中文字"), systemImage: "return")
+                Label(model.hasPreviewSelection ? L("粘贴选中文字") : L("粘贴"), systemImage: "return")
             }
             .buttonStyle(.borderedProminent)
         }

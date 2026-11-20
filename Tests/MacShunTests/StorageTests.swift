@@ -282,6 +282,73 @@ extension ClipboardStoreTests {
         #expect(store.items.map(\.text) == ["固定"])
         #expect(!model.canClear)
     }
+
+    @Test func captureFallsThroughBlankTextAndPartialFileURLsToImage() throws {
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        // 最小合法 1×1 PNG
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        let png = try #require(rep.representation(using: .png, properties: [:]))
+
+        // 空白字符串 + 图片：不应因为字符串为空白而丢掉后面的图片
+        let blankAndImage = NSPasteboardItem()
+        blankAndImage.setString("   \n\t ", forType: .string)
+        blankAndImage.setData(png, forType: .png)
+        board.clearContents()
+        #expect(board.writeObjects([blankAndImage]))
+        let first = try #require(ClipboardWatcher.capture(from: board, recordImages: true, sourceApp: "Preview"))
+        #expect(first.kind == .image)
+        #expect(first.sourceApp == "Preview")
+
+        // 无效/混合文件 URL + 图片：文件列表解析失败时应继续回落到图片
+        let brokenURLAndImage = NSPasteboardItem()
+        brokenURLAndImage.setString("https://example.com/not-a-file", forType: .fileURL)
+        brokenURLAndImage.setData(png, forType: .png)
+        board.clearContents()
+        #expect(board.writeObjects([brokenURLAndImage]))
+        let second = try #require(ClipboardWatcher.capture(from: board, recordImages: true, sourceApp: "Safari"))
+        #expect(second.kind == .image)
+        #expect(second.sourceApp == "Safari")
+
+        // 超过 2MB 上限的超大文本即便附带图片也不应降级误录成图片
+        let oversizedTextAndImage = NSPasteboardItem()
+        oversizedTextAndImage.setString(String(repeating: "A", count: ClipboardWatcher.maxTextBytes + 64), forType: .string)
+        oversizedTextAndImage.setData(png, forType: .png)
+        board.clearContents()
+        #expect(board.writeObjects([oversizedTextAndImage]))
+        #expect(ClipboardWatcher.capture(from: board, recordImages: true, sourceApp: "TextEdit") == nil)
+    }
+
+    @MainActor
+    @Test func recognizedTextAndSortedCacheAndRemoveFilesCallback() async throws {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        var removedURLs: [URL] = []
+        let store = ClipboardStore(directory: dir, readImageText: { _ in "合同一号" })
+        store.onRemoveFiles = { urls in removedURLs.append(contentsOf: urls) }
+
+        var capture = ClipboardCapture(kind: .image, png: Data([0x89, 0x50, 0x4E, 0x47, 1]), fingerprint: "png-fp")
+        capture.imageSize = CGSize(width: 20, height: 20)
+        store.add(capture, maxItems: 10)
+        let item = try #require(store.items.first)
+        let recognized = await store.recognizedText(for: item.id, fingerprint: "png-fp")
+        #expect(recognized == "合同一号")
+        // 通过指纹也能命中同一条目的识别缓存
+        let byFingerprint = await store.recognizedText(for: UUID(), fingerprint: "png-fp")
+        #expect(byFingerprint == "合同一号")
+
+        store.add(text("普通条目"), maxItems: 10)
+        store.togglePin(item.id)
+        #expect(store.sortedItems.first?.id == item.id)
+        let imageURL = try #require(store.imageURL(for: item))
+        store.delete(item.id)
+        #expect(store.sortedItems.count == 1)
+        #expect(removedURLs.contains(imageURL))
+    }
 }
 
 @Suite("配置")
@@ -357,5 +424,21 @@ struct ConfigTests {
         #expect(SymbolicHotKeys.parse(spotlight) == KeyStroke(KeyCode.space, .maskCommand))
         let disabled: [String: Any] = ["enabled": false, "value": ["parameters": [32, 49, 1_048_576]]]
         #expect(SymbolicHotKeys.parse(disabled) == nil)
+        // 未分配的 65535 哨兵值、负数键码、超大键码均不能触发整数溢出崩溃
+        let sentinel: [String: Any] = ["enabled": true, "value": ["parameters": [65535, 65535, 1_048_576]]]
+        #expect(SymbolicHotKeys.parse(sentinel) == nil)
+        let negative: [String: Any] = ["enabled": true, "value": ["parameters": [0, -1, 1_048_576]]]
+        #expect(SymbolicHotKeys.parse(negative) == nil)
+        let overflow: [String: Any] = ["enabled": true, "value": ["parameters": [0, 100_000, -1]]]
+        #expect(SymbolicHotKeys.parse(overflow) == nil)
+    }
+
+    @Test func cursorScaleClampedOnDecode() throws {
+        let high = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"mouse":{"cursorScale":99}}"#.utf8))
+        #expect(high.mouse.cursorScale == CursorSizeController.range.upperBound)
+        let low = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"mouse":{"cursorScale":0.1}}"#.utf8))
+        #expect(low.mouse.cursorScale == CursorSizeController.range.lowerBound)
+        let valid = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"mouse":{"cursorScale":2.5}}"#.utf8))
+        #expect(valid.mouse.cursorScale == 2.5)
     }
 }

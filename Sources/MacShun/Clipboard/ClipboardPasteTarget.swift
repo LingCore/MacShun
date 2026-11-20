@@ -7,11 +7,14 @@ import ApplicationServices
 @MainActor
 struct ClipboardPasteTarget {
     let pid: pid_t
-    private let isLocal: Bool
+    let isLocal: Bool
     private let localWindow: Int?
     private let application: AXUIElement?
     private let window: AXUIElement?
     private let input: AXUIElement?
+
+    /// 已通过当前前台应用查到的文本焦点元素，供 CaretLocator 复用，避免呼出剪贴板面板时重复 AX IPC。
+    var focusedTextElement: AXUIElement? { input }
 
     init(pid: pid_t) {
         self.pid = pid
@@ -27,8 +30,9 @@ struct ClipboardPasteTarget {
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.15)
             application = app
-            window = app.value(kAXFocusedWindowAttribute)
-            let focused: AXUIElement? = app.value(kAXFocusedUIElementAttribute)
+            window = app.axElement(kAXFocusedWindowAttribute)
+            let focused = app.axElement(kAXFocusedUIElementAttribute)
+            if let focused { AXUIElementSetMessagingTimeout(focused, 0.08) }
             input = focused.flatMap { FocusInspector.focusKind(of: $0) == .text ? $0 : nil }
         } else {
             isLocal = false
@@ -52,7 +56,7 @@ struct ClipboardPasteTarget {
 
     private static func stillFocused(_ original: AXUIElement?, in app: AXUIElement, attribute: String) -> Bool {
         guard let original else { return true }
-        guard let current: AXUIElement = app.value(attribute) else { return false }
+        guard let current = app.axElement(attribute) else { return false }
         return CFEqual(original, current)
     }
 }

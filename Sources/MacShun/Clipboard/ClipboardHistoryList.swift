@@ -224,6 +224,8 @@ final class ClipboardHistoryDocumentView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
+        // 弹出“更多操作”菜单期间系统进入 eventTracking 模式；保留当前悬停行，避免菜单宿主按钮被移除。
+        if RunLoop.current.currentMode == .eventTracking { return }
         onHoverPoint?(nil)
     }
 }
@@ -306,6 +308,7 @@ extension ClipboardHistoryList {
         private static let margin: CGFloat = 8
         private static let rowSpacing: CGFloat = 1
         private static let overscan: CGFloat = 240
+        private static let maxReusePool = 12
 
         private(set) var model: ClipboardPanelModel
         private weak var scrollView: ClipboardHistoryScrollView?
@@ -573,6 +576,7 @@ extension ClipboardHistoryList {
         }
 
         private func handleHover(at point: CGPoint?) {
+            if point == nil, RunLoop.current.currentMode == .eventTracking { return }
             guard !isDisabled, let scrollView, scrollView.window?.isVisible == true else {
                 if model.hoveredID != nil { model.hoveredID = nil }
                 return
@@ -674,7 +678,8 @@ extension ClipboardHistoryList {
             if previewCache.count > activeIDs.count * 2 + 64 {
                 previewCache = previewCache.filter { activeIDs.contains($0.key) }
             }
-            if measuredHeights.count > 400 || estimatedHeights.count > 400 {
+            let cacheLimit = max(400, model.store.items.count * 2 + 64)
+            if measuredHeights.count > cacheLimit || estimatedHeights.count > cacheLimit {
                 let liveIDs = Set(model.store.items.map(\.id)).union(activeIDs)
                 measuredHeights = measuredHeights.filter { liveIDs.contains($0.key.id) }
                 estimatedHeights = estimatedHeights.filter { liveIDs.contains($0.key.id) }
@@ -1118,9 +1123,13 @@ extension ClipboardHistoryList {
         }
 
         private func recycle(_ view: NSHostingView<ClipboardCellContainer>) {
-            view.isHidden = true
             view.rootView = ClipboardCellContainer(model: model, payload: nil)
-            reusePool.append(view)
+            if reusePool.count >= Self.maxReusePool {
+                view.removeFromSuperview()
+            } else {
+                view.isHidden = true
+                reusePool.append(view)
+            }
         }
 
         private func recycleAllCells() {

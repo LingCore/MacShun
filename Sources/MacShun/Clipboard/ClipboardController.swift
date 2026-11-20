@@ -18,6 +18,8 @@ final class ClipboardController {
     private let configStore: ConfigStore
     private lazy var model = makeModel()
     private lazy var panel = makePanel()
+    private var modelLoaded = false
+    private var panelLoaded = false
     private var keyMonitor: Any?
     private var pasteTarget: ClipboardPasteTarget?
     private var pendingPaste: UUID?
@@ -38,6 +40,16 @@ final class ClipboardController {
         watcher = ClipboardWatcher(store: store, pasteboard: pasteboard, config: { configStore.config.clipboard })
     }
 
+    deinit {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        fileAction?.cancel()
+    }
+
+    /// 切换前台应用前立刻补采一次，避免快速 ⌘C 后立刻 ⌘Tab 把来源应用记成新应用。
+    func recordBeforeAppSwitch(from bundleID: String?) {
+        watcher.recordPendingChange(sourceApp: bundleID)
+    }
+
     /// 按配置开始或停止记录。
     func applyConfig() {
         let cfg = configStore.config.clipboard
@@ -53,7 +65,7 @@ final class ClipboardController {
     func toggleRecordingPause() {
         guard configStore.config.clipboard.enabled else { return }
         isRecordingPaused.toggle()
-        model.recordingPaused = isRecordingPaused
+        if modelLoaded { model.recordingPaused = isRecordingPaused }
         updateRecording()
     }
 
@@ -62,7 +74,7 @@ final class ClipboardController {
         else { watcher.stop() }
     }
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panelLoaded && panel.isVisible }
     /// 自测用
     var query: String { model.query }
     var confirmingClear: Bool { model.confirmingClear }
@@ -93,15 +105,17 @@ final class ClipboardController {
         guard configStore.config.clipboard.enabled else { return }
         pendingPaste = nil
         // 已经开着：放到前面就行，保留正在输入的查询
-        if panel.isVisible {
+        if panelLoaded && panel.isVisible {
             panel.makeKeyAndOrderFront(nil)
             return
         }
-        pasteTarget = host == nil
+        let target = host == nil
             ? NSWorkspace.shared.frontmostApplication.map { ClipboardPasteTarget(pid: $0.processIdentifier) }
             : nil
-        let placement = placement(at: pointer, beside: host?.anchor)
+        pasteTarget = target
+        let placement = placement(at: pointer, beside: host?.anchor, pasteTarget: target)
         watcher.recordPendingChange()
+        model.setActive(true)
         model.prepareForShow(opensAbove: placement.opensAbove)
         model.showsQuickPasteNumbers = NSEvent.modifierFlags.contains(.option)
         self.host = host
@@ -124,19 +138,26 @@ final class ClipboardController {
     func hide() {
         fileAction?.cancel()
         fileAction = nil
-        model.hoveredID = nil
-        hoverPreview.cancel()
         let host = self.host
         self.host = nil
         pasteTarget = nil
         removeKeyMonitor()
         FrontAppTracker.shared.clipboardPanelActive.set(false)
-        if panel.isVisible {
+        if modelLoaded {
+            model.hoveredID = nil
+            hoverPreview.cancel()
+        }
+        if panelLoaded && panel.isVisible {
             pendingPaste = nil
             model.cancelTextCopy()
             panel.endEditing(for: nil)
             panel.orderOut(nil)
             model.setPreviewOpen(false)
+        }
+        if modelLoaded {
+            model.setActive(false)
+            model.thumbnails.removeAll()
+            model.previews.removeAll()
         }
         host?.resigned()
     }
@@ -196,19 +217,27 @@ final class ClipboardController {
         }
         let urls = item.fileURLs ?? []
         let changeCount = pasteboard.changeCount
-        model.showFeedback(L("正在检查文件…"))
+        let checkingMessage = L("正在检查文件…")
+        model.showFeedback(checkingMessage, autoDismiss: false)
         fileAction = Task { [weak self] in
             let available = await Self.filesAvailable(urls)
             guard let self, !Task.isCancelled else { return }
             fileAction = nil
-            guard store.items.contains(where: { $0.id == item.id }) else { return }
+            guard store.items.contains(where: { $0.id == item.id }) else {
+                model.clearFeedbackIf(checkingMessage)
+                return
+            }
             guard available else { model.showFeedback(L("部分文件已移动、删除或暂不可用")); return }
             guard pasteboard.changeCount == changeCount else {
                 model.showFeedback(L("剪贴板已更改，请重试"))
                 return
             }
-            if replacePasteboard(with: urls.map { $0 as NSURL }) { completed() }
-            else { model.showFeedback(L("未能写入剪贴板")) }
+            if replacePasteboard(with: urls.map { $0 as NSURL }) {
+                model.clearFeedbackIf(checkingMessage)
+                completed()
+            } else {
+                model.showFeedback(L("未能写入剪贴板"))
+            }
         }
     }
 
@@ -227,7 +256,7 @@ final class ClipboardController {
     /// 写进剪贴板。图片文件丢失等原因写不了时返回 false，这时不能再粘贴，否则会贴出剪贴板里原有的东西。
     private func write(_ item: ClipboardItem) -> Bool {
         let pbItem = NSPasteboardItem()
-        tiffProvider = nil
+        var pendingProvider: LazyTIFFProvider?
         switch item.kind {
         case .text:
             pbItem.setString(item.text ?? "", forType: .string)
@@ -246,18 +275,22 @@ final class ClipboardController {
                 pbItem.setData(data, forType: .png)
                 // 按需生成 TIFF，避免粘贴高分辨率 PNG 时在主线程同步展开数十 MB 位图。
                 let provider = LazyTIFFProvider(png: data)
-                tiffProvider = provider
+                pendingProvider = provider
                 pbItem.setDataProvider(provider, forTypes: [.tiff])
             }
         case .files:
             return false
         }
-        return replacePasteboard(with: [pbItem])
+        return replacePasteboard(with: [pbItem], tiffProvider: pendingProvider)
     }
 
-    private func replacePasteboard(with objects: [NSPasteboardWriting]) -> Bool {
+    private func replacePasteboard(with objects: [NSPasteboardWriting], tiffProvider newProvider: LazyTIFFProvider? = nil) -> Bool {
+        tiffProvider = newProvider
         pasteboard.clearContents()
-        guard pasteboard.writeObjects(objects) else { return false }
+        guard pasteboard.writeObjects(objects) else {
+            tiffProvider = nil
+            return false
+        }
         watcher.noteOwnWrite()
         return true
     }
@@ -265,12 +298,22 @@ final class ClipboardController {
     // MARK: - 面板
 
     private func makeModel() -> ClipboardPanelModel {
+        modelLoaded = true
         let model = ClipboardPanelModel(store: store, pasteboard: pasteboard)
+        model.recordingPaused = isRecordingPaused
+        model.setActive(false)
         model.onPaste = { [weak self] item in self?.paste(item) }
         model.onPasteBatch = { [weak self] items in self?.pasteBatch(items) }
         model.onCopy = { [weak self] item in self?.copy(item) }
+        model.onCopiedToPasteboard = { [weak self] in self?.watcher.noteOwnWrite() }
         model.onPreviewChange = { [weak self] open in self?.resizeForPreview(open) }
         model.onHoverChange = { [weak self] id in self?.updateHoverPreview(id) }
+        store.onRemoveFiles = { [weak model] urls in
+            for url in urls {
+                model?.thumbnails.remove(url)
+                model?.previews.remove(url)
+            }
+        }
         model.onFloat = { [weak self] item in
             guard let self, let url = store.imageURL(for: item),
                   let data = try? Data(contentsOf: url, options: .mappedIfSafe),
@@ -303,6 +346,7 @@ final class ClipboardController {
     }
 
     private func makePanel() -> ClipboardPanel {
+        panelLoaded = true
         let panel = ClipboardPanel()
         let host = NSHostingView(rootView: ClipboardPanelView(model: model))
         // 面板带隐藏的标题栏（为了圆角和阴影），不给它让位置，否则搜索框上面会空出一条
@@ -321,7 +365,10 @@ final class ClipboardController {
             guard let self else { return event }
             let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
             if event.type == .flagsChanged, self.panel.isKeyWindow {
-                self.model.showsQuickPasteNumbers = mods.contains(.option)
+                let want = mods.contains(.option)
+                if self.model.showsQuickPasteNumbers != want {
+                    self.model.showsQuickPasteNumbers = want
+                }
             }
             guard event.window === self.panel else { return event }
             self.hoverPreview.cancel()
@@ -362,11 +409,11 @@ final class ClipboardController {
             }
             if (key == KeyCode.returnKey || key == KeyCode.keypadEnter), mods == .shift,
                let item = self.model.selectedItem, item.kind == .text {
-                self.model.pasteAsPlainText(item)
+                if !event.isARepeat { self.model.pasteAsPlainText(item) }
                 return nil
             }
             if key == KeyCode.f3, mods.isEmpty, let item = self.model.selectedItem, item.kind == .image {
-                self.model.onFloat(item)
+                if !event.isARepeat { self.model.onFloat(item) }
                 return nil
             }
             if key == KeyCode.p, mods == .command || mods == .control {
@@ -417,11 +464,17 @@ final class ClipboardController {
     }
 
     /// 优先贴着本程序的搜索框或正在输入的文字光标，其次跟随鼠标。
-    private func placement(at pointer: CGPoint, beside given: NSRect?) -> ClipboardPanelPlacement {
+    private func placement(at pointer: CGPoint, beside given: NSRect?, pasteTarget: ClipboardPasteTarget?) -> ClipboardPanelPlacement {
         if let given, let hostScreen = WindowPlacement.screen(containing: CGPoint(x: given.midX, y: given.midY)) {
             return .init(anchor: given, gap: 4, visibleFrame: hostScreen.visibleFrame)
         }
-        if let caret = CaretLocator.caretRect(),
+        let caret: NSRect?
+        if let element = pasteTarget?.focusedTextElement {
+            caret = CaretLocator.caretRect(in: element)
+        } else {
+            caret = CaretLocator.caretRect()
+        }
+        if let caret,
            let screen = WindowPlacement.screen(containing: CGPoint(x: caret.minX, y: caret.midY)),
            caret.height <= screen.visibleFrame.height / 4 {
             return .init(anchor: caret, gap: 12, visibleFrame: screen.visibleFrame)
@@ -436,8 +489,15 @@ enum CaretLocator {
     /// 返回 AppKit 坐标（原点在主屏幕左下角）。
     static func caretRect() -> NSRect? {
         guard Permissions.accessibility,
-              let element = FocusInspector().focusedElement(), FocusInspector.focusKind(of: element) == .text,
-              let primary = NSScreen.screens.first,
+              let element = FocusInspector().focusedElement(), FocusInspector.focusKind(of: element) == .text
+        else { return nil }
+        return caretRect(in: element)
+    }
+
+    /// 对已确认为文本输入焦点的元素查询光标位置，避免呼出剪贴板时重复 AX 查询。
+    static func caretRect(in element: AXUIElement) -> NSRect? {
+        AXUIElementSetMessagingTimeout(element, 0.08)
+        guard let primary = NSScreen.screens.first,
               let selected: CFRange = element.axValue(kAXSelectedTextRangeAttribute, type: .cfRange),
               selected.location >= 0, selected.length >= 0, selected.location < Int.max - selected.length
         else { return nil }
@@ -483,14 +543,18 @@ enum CaretLocator {
 
 /// 仅在目标应用显式请求 TIFF 格式时才从 PNG 展开位图。
 private final class LazyTIFFProvider: NSObject, NSPasteboardItemDataProvider {
-    private let png: Data
+    private var png: Data?
 
     init(png: Data) {
         self.png = png
     }
 
     func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
-        guard type == .tiff, let tiff = NSImage(data: png)?.tiffRepresentation else { return }
+        guard type == .tiff, let png, let tiff = NSImage(data: png)?.tiffRepresentation else { return }
         item.setData(tiff, forType: .tiff)
+    }
+
+    func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {
+        png = nil
     }
 }

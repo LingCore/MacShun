@@ -45,13 +45,13 @@ final class ClipboardPanel: NSPanel {
 @MainActor
 final class ClipboardPanelModel: ObservableObject {
     @Published var query = "" {
-        didSet { if query != oldValue { resetResults() } }
+        didSet { if query != oldValue && !suppressRefresh { resetResults() } }
     }
     @Published var filter: ClipboardFilter = .all {
-        didSet { if filter != oldValue { resetResults() } }
+        didSet { if filter != oldValue && !suppressRefresh { resetResults() } }
     }
     @Published var sourceApp: String? {
-        didSet { if sourceApp != oldValue { resetResults() } }
+        didSet { if sourceApp != oldValue && !suppressRefresh { resetResults() } }
     }
     @Published private(set) var sourceApps: [String] = []
     @Published var recordingPaused = false
@@ -73,7 +73,14 @@ final class ClipboardPanelModel: ObservableObject {
         }
     }
     @Published var showsQuickPasteNumbers = false
-    @Published private(set) var previewSelection: String?
+    /// 仅在“有无选中文字”状态切换时通知视图，避免拖动选区过程中逐字符触发整面板 SwiftUI 重绘。
+    @Published private(set) var hasPreviewSelection = false
+    private(set) var previewSelection: String? {
+        didSet {
+            let has = previewSelection != nil
+            if hasPreviewSelection != has { hasPreviewSelection = has }
+        }
+    }
     @Published private(set) var batchIDs: [UUID] = []
     @Published private var noteItem: ClipboardItem?
     @Published var noteDraft = ""
@@ -98,21 +105,41 @@ final class ClipboardPanelModel: ObservableObject {
     var onPreviewChange: (Bool) -> Void = { _ in }
     var onHoverChange: (UUID?) -> Void = { _ in }
     var onClose: () -> Void = {}
+    var onCopiedToPasteboard: () -> Void = {}
     @Published private(set) var copyFeedback: String?
     private var textCopy: Task<Void, Never>?
+    private var feedbackTimeout: Task<Void, Never>?
     var onFloat: (ClipboardItem) -> Void = { _ in }
 
     let thumbnails = ClipboardImageCache(size: .row)
     let previews = ClipboardImageCache(size: .preview)
     private var subscription: AnyCancellable?
     private var clearTimeout: DispatchWorkItem?
+    private var isActive = true
+    private var needsRefresh = false
+    private var suppressRefresh = false
 
     init(store: ClipboardStore, pasteboard: NSPasteboard = .general) {
         self.store = store
         self.pasteboard = pasteboard
         subscription = store.$items
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.refresh(keepingSelection: true) }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if self.isActive {
+                    self.refresh(keepingSelection: true)
+                } else {
+                    self.needsRefresh = true
+                }
+            }
+    }
+
+    func setActive(_ active: Bool) {
+        isActive = active
+        if active && needsRefresh {
+            needsRefresh = false
+            refresh(keepingSelection: true)
+        }
     }
 
     func prepareForShow(opensAbove: Bool = false) {
@@ -122,9 +149,12 @@ final class ClipboardPanelModel: ObservableObject {
         noteDraft = ""
         clearBatch()
         self.opensAbove = opensAbove
+        suppressRefresh = true
         filter = .all
         sourceApp = nil
         query = ""
+        suppressRefresh = false
+        needsRefresh = false
         selection = 0
         hoveredID = nil
         cancelClear()
@@ -332,12 +362,28 @@ final class ClipboardPanelModel: ObservableObject {
     func cancelTextCopy() {
         textCopy?.cancel()
         textCopy = nil
+        feedbackTimeout?.cancel()
+        feedbackTimeout = nil
         copyFeedback = nil
     }
 
-    func showFeedback(_ message: String) {
+    func showFeedback(_ message: String, autoDismiss: Bool = true) {
         cancelTextCopy()
         copyFeedback = message
+        guard autoDismiss else { return }
+        feedbackTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(2200))
+            guard let self, !Task.isCancelled, self.copyFeedback == message else { return }
+            self.copyFeedback = nil
+        }
+    }
+
+    func clearFeedbackIf(_ message: String) {
+        if copyFeedback == message {
+            feedbackTimeout?.cancel()
+            feedbackTimeout = nil
+            copyFeedback = nil
+        }
     }
 
     func copyImageText(_ item: ClipboardItem, to board: NSPasteboard? = nil) {
@@ -346,18 +392,23 @@ final class ClipboardPanelModel: ObservableObject {
         let count = board.changeCount
         copyFeedback = L("正在识别文字…")
         textCopy = Task {
-            let value = await store.recognizedText(for: item.id)
+            let value = await store.recognizedText(for: item.id, fingerprint: item.fingerprint)
             guard !Task.isCancelled else { return }
             guard store.items.contains(where: { $0.id == item.id || $0.tiffFingerprint == item.fingerprint }),
                   let value, !value.isEmpty else {
-                copyFeedback = L("图片里没有可复制的文字")
+                showFeedback(L("图片里没有可复制的文字"))
                 return
             }
-            guard board.changeCount == count else { copyFeedback = L("剪贴板已更改，请重新取字"); return }
+            guard board.changeCount == count else { showFeedback(L("剪贴板已更改，请重新取字")); return }
             let textItem = NSPasteboardItem()
-            guard textItem.setString(value, forType: .string) else { copyFeedback = L("未能写入剪贴板"); return }
+            guard textItem.setString(value, forType: .string) else { showFeedback(L("未能写入剪贴板")); return }
             board.clearContents()
-            copyFeedback = board.writeObjects([textItem]) ? L("已复制识别的文字") : L("未能写入剪贴板")
+            if board.writeObjects([textItem]) {
+                if board === pasteboard { onCopiedToPasteboard() }
+                showFeedback(L("已复制识别的文字"))
+            } else {
+                showFeedback(L("未能写入剪贴板"))
+            }
         }
     }
 

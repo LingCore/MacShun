@@ -70,6 +70,21 @@ final class ClipboardImageCache {
         cache.object(forKey: url.deletingPathExtension() as NSURL)
     }
 
+    func remove(_ url: URL) {
+        let key = url.deletingPathExtension()
+        if opening?.key == key {
+            opening?.task.cancel()
+            opening = nil
+        }
+        cache.removeObject(forKey: key as NSURL)
+    }
+
+    func removeAll() {
+        opening?.task.cancel()
+        opening = nil
+        cache.removeAllObjects()
+    }
+
     func load(_ url: URL) async -> NSImage? {
         // TIFF 归档后路径会变，条目 UUID 和图像内容相同。
         let key = url.deletingPathExtension()

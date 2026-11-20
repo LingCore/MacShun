@@ -96,10 +96,14 @@ struct ClipboardCapture {
 /// 只在主线程上使用。
 @MainActor
 final class ClipboardStore: ObservableObject {
-    @Published private(set) var items: [ClipboardItem] = []
+    @Published private(set) var items: [ClipboardItem] = [] {
+        didSet { cachedSortedItems = nil }
+    }
 
     let directory: URL
-    private var indexes: [UUID: PinyinIndex] = [:]
+    var onRemoveFiles: (([URL]) -> Void)?
+    private var cachedSortedItems: [ClipboardItem]?
+    private var indexes: [UUID: [UInt8]] = [:]
     private var saveScheduled = false
     private var replacedFiles = Set<String>()
     private var recognizesImages = false
@@ -108,7 +112,9 @@ final class ClipboardStore: ObservableObject {
     private var pendingReads: [UUID: Task<String?, Never>] = [:]
     private let ocrQueue = DispatchQueue(label: "MacShun.ClipboardImageText", qos: .utility)
     private let saveQueue = DispatchQueue(label: "MacShun.ClipboardStore.save", qos: .utility)
-    private var maxUnpinnedItems: Int?
+    private var maxUnpinnedItems: Int? {
+        didSet { if maxUnpinnedItems != oldValue { cachedSortedItems = nil } }
+    }
     private var archivingTIFF = false
     private var failedArchives = Set<UUID>()
     private let readImageText: @Sendable (URL) -> String?
@@ -116,7 +122,8 @@ final class ClipboardStore: ObservableObject {
     private var historyFile: URL { directory.appendingPathComponent("history.json") }
     private var blobDirectory: URL { directory.appendingPathComponent("blobs", isDirectory: true) }
 
-    init(directory: URL? = nil, readImageText: @escaping @Sendable (URL) -> String? = { ContentExtractor.imageText(at: $0) }) {
+    init(directory: URL? = nil,
+         readImageText: @escaping @Sendable (URL) -> String? = { ContentExtractor.extractImageText(at: $0, requireTextSize: false) }) {
         self.readImageText = readImageText
         if let directory {
             self.directory = directory
@@ -132,13 +139,20 @@ final class ClipboardStore: ObservableObject {
 
     /// 排序：固定的在前，其余按最近使用时间。
     var sortedItems: [ClipboardItem] {
+        if let cachedSortedItems { return cachedSortedItems }
         let sorted = items.sorted { a, b in
             if a.pinned != b.pinned { return a.pinned }
             return a.lastUsed > b.lastUsed
         }
-        guard let limit = maxUnpinnedItems, sorted.count > limit else { return sorted }
-        let pinnedCount = sorted.prefix(while: \.pinned).count
-        return Array(sorted.prefix(pinnedCount + limit))
+        let result: [ClipboardItem]
+        if let limit = maxUnpinnedItems, sorted.count > limit {
+            let pinnedCount = sorted.prefix(while: \.pinned).count
+            result = Array(sorted.prefix(pinnedCount + limit))
+        } else {
+            result = sorted
+        }
+        cachedSortedItems = result
+        return result
     }
 
     func search(_ query: String, filter: ClipboardFilter = .all, sourceApp: String? = nil) -> [ClipboardItem] {
@@ -151,12 +165,16 @@ final class ClipboardStore: ObservableObject {
             let searchable = item.note.map { note in content.map { note + "\n" + $0 } ?? note } ?? content
             guard let text = searchable, !text.isEmpty else { return false }
             if item.kind == .image && text.localizedCaseInsensitiveContains(q) { return true }
-            if let cached = indexes[item.id] { return cached.matches(term) }
-            if term.matchesText(text.lowercased()) { return true }
-            guard let letters = term.letters else { return false }
-            let index = PinyinIndex(text: text)
-            indexes[item.id] = index
-            return PinyinIndex.syllableMatch(letters, index.syllables)
+            if term.matchesOriginal(text) { return true }
+            guard term.asciiBytes != nil else { return false }
+            let encoded: [UInt8]
+            if let cached = indexes[item.id] {
+                encoded = cached
+            } else {
+                encoded = PinyinIndex.encodeSyllables(text)
+                indexes[item.id] = encoded
+            }
+            return PinyinIndex.matchesEncoded(term, encoded: encoded)
         }
     }
 
@@ -339,19 +357,23 @@ final class ClipboardStore: ObservableObject {
     }
 
     /// 显式取字与后台索引共用一个串行解码队列；同一条图片只读一次。
-    func recognizedText(for id: UUID) async -> String? {
-        guard let item = items.first(where: { $0.id == id && $0.kind == .image }) else { return nil }
+    func recognizedText(for id: UUID, fingerprint: String? = nil) async -> String? {
+        guard let item = items.first(where: {
+            $0.kind == .image && ($0.id == id || (fingerprint != nil && ($0.fingerprint == fingerprint || $0.tiffFingerprint == fingerprint)))
+        }) else { return nil }
+        let resolvedID = item.id
         if let text = item.imageText { return text }
-        if let task = pendingReads[id] { return await task.value }
+        if let task = pendingReads[resolvedID] { return await task.value }
+        if resolvedID != id, let task = pendingReads[id] { return await task.value }
         guard let url = imageURL(for: item) else { return nil }
         let originalFingerprint = item.fingerprint
         let task = Task { [readImageText, ocrQueue] () -> String? in
             let text: String? = await withCheckedContinuation { continuation in
                 ocrQueue.async { continuation.resume(returning: readImageText(url)) }
             }
-            pendingReads[id] = nil
+            pendingReads[resolvedID] = nil
             if replacedFiles.contains(url.lastPathComponent) { scheduleSave() }
-            guard let i = items.firstIndex(where: { $0.id == id || $0.tiffFingerprint == originalFingerprint }) else { return nil }
+            guard let i = items.firstIndex(where: { $0.id == resolvedID || $0.tiffFingerprint == originalFingerprint }) else { return nil }
             let targetID = items[i].id
             if recognizesImages {
                 if let text {
@@ -362,7 +384,7 @@ final class ClipboardStore: ObservableObject {
             }
             return text
         }
-        pendingReads[id] = task
+        pendingReads[resolvedID] = task
         return await task.value
     }
 
@@ -438,9 +460,13 @@ final class ClipboardStore: ObservableObject {
         failedImages.remove(item.id)
         var files = Array(item.extraFiles.values)
         if let image = item.imageFile { files.append(image) }
+        var removedURLs: [URL] = []
         for file in files {
-            try? FileManager.default.removeItem(at: blobDirectory.appendingPathComponent(file))
+            let url = blobDirectory.appendingPathComponent(file)
+            removedURLs.append(url)
+            try? FileManager.default.removeItem(at: url)
         }
+        if !removedURLs.isEmpty { onRemoveFiles?(removedURLs) }
     }
 
     // MARK: - 存盘
@@ -502,7 +528,7 @@ final class ClipboardStore: ObservableObject {
         let dir = directory
         let file = historyFile
         let blobs = blobDirectory
-        let writeBlock: @Sendable () -> Void = {
+        let writeBlock: @Sendable () -> Bool = {
             do {
                 try Self.createPrivateDirectory(dir)
                 let encoder = JSONEncoder()
@@ -512,14 +538,22 @@ final class ClipboardStore: ObservableObject {
                 for name in removable {
                     try? FileManager.default.removeItem(at: blobs.appendingPathComponent(name))
                 }
+                return true
             } catch {
                 Log.clipboard.error("保存剪贴板历史失败：\(error.localizedDescription, privacy: .public)")
+                return false
             }
         }
         if sync {
-            saveQueue.sync(execute: writeBlock)
+            let ok = saveQueue.sync(execute: writeBlock)
+            if !ok && !removable.isEmpty { replacedFiles.formUnion(removable) }
         } else {
-            saveQueue.async(execute: writeBlock)
+            saveQueue.async { [weak self] in
+                let ok = writeBlock()
+                if !ok && !removable.isEmpty {
+                    Task { @MainActor [weak self] in self?.replacedFiles.formUnion(removable) }
+                }
+            }
         }
     }
 
