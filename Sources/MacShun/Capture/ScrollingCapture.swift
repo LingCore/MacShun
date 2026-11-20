@@ -59,6 +59,9 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
     private weak var viewport: CaptureImageViewport?
     var onExport: (() -> Void)?
     private var sampling: Task<Void, Never>?
+    private var renderTask: Task<Void, Never>?
+    private var renderCancelled: Locked<Bool>?
+    private var isSaving = false
     private var source: ScrollCaptureSource?
     private var finishDelay: Task<Void, Never>?
     private var originalApp: NSRunningApplication?
@@ -233,18 +236,18 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
         preview.contentView = NSHostingView(rootView: ScrollCapturePreview(image: output.image, message: previewNotice,
             position: position, attach: { [weak self] in self?.viewport = $0 },
             edit: { [weak self] in self?.edit() }, copy: { [weak self] in
-                guard let self, let data = self.output?.png else { return }
+                guard let self, !self.isSaving, let data = self.output?.png else { return }
                 if clipboard.copy(data) { onExport?(); onClose() } else { NSSound.beep() }
             }, save: { [weak self] in
                 if let self, let data = self.output?.png { save(data) }
             }, pin: { [weak self] in
-                guard let self, let data = self.output?.png, let picture = PinPicture(png: data) else { return }
+                guard let self, !self.isSaving, let output = self.output, let picture = PinPicture(cgImage: output.image, png: output.png) else { return }
                 if ScreenPins.shared.show(picture, pasteboard: clipboard.pasteboard) != nil { onExport?(); onClose() }
             }))
     }
 
     private func edit() {
-        guard let preview, let original, let frame = preview.contentView?.bounds else { return }
+        guard !isSaving, let preview, let original, let frame = preview.contentView?.bounds else { return }
         let editor = LongCaptureEditor(photo: original, annotations: annotations, frame: frame, position: viewport?.position ?? 0,
             onDone: { [weak self] in self?.apply($0) }, onBack: { [weak self] in
                 guard let self, let editor = self.preview?.contentView as? LongCaptureEditor else { return }
@@ -263,13 +266,21 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
             return
         }
         editor.setRendering(true)
-        Task {
+        renderCancelled?.set(true)
+        renderTask?.cancel()
+        let cancelled = Locked(false)
+        renderCancelled = cancelled
+        renderTask = Task {
             let rendered = await Task.detached(priority: .userInitiated) { () -> (CGImage, Data)? in
-                guard let image = original.render(original.bounds, marks: changes.marks),
+                guard !cancelled.get(),
+                      let image = original.render(original.bounds, marks: changes.marks),
+                      !cancelled.get(),
                       let data = ScrollAssembly.encode(image) else { return nil }
                 return (image, data)
             }.value
-            guard self.preview === preview, preview.contentView === editor else { return }
+            guard !cancelled.get(), !Task.isCancelled, self.preview === preview, preview.contentView === editor else { return }
+            renderTask = nil
+            renderCancelled = nil
             guard let rendered else {
                 editor.setRendering(false)
                 _ = await NSAlert(error: ScrollCaptureError.noImage).beginSheetModal(for: preview)
@@ -282,28 +293,45 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
     }
 
     private func save(_ png: Data) {
-        guard let preview, savePanel == nil else { return }
+        guard let preview, savePanel == nil, !isSaving else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = L("长截图") + ".png"
         savePanel = panel
-        originalApp = NSWorkspace.shared.frontmostApplication
+        if let front = NSWorkspace.shared.frontmostApplication, front != .current {
+            originalApp = front
+        }
         NSApp.activate()
         panel.beginSheetModal(for: preview) { [weak self] response in
             guard let self, savePanel === panel else { return }
             savePanel = nil
             guard response == .OK, let url = panel.url else { return }
-            do { try png.write(to: url, options: .atomic); onExport?(); onClose() }
-            catch { NSAlert(error: error).beginSheetModal(for: preview) }
+            isSaving = true
+            Task {
+                let error: Error? = await Task.detached(priority: .userInitiated) {
+                    do { try png.write(to: url, options: .atomic); return nil }
+                    catch { return error }
+                }.value
+                self.isSaving = false
+                guard self.preview === preview else { return }
+                if let error {
+                    _ = await NSAlert(error: error).beginSheetModal(for: preview)
+                    return
+                }
+                self.onExport?()
+                self.onClose()
+            }
         }
     }
 
     private func fail(_ error: Error) {
+        let app = originalApp ?? NSWorkspace.shared.frontmostApplication
         close()
         let alert = NSAlert(error: error)
         NSApp.activate()
         alert.runModal()
+        if NSApp.isActive, let app, app != .current { app.activate(options: []) }
         onClose()
     }
 
@@ -311,8 +339,13 @@ final class ScrollingCapture: NSObject, NSWindowDelegate {
 
     func close() {
         FrontAppTracker.shared.scrollingCaptureActive.set(false)
+        isSaving = false
         sampling?.cancel()
         sampling = nil
+        renderCancelled?.set(true)
+        renderCancelled = nil
+        renderTask?.cancel()
+        renderTask = nil
         stopSource()
         let save = savePanel
         savePanel = nil

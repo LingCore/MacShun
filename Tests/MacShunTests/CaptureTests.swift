@@ -573,4 +573,75 @@ struct CaptureTests {
         #expect(abs(panel.zoom - 0.08) < 0.001)
     }
 
+    @MainActor
+    @Test func escapeCancelsActiveSelectionDragBeforeCancellingCapture() throws {
+        _ = NSApplication.shared
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = try #require(CGContext(data: nil, width: 200, height: 160, bitsPerComponent: 8,
+                                         bytesPerRow: 0, space: space,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(srgbRed: 0.9, green: 0.9, blue: 0.9, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 200, height: 160))
+        let cg = try #require(ctx.makeImage())
+        let photo = CaptureImage(image: cg, size: CGSize(width: 200, height: 160))
+        let canvas = CaptureCanvas(photo: photo, mode: .image, windowRects: [])
+        let window = NSWindow(contentRect: CGRect(x: -18000, y: -17000, width: 200, height: 160),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = canvas
+        defer { window.close() }
+
+        var cancelled = 0
+        canvas.onCancel = { cancelled += 1 }
+        let down = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: CGPoint(x: 20, y: 20), modifierFlags: [], timestamp: 1,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        let drag = try #require(NSEvent.mouseEvent(
+            with: .leftMouseDragged, location: CGPoint(x: 120, y: 100), modifierFlags: [], timestamp: 2,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 1
+        ))
+        let esc = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 3,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1B}",
+            charactersIgnoringModifiers: "\u{1B}", isARepeat: false, keyCode: KeyCode.escape
+        ))
+        canvas.mouseDown(with: down)
+        canvas.mouseDragged(with: drag)
+        #expect(canvas.selection != nil)
+        // 拖动选区期间按 Esc：仅撤销当前拖动，不直接退出整个截图会话
+        canvas.keyDown(with: esc)
+        #expect(cancelled == 0)
+        #expect(canvas.selection == nil)
+        // 空闲态再按 Esc：正常退出截图
+        canvas.keyDown(with: esc)
+        #expect(cancelled == 1)
+    }
+
+    @MainActor
+    @Test func tallPinPictureBuildsWithoutNSImageDuplicationAndRendersTiled() throws {
+        _ = NSApplication.shared
+        // 高度超过 Metal/单张纹理 16384 像素上限的超长图，验证直接由 CGImage 构造并走分块绘制路径不崩溃
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = try #require(CGContext(data: nil, width: 16, height: 17000, bitsPerComponent: 8,
+                                         bytesPerRow: 0, space: space,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(srgbRed: 0.2, green: 0.6, blue: 0.8, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 16, height: 17000))
+        let cg = try #require(ctx.makeImage())
+        let png = try #require(CaptureImage.pngData(cg))
+        let picture = try #require(PinPicture(cgImage: cg, png: png))
+        #expect(picture.cgImage.height == 17000)
+
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        let frame = CGRect(x: 100, y: 100, width: 8, height: 400)
+        let panel = ScreenPinPanel(picture: picture, frame: frame, natural: CGSize(width: 8, height: 8500), pasteboard: board)
+        defer { panel.close() }
+        let view = try #require(panel.contentView)
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        #expect(rep.pixelsWide > 0 && rep.pixelsHigh > 0)
+    }
+
 }

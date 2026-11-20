@@ -36,6 +36,11 @@ struct CaptureClipboard {
         let pasteboard: NSPasteboard
         let copiedChangeCount = Locked<Int?>(nil)
         private var timer: Timer?
+        private var observers: [NSObjectProtocol] = []
+        private var asleep = false
+        private var screenAsleep = false
+        private var sessionInactive = false
+        private var paused: Bool { asleep || screenAsleep || sessionInactive }
 
         init(pasteboard: NSPasteboard) {
             self.pasteboard = pasteboard
@@ -43,6 +48,7 @@ struct CaptureClipboard {
 
         deinit {
             timer?.invalidate()
+            observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         }
 
         func markCopied(_ changeCount: Int) {
@@ -50,12 +56,58 @@ struct CaptureClipboard {
             guard pasteboard === NSPasteboard.general else { return }
             let startTimer = { [weak self] in
                 guard let self else { return }
-                self.timer?.invalidate()
-                self.timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-                    self?.refreshIfNeeded()
-                }
+                self.installObservers()
+                self.scheduleTimer()
             }
             if Thread.isMainThread { startTimer() } else { DispatchQueue.main.async(execute: startTimer) }
+        }
+
+        private func scheduleTimer() {
+            guard Thread.isMainThread, !paused, copiedChangeCount.get() != nil else { return }
+            timer?.invalidate()
+            let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+                self?.refreshIfNeeded()
+            }
+            t.tolerance = 0.25
+            RunLoop.main.add(t, forMode: .default)
+            timer = t
+        }
+
+        private func setLifecycleFlag(_ update: (Tracker) -> Void) {
+            let wasPaused = paused
+            update(self)
+            let nowPaused = paused
+            guard wasPaused != nowPaused else { return }
+            if nowPaused {
+                timer?.invalidate()
+                timer = nil
+            } else {
+                refreshIfNeeded()
+                scheduleTimer()
+            }
+        }
+
+        private func installObservers() {
+            guard observers.isEmpty else { return }
+            let center = NSWorkspace.shared.notificationCenter
+            observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.asleep = true }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.asleep = false }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.screenAsleep = true }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.screenAsleep = false }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.sessionInactive = true }
+            })
+            observers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.setLifecycleFlag { $0.sessionInactive = false }
+            })
         }
 
         func refreshIfNeeded() {

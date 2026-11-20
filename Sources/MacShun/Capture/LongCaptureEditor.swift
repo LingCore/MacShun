@@ -55,6 +55,9 @@ final class LongCaptureEditor: NSView {
     func setRendering(_ busy: Bool) {
         rendering = busy
         footer.rootView.rendering = busy
+        if busy, window?.firstResponder === canvas {
+            window?.makeFirstResponder(nil)
+        }
         canvas.isHidden = busy
         canvas.toolbar.isHidden = busy
         needsLayout = true

@@ -216,13 +216,16 @@ struct ScrollStitcher {
     /// 光标和滚动条的闪动只改变少量像素列。找不到位移时，检查其余内容是否留在原位。
     private func hasOnlyNarrowChanges(_ frame: Frame) -> Bool {
         let columnLimit = min(24, max(4, width / 50))
+        let rowBytes = width * 4
         return previous.pixels.withUnsafeBytes { oldRaw in
             frame.pixels.withUnsafeBytes { newRaw in
+                guard let oldBase = oldRaw.baseAddress, let newBase = newRaw.baseAddress else { return false }
                 let old = oldRaw.bindMemory(to: UInt8.self), new = newRaw.bindMemory(to: UInt8.self)
                 var changedColumns = [Bool](repeating: false, count: width)
                 var changedCount = 0
                 for row in 0..<frame.height {
-                    let rowStart = row * width * 4
+                    let rowStart = row * rowBytes
+                    if memcmp(oldBase + rowStart, newBase + rowStart, rowBytes) == 0 { continue }
                     for x in 0..<width where !changedColumns[x] {
                         let i = rowStart + x * 4
                         let difference = abs(Int(old[i]) - Int(new[i])) + abs(Int(old[i + 1]) - Int(new[i + 1]))
@@ -263,10 +266,13 @@ struct ScrollStitcher {
 
     /// 移出内部前缀缓冲生成最终图像，避免长图收尾时再做一次整图 CoW 拷贝。
     mutating func takeResult() -> CGImage? {
+        guard height > 0 else { return nil }
         var data = Data()
         swap(&data, &prefix)
         data.append(previous.pixels[(start * width * 4)...])
-        return makeImage(from: data)
+        let result = makeImage(from: data)
+        height = 0
+        return result
     }
 
     private func makeImage(from data: Data) -> CGImage? {

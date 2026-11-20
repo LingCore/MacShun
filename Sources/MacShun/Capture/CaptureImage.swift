@@ -2,6 +2,8 @@
 
 import AppKit
 import CoreText
+import ImageIO
+import UniformTypeIdentifiers
 
 enum CaptureMode: Equatable {
     case image, text
@@ -109,6 +111,15 @@ struct CaptureImage {
 
     static func rect(from a: CGPoint, to b: CGPoint) -> CGRect {
         CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    /// 使用 ImageIO 编码 PNG，避免 NSBitmapImageRep 额外开销且可安全在后台线程调用。
+    static func pngData(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     /// WindowServer 返回从前到后的全局窗口矩形。裁到当前屏幕，转换为该屏内的点。
@@ -352,6 +363,11 @@ struct CaptureMark: Equatable {
     var textFormat = AnnotationTextFormat()
 
     static let textInset = CGSize(width: 5, height: 3)
+    private static let textSizeCache: NSCache<NSString, NSValue> = {
+        let cache = NSCache<NSString, NSValue>()
+        cache.countLimit = 128
+        return cache
+    }()
     private var textLayoutWidth: CGFloat { max(1, end.x - start.x - 2 * Self.textInset.width) }
 
     var lineStyle: AnnotationLineStyle {
@@ -411,11 +427,19 @@ struct CaptureMark: Equatable {
         case .number: return badgeBounds(for: CTLineGetBoundsWithOptions(numberLine, .useGlyphPathBounds))
         case .text:
             let maxWidth = textLayoutWidth
-            // 结尾的空行也参与测量，编辑和导出时保留相同的段落高度。
-            let content = text.last?.isNewline == true ? text + " " : text
-            let setter = textFramesetter(content, alignment: .left)
-            let size = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRange(), nil,
-                CGSize(width: maxWidth, height: .greatestFiniteMagnitude), nil)
+            let cacheKey = "\(lettering.size.rawValue)|\(textFormat.bold ? 1 : 0)|\(Int((maxWidth * 10).rounded()))|\(text)" as NSString
+            let size: CGSize
+            if let cached = Self.textSizeCache.object(forKey: cacheKey) {
+                size = cached.sizeValue
+            } else {
+                // 结尾的空行也参与测量，编辑和导出时保留相同的段落高度。
+                let content = text.last?.isNewline == true ? text + " " : text
+                let setter = textFramesetter(content, alignment: .left)
+                let measured = CTFramesetterSuggestFrameSizeWithConstraints(setter, CFRange(), nil,
+                    CGSize(width: maxWidth, height: .greatestFiniteMagnitude), nil)
+                Self.textSizeCache.setObject(NSValue(size: measured), forKey: cacheKey)
+                size = measured
+            }
             let height = max(ceil(lettering.size.points * 1.22), ceil(size.height) + 2) + 2 * Self.textInset.height
             let usesFullWidth = hasFixedTextWidth || textFormat.alignment != .left
             let width = usesFullWidth ? maxWidth : min(maxWidth, ceil(size.width) + 1)

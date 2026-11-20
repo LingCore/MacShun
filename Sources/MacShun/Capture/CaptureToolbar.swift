@@ -276,32 +276,50 @@ final class CaptureToolbar: NSView {
             headButton.setAccessibilityValue(lineStyle.head.title)
         }
         for button in groups.joined() {
-            button.isHidden = !shows(button)
+            let shouldHide = !shows(button)
+            if button.isHidden != shouldHide { button.isHidden = shouldHide }
             switch button.command {
             case .select: button.select(tool == nil && redactionStatus == nil)
-            case .anchors: button.isEnabled = !hasMarks && anchorStatus == nil && pathStatus == nil
+            case .anchors:
+                let enabled = !hasMarks && anchorStatus == nil && pathStatus == nil
+                if button.isEnabled != enabled { button.isEnabled = enabled }
             case .tool(let kind): button.select(tool == kind)
             case .redact:
                 button.select(redactionStatus != nil)
-                button.toolTip = redactionStatus == nil ? L("辅助打码") : L("退出辅助打码")
-                button.setAccessibilityLabel(button.toolTip)
+                let tip = redactionStatus == nil ? L("辅助打码") : L("退出辅助打码")
+                if button.toolTip != tip {
+                    button.toolTip = tip
+                    button.setAccessibilityLabel(tip)
+                }
             case .undo:
-                button.isEnabled = anchorStatus == nil && pathStatus == nil ? canUndo : canRemoveAnchor
+                let enabled = anchorStatus == nil && pathStatus == nil ? canUndo : canRemoveAnchor
+                if button.isEnabled != enabled { button.isEnabled = enabled }
                 let undoName = hasPolygon ? L("撤销") : L("撤销标注")
                 let name = pathStatus != nil ? L("撤回节点") : (anchorStatus == nil ? undoName : L("撤回锚点"))
-                button.toolTip = "\(name)  ⌘Z"
-                button.setAccessibilityLabel(name)
+                let tip = "\(name)  ⌘Z"
+                if button.toolTip != tip {
+                    button.toolTip = tip
+                    button.setAccessibilityLabel(name)
+                }
             case .redo:
-                button.isEnabled = anchorStatus == nil && pathStatus == nil && canRedo
+                let enabled = anchorStatus == nil && pathStatus == nil && canRedo
+                if button.isEnabled != enabled { button.isEnabled = enabled }
                 let name = hasPolygon ? L("重做") : L("重做标注")
-                button.toolTip = "\(name)  ⇧⌘Z"
-                button.setAccessibilityLabel(name)
+                let tip = "\(name)  ⇧⌘Z"
+                if button.toolTip != tip {
+                    button.toolTip = tip
+                    button.setAccessibilityLabel(name)
+                }
             case .scroll:
-                button.isEnabled = canScroll
-                if hasPolygon { button.toolTip = L("长截图需要矩形选区") }
-                else if hasMarks { button.toolTip = L("先撤销标注，再开始长截图") }
-                else { button.toolTip = canScroll ? L("长截图（⌘L）") : L("请调整选区大小后再开始长截图") }
-            case .copy, .save, .pin: button.isEnabled = anchorStatus == nil
+                if button.isEnabled != canScroll { button.isEnabled = canScroll }
+                let tip: String
+                if hasPolygon { tip = L("长截图需要矩形选区") }
+                else if hasMarks { tip = L("先撤销标注，再开始长截图") }
+                else { tip = canScroll ? L("长截图（⌘L）") : L("请调整选区大小后再开始长截图") }
+                if button.toolTip != tip { button.toolTip = tip }
+            case .copy, .save, .pin:
+                let enabled = anchorStatus == nil
+                if button.isEnabled != enabled { button.isEnabled = enabled }
             case .style, .lineEnds, .arrowHead, .cancel: break
             }
         }
@@ -566,7 +584,9 @@ private final class CaptureToolButton: CaptureHoverButton {
     }
 
     func select(_ selected: Bool) {
-        state = selected ? .on : .off
+        let next: NSControl.StateValue = selected ? .on : .off
+        guard state != next else { return }
+        state = next
         setAccessibilityValue(selected ? 1 : 0)
         needsDisplay = true
     }

@@ -297,4 +297,17 @@ struct ScrollStitcherTests {
         #expect(region.area == CGRect(x: -100, y: 190, width: 31.5, height: 45.5))
         #expect(region.width == 63 && region.height == 91)
     }
+
+    @Test func takeResultResetsHeightAndReleasesBuffer() throws {
+        let first = try image(top: 0, height: 160)
+        let second = try image(top: 100, height: 160)
+        var stitch = try #require(ScrollStitcher(first))
+        #expect(stitch.append(second) == .appended)
+        #expect(stitch.height == 260)
+        let rawTaken = stitch.takeResult()
+        let taken = try #require(rawTaken)
+        #expect(taken.height == 260)
+        #expect(stitch.height == 0)
+        #expect(stitch.result() == nil)
+    }
 }

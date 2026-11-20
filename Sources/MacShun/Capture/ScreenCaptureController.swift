@@ -88,8 +88,10 @@ final class ScreenCaptureController: NSObject {
     private var lastRegion: CaptureRegionMemory?
     private var session: UUID?
     private var savePanel: NSSavePanel?
+    private var isSaving = false
     private var activatedForSave = false
     private var isRecognizingText = false
+    private var ocrCancelled: Locked<Bool>?
     private var previousApp: NSRunningApplication?
     private var notice: NSPanel?
     private var scrolling: ScrollingCapture?
@@ -197,7 +199,7 @@ final class ScreenCaptureController: NSObject {
         }
         canvas.onPin = { [weak self, weak canvas] in
             guard let self, let canvas, let selection = canvas.selection, let window = canvas.window,
-                  let image = output(canvas), let data = png(image), let picture = PinPicture(png: data) else { return }
+                  let image = output(canvas), let data = png(image), let picture = PinPicture(cgImage: image, png: data) else { return }
             let frame = window.convertToScreen(canvas.convert(selection, to: nil))
             let region = regionMemory(canvas)
             cancel()
@@ -271,10 +273,10 @@ final class ScreenCaptureController: NSObject {
     }
 
     /// 屏幕参数变化、切换桌面或休眠时，只取消依赖当前冻结屏幕或实时取帧的阶段；
-    /// 保存对话框、已完成的长截图预览/标注窗口、以及后台文字识别不受影响。
+    /// 保存对话框、异步写盘阶段、已完成的长截图预览/标注窗口、以及后台文字识别不受影响。
     @objc private func cancelScreenBoundCapture() {
         guard session != nil else { return }
-        if savePanel != nil || isRecognizingText { return }
+        if savePanel != nil || isSaving || isRecognizingText { return }
         if let scrolling {
             if scrolling.isSampling { cancel() }
             return
@@ -285,7 +287,10 @@ final class ScreenCaptureController: NSObject {
     @objc func cancel() {
         guard session != nil else { return }
         session = nil
+        isSaving = false
         isRecognizingText = false
+        ocrCancelled?.set(true)
+        ocrCancelled = nil
         let shouldRestoreFocus = activatedForSave
         activatedForSave = false
         scrolling?.close()
@@ -313,10 +318,15 @@ final class ScreenCaptureController: NSObject {
         if canvas.mode == .text {
             let count = pasteboard.changeCount
             isRecognizingText = true
+            let cancelled = Locked(false)
+            ocrCancelled?.set(true)
+            ocrCancelled = cancelled
             toast(L("正在识别文字…"))
             Task {
-                let text = await Task.detached(priority: .userInitiated) { ContentExtractor.recognizeText(in: image) }.value
-                guard session == token else { return }
+                let text = await Task.detached(priority: .userInitiated) {
+                    ContentExtractor.recognizeTextInSubprocess(in: image, isCancelled: { cancelled.get() })
+                }.value
+                guard session == token, !cancelled.get() else { return }
                 cancel()
                 guard !text.isEmpty else { toast(L("选区里没有识别到文字")); return }
                 guard pasteboard.changeCount == count else {
@@ -426,7 +436,7 @@ final class ScreenCaptureController: NSObject {
     }
 
     private func png(_ image: CGImage) -> Data? {
-        NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+        CaptureImage.pngData(image)
     }
 
     private func save(_ canvas: CaptureCanvas) {
@@ -446,15 +456,27 @@ final class ScreenCaptureController: NSObject {
             guard let self, session == token, let canvas else { return }
             savePanel = nil
             if response == .OK, let url = panel.url {
-                do {
-                    guard let data = png(image) else { throw CocoaError(.fileWriteUnknown) }
-                    try data.write(to: url, options: .atomic)
-                    lastRegion = regionMemory(canvas)
-                    cancel()
-                    return
-                } catch {
-                    showMessage(L("无法保存截图"), detail: error.localizedDescription)
+                let remembered = regionMemory(canvas)
+                isSaving = true
+                Task {
+                    let error: Error? = await Task.detached(priority: .userInitiated) {
+                        do {
+                            guard let data = CaptureImage.pngData(image) else { throw CocoaError(.fileWriteUnknown) }
+                            try data.write(to: url, options: .atomic)
+                            return nil
+                        } catch { return error }
+                    }.value
+                    guard self.session == token else { return }
+                    self.isSaving = false
+                    if let error {
+                        self.showMessage(L("无法保存截图"), detail: error.localizedDescription)
+                        self.showPanels(focusing: canvas)
+                        return
+                    }
+                    self.lastRegion = remembered
+                    self.cancel()
                 }
+                return
             }
             // 取消保存回到选区时不要先激活原前台应用，以免异步切走焦点令选区快捷键失效；
             // 焦点会在本次截图结束时由 cancel() 统一还回。

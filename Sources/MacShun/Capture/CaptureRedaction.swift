@@ -20,7 +20,12 @@ enum CaptureRedaction {
     }
 
     /// 返回图片坐标（左下为原点），向外留出余量并对齐实际像素。
-    static func recognize(in image: CGImage) throws -> [CGRect] {
+    /// 打包版自动通过短命子进程执行，支持取消且不在主进程常驻 Vision 模型。
+    static func recognize(in image: CGImage, isCancelled: @escaping @Sendable () -> Bool = { false }) throws -> [CGRect] {
+        try ContentExtractor.recognizeRedactionInSubprocess(in: image, isCancelled: isCancelled)
+    }
+
+    static func recognizeInProcess(in image: CGImage) throws -> [CGRect] {
         try autoreleasepool {
             let request = VNRecognizeTextRequest()
             // 目标都是 ASCII。快速识别能定位字符，并避免首次编译识别模型拖慢操作。

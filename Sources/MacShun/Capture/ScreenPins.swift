@@ -7,18 +7,22 @@ import UniformTypeIdentifiers
 /// 保存和复制始终使用原始 PNG；缩放、窗口阴影和透明度只影响屏幕显示。
 struct PinPicture {
     let png: Data
-    let image: NSImage
     let cgImage: CGImage
     let pixels: CGSize
+
+    init?(cgImage: CGImage, png: Data) {
+        guard cgImage.width > 0, cgImage.height > 0, !png.isEmpty else { return nil }
+        self.png = png
+        self.cgImage = cgImage
+        pixels = CGSize(width: cgImage.width, height: cgImage.height)
+    }
 
     init?(png: Data) {
         guard let source = CGImageSourceCreateWithData(png as CFData, nil),
               CGImageSourceGetType(source) as String? == UTType.png.identifier,
               let cg = CGImageSourceCreateImageAtIndex(source, 0, nil),
-              cg.width > 0, cg.height > 0,
-              let image = NSImage(data: png) else { return nil }
+              cg.width > 0, cg.height > 0 else { return nil }
         self.png = png
-        self.image = image
         self.cgImage = cg
         pixels = CGSize(width: cg.width, height: cg.height)
     }
@@ -34,16 +38,16 @@ struct PinPicture {
                   url.isFileURL else { return nil }
             if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                let cg = orientedCGImage(from: source),
-               let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
-                return PinPicture(png: data)
+               let data = CaptureImage.pngData(cg) {
+                return PinPicture(cgImage: cg, png: data)
             }
             image = NSImage(contentsOf: url)
         } else {
             image = NSImage(pasteboard: pasteboard)
         }
         guard let cg = image?.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let data = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { return nil }
-        return PinPicture(png: data)
+              let data = CaptureImage.pngData(cg) else { return nil }
+        return PinPicture(cgImage: cg, png: data)
     }
 
     /// 按 EXIF 方向解码文件图片，避免竖拍照片贴到屏幕后倒转。
@@ -158,7 +162,7 @@ final class ScreenPinPanel: NSPanel {
     let initialZoom: CGFloat
     private let pasteboard: NSPasteboard
     private var savePanel: NSSavePanel?
-    private let surface = PinSurface()
+    private let surface: PinSurface
     private(set) var zoom: CGFloat
 
     /// 限制贴图窗口最大后备存储尺寸，防止大图或长截图放大后超过 GPU 纹理上限或暴涨内存。
@@ -172,6 +176,8 @@ final class ScreenPinPanel: NSPanel {
         initialZoom = startZoom
         zoom = startZoom
         self.pasteboard = pasteboard
+        let isTiled = max(picture.cgImage.width, picture.cgImage.height) > Int(Self.maxBackingDimension)
+        self.surface = PinSurface(isTiled: isTiled)
         super.init(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         level = .floating
         isFloatingPanel = true
@@ -232,9 +238,19 @@ final class ScreenPinPanel: NSPanel {
         panel.begin { [weak self] result in
             guard let self else { return }
             savePanel = nil
+            let data = picture.png
             if result == .OK, let url = panel.url {
-                do { try picture.png.write(to: url, options: .atomic) }
-                catch { NSAlert(error: error).runModal() }
+                Task {
+                    let error: Error? = await Task.detached(priority: .userInitiated) {
+                        do { try data.write(to: url, options: .atomic); return nil }
+                        catch { return error }
+                    }.value
+                    if let error {
+                        NSAlert(error: error).runModal()
+                    }
+                    if NSApp.isActive, let previous, previous != .current { previous.activate(options: []) }
+                }
+                return
             }
             if NSApp.isActive, let previous, previous != .current { previous.activate(options: []) }
         }
@@ -284,17 +300,24 @@ private final class PinCloseButton: CaptureHoverButton {
 private final class PinSurface: NSView {
     private var panel: ScreenPinPanel? { window as? ScreenPinPanel }
     private let imageLayer = CALayer()
+    private var tiledImage: CGImage?
     private let badge = NSTextField(labelWithString: "")
     private let dismiss = PinCloseButton()
     private var pointerInside = false
+    private let isTiled: Bool
+    private var lastTiledBoundsSize: CGSize = .zero
     private var hoverArea: NSTrackingArea?
     private var hideBadge: DispatchWorkItem?
     private var resizeAnchor: CGPoint?
     private var startDistance: CGFloat = 1
     private var startZoom: CGFloat = 1
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    /// 普通尺寸贴图完全通过子图层 imageLayer.contents 渲染，启用 wantsUpdateLayer 避免 AppKit 为根视图再分配一份冗余透明位图。
+    override var wantsUpdateLayer: Bool { !isTiled }
+
+    init(isTiled: Bool = false) {
+        self.isTiled = isTiled
+        super.init(frame: .zero)
         wantsLayer = true
         imageLayer.contentsGravity = .resize
         imageLayer.zPosition = -1
@@ -325,7 +348,34 @@ private final class PinSurface: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     func setPicture(_ cgImage: CGImage) {
-        imageLayer.contents = cgImage
+        // 超过单张 GPU 纹理安全边长（例如 30,000px 长截图）时不直接塞进 CALayer.contents，改按脏区裁剪绘制。
+        if max(cgImage.width, cgImage.height) > Int(ScreenPinPanel.maxBackingDimension) {
+            tiledImage = cgImage
+            imageLayer.contents = nil
+            needsDisplay = true
+        } else {
+            tiledImage = nil
+            imageLayer.contents = cgImage
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let cgImage = tiledImage, !bounds.isEmpty, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let area = dirtyRect.intersection(bounds)
+        guard !area.isEmpty else { return }
+        let sx = CGFloat(cgImage.width) / bounds.width
+        let sy = CGFloat(cgImage.height) / bounds.height
+        let left = floor(area.minX * sx)
+        let right = ceil(area.maxX * sx)
+        let top = floor((bounds.height - area.maxY) * sy)
+        let bottom = ceil((bounds.height - area.minY) * sy)
+        let pixels = CGRect(x: left, y: top, width: right - left, height: bottom - top)
+            .intersection(CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+        guard !pixels.isEmpty, let tile = cgImage.cropping(to: pixels) else { return }
+        let target = CGRect(x: pixels.minX / sx, y: bounds.height - pixels.maxY / sy,
+                            width: pixels.width / sx, height: pixels.height / sy)
+        ctx.interpolationQuality = .high
+        ctx.draw(tile, in: target)
     }
 
     func showPercent(_ value: Int, opacity: Bool) {
@@ -343,6 +393,10 @@ private final class PinSurface: NSView {
     override func layout() {
         super.layout()
         imageLayer.frame = bounds
+        if tiledImage != nil, bounds.size != lastTiledBoundsSize {
+            lastTiledBoundsSize = bounds.size
+            needsDisplay = true
+        }
         dismiss.frame = CGRect(x: max(0, bounds.maxX - 34), y: max(0, bounds.maxY - 34), width: 24, height: 24)
         dismiss.isHidden = !pointerInside || bounds.width < 70 || bounds.height < 52
         if !badge.isHidden {

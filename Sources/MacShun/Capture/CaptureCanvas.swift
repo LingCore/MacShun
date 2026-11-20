@@ -67,6 +67,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     }
     private var redaction: Redaction?
     private var redactionScan: DispatchWorkItem?
+    private var redactionCancelled: Locked<Bool>?
 
     /// 坐标是各边相对选区的位置（0、0.5 或 1）。
     private static let handles = [
@@ -160,7 +161,10 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    deinit { redactionScan?.cancel() }
+    deinit {
+        redactionCancelled?.set(true)
+        redactionScan?.cancel()
+    }
 
     override var wantsUpdateLayer: Bool { !isDocument }
 
@@ -347,9 +351,12 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let pixels = photo.pixelRect(dirtyRect)
-        if isDocument, let tile = photo.image.cropping(to: pixels) {
+        if isDocument {
+            guard !pixels.isEmpty, let tile = photo.image.cropping(to: pixels) else { return }
             ctx.draw(tile, in: photo.pointRect(pixels))
-        } else { ctx.draw(photo.image, in: bounds) }
+        } else {
+            ctx.draw(photo.image, in: bounds)
+        }
         drawOverlay(in: ctx, dirtyRect: dirtyRect)
     }
 
@@ -934,7 +941,7 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         if redaction != nil {
             if let box = redactionCandidate(at: start) {
                 annotations.change {
-                    $0.append(CaptureMark(kind: .cover, start: box.origin, end: CGPoint(x: box.maxX, y: box.maxY)))
+                    $0.append(CaptureMark(kind: .cover, start: box.origin, end: CGPoint(x: box.maxX, y: box.maxY), fillColor: coverColor))
                 }
                 refresh()
                 cursor(at: start).set()
@@ -1124,8 +1131,10 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             let box = original.kind.isLine ? original.lineHandles.reduce(original.bounds) {
                 $0.union(CGRect(origin: $1, size: .zero))
             } : original.bounds
-            let dx = min(max(p.x - start.x, r.minX - box.minX), max(0, r.maxX - box.maxX))
-            let dy = min(max(p.y - start.y, r.minY - box.minY), max(0, r.maxY - box.maxY))
+            let minDX = min(0, r.minX - box.minX), maxDX = max(0, r.maxX - box.maxX)
+            let minDY = min(0, r.minY - box.minY), maxDY = max(0, r.maxY - box.maxY)
+            let dx = min(max(p.x - start.x, minDX), maxDX)
+            let dy = min(max(p.y - start.y, minDY), maxDY)
             draft = original.translated(dx: dx, dy: dy)
         case .mark(let kind, let overMark):
             guard let r = selection else { return }
@@ -1331,9 +1340,11 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
             return
         }
         mark.text = input.string
+        let x = min(max(mark.start.x, selection.minX), max(selection.minX, selection.maxX - min(selection.width, 36)))
+        let width = max(1, min(mark.end.x - x, selection.maxX - x))
         let height = min(selection.height, max(30, mark.bounds.height + 4))
-        input.frame = CGRect(x: mark.start.x, y: min(selection.maxY - height, max(selection.minY, mark.start.y - height)),
-                             width: max(1, mark.end.x - mark.start.x), height: height)
+        input.frame = CGRect(x: x, y: min(selection.maxY - height, max(selection.minY, mark.start.y - height)),
+                             width: width, height: height)
     }
 
     private func fitAnnotation(_ mark: CaptureMark) -> CaptureMark {
@@ -1423,6 +1434,8 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
     }
 
     private func stopRedaction() {
+        redactionCancelled?.set(true)
+        redactionCancelled = nil
         redactionScan?.cancel()
         redactionScan = nil
         redaction = nil
@@ -1448,9 +1461,13 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         let transform = CGAffineTransform(translationX: crop.minX, y: crop.minY)
             .scaledBy(x: crop.width / CGFloat(image.width), y: crop.height / CGFloat(image.height))
         let token = UUID()
+        let cancelled = Locked(false)
         redaction = .scanning(token)
+        redactionCancelled = cancelled
         let scan = DispatchWorkItem { [weak self] in
-            let boxes = try? CaptureRedaction.recognize(in: image).map { $0.applying(transform) }
+            guard !cancelled.get() else { return }
+            let boxes = try? CaptureRedaction.recognize(in: image, isCancelled: { cancelled.get() }).map { $0.applying(transform) }
+            guard !cancelled.get() else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.finishRedaction(boxes, token: token)
             }
@@ -1568,17 +1585,27 @@ final class CaptureCanvas: NSView, NSTextViewDelegate {
         case (KeyCode.p, []) where !isDocument && mode == .image && marks.isEmpty && drag == nil: perform(.anchors)
         case (KeyCode.escape, []):
             switch drag {
+            case .select:
+                selection = nil
+                drag = nil
+                nudgedWhileSelecting = false
+                refresh()
+            case .move(let old, let oldPolygon):
+                if let oldPolygon { setSelectionPolygon(oldPolygon) } else { selection = old }
+                drag = nil
+                refresh()
+            case .resize(let old, _):
+                selection = old
+                drag = nil
+                refresh()
             case .moveSelectionVertex(_, let original):
                 setSelectionPolygon(original)
                 drag = nil
                 refresh()
-            case .mark(let kind, _) where kind.isLine:
+            case .mark, .moveMark, .resizeTextBox:
                 drag = nil; draft = nil; refresh()
-            case .moveMark(_, let mark, _) where mark.kind.isLine:
-                drag = nil; draft = nil; refresh()
-            case .resizeTextBox:
-                drag = nil; draft = nil; refresh()
-            default: onCancel?()
+            case nil:
+                onCancel?()
             }
         case (KeyCode.returnKey, []), (KeyCode.keypadEnter, []):
             if selection == nil, let hovered { selection = hovered }

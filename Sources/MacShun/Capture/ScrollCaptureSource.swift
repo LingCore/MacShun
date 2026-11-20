@@ -123,6 +123,7 @@ private final class ScrollFrameReceiver: NSObject, SCStreamOutput, SCStreamDeleg
     private let targetIsUnchanged: @Sendable () -> Bool
     private let context = CIContext(options: [.cacheIntermediates: false])
     private(set) var hasFrame = false  // 只在 queue 上访问
+    private var lastTargetCheck: Double = 0  // 只在 queue 上访问
 
     init(width: Int, height: Int, frames: ScrollCaptureSource.Frames.Continuation,
          targetIsUnchanged: @escaping @Sendable () -> Bool) {
@@ -140,7 +141,12 @@ private final class ScrollFrameReceiver: NSObject, SCStreamOutput, SCStreamDeleg
                   let rawStatus = attachments.first?[.status] as? Int,
                   let status = SCFrameStatus(rawValue: rawStatus),
                   status == .complete || status == .started else { return }
-            guard targetIsUnchanged() else { frames.finish(throwing: ScrollCaptureError.windowChanged); return }
+            // 每秒核对 4 次目标窗口，避免 30Hz 频繁向 WindowServer 拉取全系统窗口列表。
+            let now = ProcessInfo.processInfo.systemUptime
+            if lastTargetCheck == 0 || now - lastTargetCheck >= 0.25 {
+                lastTargetCheck = now
+                guard targetIsUnchanged() else { frames.finish(throwing: ScrollCaptureError.windowChanged); return }
+            }
             guard CVPixelBufferGetWidth(pixels) == width, CVPixelBufferGetHeight(pixels) == height else {
                 frames.finish(throwing: ScrollCaptureError.screenChanged)
                 return
