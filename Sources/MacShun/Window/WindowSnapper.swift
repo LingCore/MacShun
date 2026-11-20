@@ -29,12 +29,16 @@ final class WindowSnapper {
     }
     private var history: [CGWindowID: Record] = [:]
 
-    private var mouseMonitor: Any?
+    private var mouseDownMonitor: Any?
+    private var activeDragGlobalMonitor: Any?
+    private var activeDragLocalMonitor: Any?
+    private var dragWatchdog: Timer?
+    private var dragWatchdogReleaseTicks = 0
     private var drag: DragState?
     private var previewTask: DispatchWorkItem?
     private var dragGeneration = UUID()
-    private var screenObserver: NSObjectProtocol?
-    private var spaceObserver: NSObjectProtocol?
+    private var appObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     /// 自测用：系统自带的拖动分屏开着也照样处理拖动
     var ignoresNativeTiling = false
     /// 自测用：拖动时预览的位置（AX 坐标）
@@ -42,39 +46,47 @@ final class WindowSnapper {
 
     init(configStore: ConfigStore) {
         self.configStore = configStore
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-        ) { [weak self] _ in
+        let cancelAll: (Notification) -> Void = { [weak self] _ in
             self?.cancelDrag()
             self?.assist.hide()
         }
-        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            self?.cancelDrag()
-            self?.assist.hide()
+        let appCenter = NotificationCenter.default
+        appObservers.append(appCenter.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main, using: cancelAll
+        ))
+        appObservers.append(appCenter.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main, using: cancelAll
+        ))
+        let wsCenter = NSWorkspace.shared.notificationCenter
+        for name in [
+            NSWorkspace.activeSpaceDidChangeNotification,
+            NSWorkspace.willSleepNotification,
+            NSWorkspace.screensDidSleepNotification,
+        ] {
+            workspaceObservers.append(wsCenter.addObserver(forName: name, object: nil, queue: .main, using: cancelAll))
         }
     }
 
     deinit {
-        if let monitor = mouseMonitor { NSEvent.removeMonitor(monitor) }
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
+        if let monitor = mouseDownMonitor { NSEvent.removeMonitor(monitor) }
+        stopDragTracking()
+        appObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         previewTask?.cancel()
     }
 
     private var config: WindowConfig { configStore.config.window }
 
-    /// 按配置开始或停止监听拖动。
+    /// 按配置开始或停止监听拖动。平时只监听 leftMouseDown，真正拖标题栏时再临时装拖动/按键监听。
     func applyConfig() {
         let wantsDrag = config.enabled && config.dragToSnap
-        if wantsDrag && mouseMonitor == nil {
-            mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged]) { [weak self] event in
+        if wantsDrag && mouseDownMonitor == nil {
+            mouseDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
                 self?.handleMouse(event)
             }
-        } else if !wantsDrag, let monitor = mouseMonitor {
+        } else if !wantsDrag, let monitor = mouseDownMonitor {
             NSEvent.removeMonitor(monitor)
-            mouseMonitor = nil
+            mouseDownMonitor = nil
         }
         if !wantsDrag { cancelDrag() }
         if !config.enabled || !config.snapAssist { assist.hide() }
@@ -126,6 +138,7 @@ final class WindowSnapper {
                 window.setFrame(moved, resize: window.isResizable)
             }
         case .stretchVertically:
+            guard window.isResizable else { return }
             let area = screens[index].area
             window.setFrame(CGRect(x: frame.minX, y: area.minY, width: frame.width, height: area.height))
         }
@@ -273,8 +286,10 @@ final class WindowSnapper {
                              screens: screens,
                              intent: DragSnapIntent(screens: screens.map(\.frame), cursor: point, time: event.timestamp),
                              optionAcceleratorEnabled: optionTiling)
+            startDragTracking()
 
         case .leftMouseDragged:
+            dragWatchdogReleaseTicks = 0
             guard var state = drag else { return }
             // 系统的“按住 ⌥ 拖动平铺”开着时，按着 ⌥ 拖让给系统
             if !ignoresNativeTiling && event.modifierFlags.contains(.option) && state.optionAcceleratorEnabled {
@@ -320,6 +335,7 @@ final class WindowSnapper {
         case .leftMouseUp:
             guard var state = drag else { return }
             drag = nil
+            stopDragTracking()
             previewTask?.cancel()
             previewTask = nil
             preview.hide()
@@ -328,8 +344,8 @@ final class WindowSnapper {
                   !yieldsToNativeTiling(event.modifierFlags),
                   let target = state.intent.release(cursor: point, time: event.timestamp) else { return }
             let generation = dragGeneration
-            let expiresAt = ProcessInfo.processInfo.systemUptime + 0.12
-            // 下一轮开始检查原生拖动是否结束；窗口位置稳定以后才写 AX，最多等约 100ms。
+            let expiresAt = ProcessInfo.processInfo.systemUptime + 0.20
+            // 下一轮开始检查原生拖动是否结束；窗口位置稳定以后才写 AX，最多等约 200ms。
             DispatchQueue.main.async { [weak self] in
                 self?.finishDrop(state, target: target, generation: generation, expiresAt: expiresAt)
             }
@@ -357,9 +373,51 @@ final class WindowSnapper {
             || (flags.contains(.option) && NativeTiling.optionAcceleratorEnabled))
     }
 
+    private func startDragTracking() {
+        stopDragTracking()
+        let mask: NSEvent.EventTypeMask = [.leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged]
+        activeDragGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.handleMouse(event)
+        }
+        activeDragLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            self?.handleMouse(event)
+            return event
+        }
+        let watchdog = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self, self.drag != nil else { return }
+            if NSEvent.pressedMouseButtons & 1 == 0 {
+                // 连续两次轮询（0.25–0.5s）仍未收到 leftMouseUp 才兜底取消，避免正常松手瞬间抢先截断分屏。
+                self.dragWatchdogReleaseTicks += 1
+                if self.dragWatchdogReleaseTicks >= 2 {
+                    self.cancelDrag()
+                }
+            } else {
+                self.dragWatchdogReleaseTicks = 0
+            }
+        }
+        watchdog.tolerance = 0.05
+        RunLoop.main.add(watchdog, forMode: .common)
+        dragWatchdog = watchdog
+    }
+
+    private func stopDragTracking() {
+        dragWatchdogReleaseTicks = 0
+        if let monitor = activeDragGlobalMonitor {
+            NSEvent.removeMonitor(monitor)
+            activeDragGlobalMonitor = nil
+        }
+        if let monitor = activeDragLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            activeDragLocalMonitor = nil
+        }
+        dragWatchdog?.invalidate()
+        dragWatchdog = nil
+    }
+
     private func cancelDrag() {
         dragGeneration = UUID()
         drag = nil
+        stopDragTracking()
         previewTask?.cancel()
         previewTask = nil
         preview.hide()
@@ -415,7 +473,7 @@ final class WindowSnapper {
             if let id = window.windowID { history[id]?.snappedFrame = nil }
             snap(window, id: window.windowID, from: restoreFrame, fromArea: fromArea,
                  to: target.position, on: screen, showAssist: true)
-        } else if attempt < 6 {
+        } else if attempt < 10 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60) { [weak self] in
                 self?.finishDrop(state, target: target, generation: generation, expiresAt: expiresAt,
                                  previousFrame: frame, attempt: attempt + 1)
@@ -467,7 +525,10 @@ enum NativeTiling {
 
 /// 拖动时显示要分到哪里的半透明框。
 final class SnapPreview {
+    private var panelLoaded = false
+
     private lazy var panel: NSPanel = {
+        panelLoaded = true
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isOpaque = false
         panel.backgroundColor = .clear
@@ -514,7 +575,7 @@ final class SnapPreview {
     }
 
     func hide() {
-        guard panel.isVisible else { return }
+        guard panelLoaded, panel.isVisible else { return }
         panel.orderOut(nil)
     }
 }

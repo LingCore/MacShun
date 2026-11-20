@@ -71,7 +71,7 @@ struct WindowElement: SnappableWindow {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(appElement, timeout)
-        guard let window: AXUIElement = appElement.value(kAXFocusedWindowAttribute) else { return nil }
+        guard let window = appElement.axElement(kAXFocusedWindowAttribute) else { return nil }
         return WindowElement(element: window, pid: app.processIdentifier)
     }
 
@@ -89,12 +89,12 @@ struct WindowElement: SnappableWindow {
         // 点到的是按钮、文字这些，往上找到窗口
         for _ in 0 ..< 30 {
             if current.string(kAXRoleAttribute) == kAXWindowRole as String { break }
-            if let window: AXUIElement = current.value(kAXWindowAttribute) {
+            if let window = current.axElement(kAXWindowAttribute) {
                 current = window
                 AXUIElementSetMessagingTimeout(current, Self.timeout)
                 break
             }
-            guard let parent: AXUIElement = current.value(kAXParentAttribute) else { return nil }
+            guard let parent = current.axElement(kAXParentAttribute) else { return nil }
             current = parent
             AXUIElementSetMessagingTimeout(current, Self.timeout)
         }
@@ -108,8 +108,7 @@ struct WindowElement: SnappableWindow {
     static func windows(of pid: pid_t) -> [WindowElement] {
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, timeout)
-        let list: [AXUIElement] = appElement.value(kAXWindowsAttribute) ?? []
-        return list.map { WindowElement(element: $0, pid: pid) }
+        return appElement.axElements(kAXWindowsAttribute).map { WindowElement(element: $0, pid: pid) }
     }
 
     var windowID: CGWindowID? {
@@ -197,6 +196,26 @@ extension AXUIElement {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(self, attribute as CFString, &value) == .success else { return nil }
         return value as? T
+    }
+
+    /// 严格检查 CFTypeID 后再转为 AXUIElement（Swift 5 对 __NSCFType 动态转换不区分不同 CF 类型）。
+    func axElement(_ attribute: String) -> AXUIElement? {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(self, attribute as CFString, &raw) == .success,
+              let raw, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return (raw as! AXUIElement)
+    }
+
+    func axElements(_ attribute: String) -> [AXUIElement] {
+        var raw: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(self, attribute as CFString, &raw) == .success,
+              let array = raw as? [AnyObject] else { return [] }
+        let expected = AXUIElementGetTypeID()
+        return array.compactMap { item -> AXUIElement? in
+            let ref: CFTypeRef = item
+            guard CFGetTypeID(ref) == expected else { return nil }
+            return (ref as! AXUIElement)
+        }
     }
 
     func string(_ attribute: String) -> String? { value(attribute) }

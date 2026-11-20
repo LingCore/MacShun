@@ -4,7 +4,12 @@ import Foundation
 import Combine
 
 final class GleaningUserCounts: ObservableObject {
+    static let shared = GleaningUserCounts()
+
     @Published var values: [String: Int] = [:]
+    private var lastFetched: Date?
+    private var inFlight = false
+    private static let cooldown: TimeInterval = 300
 
     private struct Catalog: Decodable {
         struct Project: Decodable {
@@ -13,6 +18,17 @@ final class GleaningUserCounts: ObservableObject {
             let stats: Stats?
         }
         let projects: [Project]
+    }
+
+    @MainActor
+    func refreshIfNeeded() async {
+        guard Updater.isSupported, !inFlight else { return }
+        if let lastFetched, Date().timeIntervalSince(lastFetched) < Self.cooldown { return }
+        inFlight = true
+        defer { inFlight = false }
+        guard let counts = try? await Self.fetch(), !Task.isCancelled else { return }
+        values = counts
+        lastFetched = Date()
     }
 
     static func fetch() async throws -> [String: Int] {

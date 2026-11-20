@@ -46,30 +46,85 @@ struct SMCReadPacket {
 
 final class ChipTemperatureReader {
     private var connection: io_connect_t = 0
+    private var openRetryAfter: TimeInterval = 0
+    private var openBackoff: TimeInterval = 5
     private var metadata: [String: SMCReadPacket.KeyInfo] = [:]
+    private var consecutiveFailures: [String: Int] = [:]
     private var availableKeys: [String]?
     private var retryAfter: TimeInterval = 0
+    private var scanBackoff: TimeInterval = 30
 
     init() {
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
-        guard service != 0 else { return }
-        defer { IOObjectRelease(service) }
-        if IOServiceOpen(service, mach_task_self_, 0, &connection) != KERN_SUCCESS { connection = 0 }
+        openConnection()
     }
 
     deinit {
         if connection != 0 { IOServiceClose(connection) }
     }
 
-    func read() -> Double? {
-        guard connection != 0 else { return nil }
-        let now = ProcessInfo.processInfo.systemUptime
-        if availableKeys == nil || (availableKeys?.isEmpty == true && now >= retryAfter) {
-            availableKeys = Self.sensorKeys.filter { keyInfo($0) != nil }
-            retryAfter = now + 30
+    private func openConnection() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard service != 0 else {
+            connection = 0
+            openRetryAfter = ProcessInfo.processInfo.systemUptime + openBackoff
+            openBackoff = min(openBackoff * 3, 300)
+            return
         }
+        defer { IOObjectRelease(service) }
+        if IOServiceOpen(service, mach_task_self_, 0, &connection) == KERN_SUCCESS {
+            openBackoff = 5
+            openRetryAfter = 0
+            availableKeys = nil
+            metadata.removeAll()
+            consecutiveFailures.removeAll()
+        } else {
+            connection = 0
+            openRetryAfter = ProcessInfo.processInfo.systemUptime + openBackoff
+            openBackoff = min(openBackoff * 3, 300)
+        }
+    }
+
+    func read() -> Double? {
+        let now = ProcessInfo.processInfo.systemUptime
+        if connection == 0 {
+            guard now >= openRetryAfter else { return nil }
+            openConnection()
+            guard connection != 0 else { return nil }
+        }
+        if availableKeys == nil || (availableKeys?.isEmpty == true && now >= retryAfter) {
+            let discovered = Self.sensorKeys.filter { keyInfo($0) != nil }
+            availableKeys = discovered
+            if discovered.isEmpty {
+                retryAfter = now + scanBackoff
+                scanBackoff = min(scanBackoff * 2, 600)
+            } else {
+                scanBackoff = 30
+            }
+        }
+        guard let keys = availableKeys, !keys.isEmpty else { return nil }
         // 只用已识别的 CPU/GPU 芯片传感器，不用电池、硬盘或机身温度代替。
-        return availableKeys?.compactMap { readValue($0) }.max()
+        var warmest: Double?
+        var retired: [String] = []
+        for key in keys {
+            if let value = readValue(key, retired: &retired) {
+                warmest = warmest.map { max($0, value) } ?? value
+            }
+        }
+        if !retired.isEmpty {
+            let drop = Set(retired)
+            availableKeys?.removeAll { drop.contains($0) }
+            if availableKeys?.isEmpty == true {
+                // 全部传感器键连续失效，说明 SMC 连接可能已失效，关闭并退避重连而不是立即对死连接重扫 127 个键。
+                IOServiceClose(connection)
+                connection = 0
+                availableKeys = nil
+                metadata.removeAll()
+                consecutiveFailures.removeAll()
+                openRetryAfter = now + openBackoff
+                openBackoff = min(openBackoff * 3, 300)
+            }
+        }
+        return warmest
     }
 
     static func code(_ key: String) -> UInt32 {
@@ -88,20 +143,35 @@ final class ChipTemperatureReader {
         return output.info
     }
 
-    private func readValue(_ key: String) -> Double? {
+    private func readValue(_ key: String, retired: inout [String]) -> Double? {
         guard let info = keyInfo(key) else { return nil }
         var input = SMCReadPacket()
         input.key = Self.code(key)
         input.command = 5 // readBytes
         input.info.size = info.size
         guard var output = call(&input) else {
-            metadata.removeValue(forKey: key)
+            let failures = (consecutiveFailures[key] ?? 0) + 1
+            consecutiveFailures[key] = failures
+            // 单次瞬时读取失败不立即清空元数据，连续 3 次失败再退役该键。
+            if failures >= 3 {
+                metadata.removeValue(forKey: key)
+                consecutiveFailures.removeValue(forKey: key)
+                retired.append(key)
+            }
             return nil
         }
-        return withUnsafeBytes(of: &output.bytes) { Self.decode(type: info.type, bytes: Array($0.prefix(Int(info.size)))) }
+        consecutiveFailures[key] = 0
+        return withUnsafeBytes(of: &output.bytes) { raw in
+            let slice = UnsafeRawBufferPointer(rebasing: raw.prefix(Int(info.size)))
+            return Self.decode(type: info.type, bytes: slice)
+        }
     }
 
     static func decode(type: UInt32, bytes: [UInt8]) -> Double? {
+        bytes.withUnsafeBytes { decode(type: type, bytes: $0) }
+    }
+
+    static func decode(type: UInt32, bytes: UnsafeRawBufferPointer) -> Double? {
         let value: Double
         if type == code("sp78"), bytes.count == 2 {
             value = Double(Int16(bitPattern: UInt16(bytes[0]) << 8 | UInt16(bytes[1]))) / 256

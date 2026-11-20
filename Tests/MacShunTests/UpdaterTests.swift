@@ -322,4 +322,48 @@ struct UpdaterTests {
             #expect(parsed.candidates == [parsed.url])
         }
     }
+
+    @Test func autoInstallRequiresLoopbackFeed() {
+        #expect(Updater.allowsAutoInstall(environment: [
+            "MACSHUN_UPDATE_AUTOINSTALL": "1",
+            "MACSHUN_UPDATE_FEED": "http://127.0.0.1:23456/latest.json",
+        ]))
+        #expect(Updater.allowsAutoInstall(environment: [
+            "MACSHUN_UPDATE_AUTOINSTALL": "1",
+            "MACSHUN_UPDATE_FEED": "http://localhost:8080/latest.json",
+        ]))
+        // 未指定环回测试源或指向远程服务时必须拒绝自动静默安装
+        #expect(!Updater.allowsAutoInstall(environment: [
+            "MACSHUN_UPDATE_AUTOINSTALL": "1",
+        ]))
+        #expect(!Updater.allowsAutoInstall(environment: [
+            "MACSHUN_UPDATE_AUTOINSTALL": "1",
+            "MACSHUN_UPDATE_FEED": "https://lcstp.com/updates/macshun/stable.json",
+        ]))
+        #expect(!Updater.allowsAutoInstall(environment: [
+            "MACSHUN_UPDATE_AUTOINSTALL": "0",
+            "MACSHUN_UPDATE_FEED": "http://127.0.0.1:23456/latest.json",
+        ]))
+    }
+
+    @Test func redirectRejectsHTTPSDowngradeAndUnsafeTargets() {
+        let httpsSrc = URL(string: "https://github.com/LingCore/MacShun/releases/download/v1/a.dmg")!
+        let httpsDst = URL(string: "https://objects.githubusercontent.com/a.dmg")!
+        let httpDst = URL(string: "http://mirror.example/a.dmg")!
+        let httpLocal = URL(string: "http://127.0.0.1:8787/a.dmg")!
+        let fileDst = URL(string: "file:///tmp/a.dmg")!
+
+        #expect(Updater.allowedRedirect(from: httpsSrc, to: httpsDst))
+        #expect(!Updater.allowedRedirect(from: httpsSrc, to: httpDst))
+        #expect(!Updater.allowedRedirect(from: httpsSrc, to: httpLocal))
+        #expect(!Updater.allowedRedirect(from: httpsSrc, to: fileDst))
+        #expect(Updater.allowedRedirect(from: httpLocal, to: httpLocal))
+    }
+
+    @Test func networkCancelledErrorIsNotSwallowedAsUserCancellation() {
+        // Task 未取消时网络层抛出的 URLError(.cancelled) 应视为错误而不是静默吞掉
+        #expect(!Updater.isUserCancellation(URLError(.cancelled), taskCancelled: false))
+        #expect(Updater.isUserCancellation(URLError(.cancelled), taskCancelled: true))
+        #expect(Updater.isUserCancellation(CancellationError(), taskCancelled: false))
+    }
 }

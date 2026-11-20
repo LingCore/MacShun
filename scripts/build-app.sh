@@ -39,11 +39,13 @@ if [[ -n "${MACSHUN_UPDATE_FEED_URL:-}" ]]; then
     # 写入签名保护的构建配置；只允许 HTTPS 或本机联调 HTTP。
     python3 - <<'PY'
 import os, urllib.parse
-u = urllib.parse.urlsplit(os.environ['MACSHUN_UPDATE_FEED_URL'])
+raw = os.environ['MACSHUN_UPDATE_FEED_URL']
+assert not any(c.isspace() for c in raw)
+u = urllib.parse.urlsplit(raw)
 assert not u.username and not u.password and u.hostname
 assert u.scheme == 'https' or (u.scheme == 'http' and u.hostname in ('localhost', '127.0.0.1', '::1'))
 PY
-    /usr/libexec/PlistBuddy -c "Add :MacShunUpdateFeed string $MACSHUN_UPDATE_FEED_URL" "$APP/Contents/Info.plist"
+    plutil -replace MacShunUpdateFeed -string "$MACSHUN_UPDATE_FEED_URL" "$APP/Contents/Info.plist"
 fi
 cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"   # 图标由 scripts/make-icon.py 生成
 cp "$ROOT/Resources/AppGlyph.svg" "$APP/Contents/Resources/AppGlyph.svg"   # 不带底板的矢量标志，“拾穗计划”页用
@@ -55,7 +57,8 @@ for lang in en zh-Hans; do
     cp -R "$ROOT/Resources/$lang.lproj" "$APP/Contents/Resources/$lang.lproj"
 done
 
-if [[ -f "$KEYCHAIN" ]] && security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
+IDENTITIES="$(security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null || true)"
+if [[ -f "$KEYCHAIN" ]] && grep -qF "$IDENTITY" <<< "$IDENTITIES"; then
     security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
     codesign --force --sign "$IDENTITY" --keychain "$KEYCHAIN" --timestamp=none "$APP"
 else
@@ -63,7 +66,7 @@ else
     echo "      运行一次 scripts/dev-cert.sh 可以解决。" >&2
     codesign --force --sign - "$APP"
 fi
-codesign --verify "$APP"
+codesign --verify --strict "$APP"
 echo "已生成：$APP"
 
 if [[ "${1:-}" == "--install" ]]; then

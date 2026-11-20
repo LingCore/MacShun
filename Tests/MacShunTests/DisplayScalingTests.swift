@@ -169,4 +169,31 @@ struct DisplayScalingTests {
         #expect(DisplayScaling.nativeSize(of: hidpiOnly)! == (3024, 1964))
         #expect(DisplayScaling.options(from: hidpiOnly, preferredRefresh: 60).map(\.mode.width) == [1800, 1512])
     }
+
+    @Test func zeroAndNegativeModeIDsAreRecognizedAndTwoHiDPIModesNotFlaggedNonRetina() {
+        var list = screen2KRefresh
+        for i in list.indices { list[i].modeID = Int32(i) } // 首个模式编号为合法的 0
+        #expect(DisplayScaling.refreshOptions(from: list, current: list[0]).first?.modeID == 0)
+        // IOKit 的 IODisplayModeID 允许负数（例如虚拟显示器或部分 HiDPI 模式）
+        var negList = screen2KRefresh
+        for i in negList.indices { negList[i].modeID = Int32(-5 - i) }
+        #expect(DisplayScaling.refreshOptions(from: negList, current: negList[0]).first?.modeID == -5)
+
+        // 非高分 2K 屏仅有 100%(1x) 与 200%(2x)：应提示非高分屏
+        let nonRetinaOptions = DisplayScaling.options(from: screen2K, preferredRefresh: 144)
+        let nonRetinaInfo = DisplayInfo(
+            id: 1, name: "2K", isMain: false, nativeWidth: 2560, nativeHeight: 1440,
+            options: nonRetinaOptions, refreshOptions: [], current: nonRetinaOptions[0].mode
+        )
+        #expect(nonRetinaInfo.isNonRetinaLimited)
+
+        // 视网膜屏即便仅列出 2 个 HiDPI 档位，也不应误报“不是高分屏”
+        let hidpiOnly = modes(["1512x982@3024x1964", "1800x1169@3600x2338"], native: "1512x982@3024x1964")
+        let retinaOptions = DisplayScaling.options(from: hidpiOnly, preferredRefresh: 60)
+        let retinaInfo = DisplayInfo(
+            id: 2, name: "Built-in", isMain: true, nativeWidth: 3024, nativeHeight: 1964,
+            options: retinaOptions, refreshOptions: [], current: retinaOptions[0].mode
+        )
+        #expect(!retinaInfo.isNonRetinaLimited)
+    }
 }

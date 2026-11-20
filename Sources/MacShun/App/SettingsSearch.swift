@@ -304,8 +304,16 @@ struct SettingsSearchField: NSViewRepresentable {
         }
 
         func controlTextDidChange(_ note: Notification) {
-            guard !isApplyingQuery,
-                  let field = note.object as? NSSearchField, let query = field.committedSearchQuery else { return }
+            guard let field = note.object as? NSSearchField else { return }
+            syncFromField(field)
+        }
+
+        func searchFieldDidEndSearching(_ sender: NSSearchField) {
+            syncFromField(sender)
+        }
+
+        private func syncFromField(_ field: NSSearchField) {
+            guard !isApplyingQuery, let query = field.committedSearchQuery else { return }
             lastSyncedText = query
             guard query != parent.selection.query else { return }
             parent.selection.query = query

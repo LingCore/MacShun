@@ -152,4 +152,60 @@ struct PerformanceTests {
             }
         }
     }
+
+    @Test func smcDecodesRawBufferWithoutAllocation() {
+        let sp78: [UInt8] = [55, 64]
+        let decodedSP78 = sp78.withUnsafeBytes {
+            ChipTemperatureReader.decode(type: ChipTemperatureReader.code("sp78"), bytes: $0)
+        }
+        #expect(decodedSP78 == 55.25)
+        var flt = Float(68.5).bitPattern.littleEndian
+        let decodedFlt = withUnsafeBytes(of: &flt) {
+            ChipTemperatureReader.decode(type: ChipTemperatureReader.code("flt "), bytes: $0)
+        }
+        #expect(decodedFlt == 68.5)
+    }
+
+    @Test @MainActor func menuBarImageRasterizesAcrossAllStyles() throws {
+        var history = PerformanceHistory()
+        for step in 1...6 {
+            history.append(PerformanceSnapshot(
+                cpu: Double(step * 12),
+                gpu: Double(step * 8),
+                memory: MemoryUsage(used: Double(step) * 2_000_000_000, total: 16_000_000_000),
+                temperature: 45 + Double(step * 3)
+            ))
+        }
+        let latest = PerformanceSnapshot(
+            cpu: 72, gpu: 48,
+            memory: MemoryUsage(used: 12_000_000_000, total: 16_000_000_000),
+            temperature: 63
+        )
+        for style in [PerformanceMenuBarStyle.text, .icons, .trend] {
+            for combined in [true, false] {
+                var config = PerformanceConfig()
+                config.menuBarStyle = style
+                config.combineProcessors = combined
+                let image = PerformanceMenuBarImage.make(
+                    snapshot: latest, history: history, configuration: config, needsAttention: !combined
+                )
+                let w = Int(image.size.width * 2)
+                let h = Int(image.size.height * 2)
+                let rep = try #require(NSBitmapImageRep(
+                    bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+                ))
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+                image.draw(in: NSRect(origin: .zero, size: NSSize(width: w, height: h)))
+                NSGraphicsContext.restoreGraphicsState()
+                // 确认实际绘制出了非空模板像素
+                let data = try #require(rep.bitmapData)
+                let count = rep.bytesPerRow * h
+                let hasInk = UnsafeBufferPointer(start: data, count: count).contains(where: { $0 != 0 })
+                #expect(hasInk)
+            }
+        }
+    }
 }

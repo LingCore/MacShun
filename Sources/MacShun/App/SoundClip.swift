@@ -21,7 +21,9 @@ final class SoundClip {
     }
 
     private let url: URL?
-    private var decoded: Decoded?
+    private var levels: [Float] = []
+    private var step = 1
+    private var sampleRate: Double = 44100
     private var player: AVAudioPlayer?
     private var failed = false
     private var decoding = false
@@ -45,7 +47,7 @@ final class SoundClip {
     /// 放到第几秒（从掐掉静音后的开头算），没在放时为 nil
     var position: TimeInterval? { playing ? player?.currentTime : nil }
 
-    /// 现在就在后台解码，这样第一次 play() 马上就响
+    /// 在后台解码并建立播放器，随后丢弃冗余 WAV 缓冲，仅保留轻量的响度包络。
     func prepare() {
         guard let url, player == nil, !decoding, !failed else { return }
         decoding = true
@@ -54,16 +56,21 @@ final class SoundClip {
             let clip = Self.decode(url)
             let player = clip.flatMap { try? AVAudioPlayer(data: $0.wav) }
             player?.prepareToPlay()
+            let levels = clip?.levels ?? []
+            let step = clip?.step ?? 1
+            let sampleRate = clip?.sampleRate ?? 44100
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.generation == mine else { return }
                 self.decoding = false
-                guard let clip, let player else {
+                guard !levels.isEmpty, let player else {
                     self.failed = true
                     self.playWhenReady = false
                     return
                 }
                 player.volume = self.volume
-                self.decoded = clip
+                self.levels = levels
+                self.step = step
+                self.sampleRate = sampleRate
                 self.player = player
                 if self.playWhenReady {
                     self.playWhenReady = false
@@ -90,20 +97,20 @@ final class SoundClip {
         player.play()
     }
 
-    /// 停下，解码好的声音也扔掉（离开这一页、窗口看不见时）。下次 prepare() 重新解码，只要几毫秒。
+    /// 停下，解码好的声音也扔掉（离开这一页、窗口看不见时）。下次点击时重新解码，只要几毫秒。
     func release() {
         generation += 1
         player?.stop()
         player = nil
-        decoded = nil
+        levels = []
         decoding = false
         playWhenReady = false
     }
 
     /// 放到的地方有多响：0 到 1，最响的那一刻是 1。没在放时为 0。
     func level() -> Double {
-        guard let player, player.isPlaying, let decoded else { return 0 }
-        return Self.level(in: decoded.levels, at: player.currentTime * decoded.sampleRate / Double(decoded.step))
+        guard let player, player.isPlaying, !levels.isEmpty else { return 0 }
+        return Self.level(in: levels, at: player.currentTime * sampleRate / Double(step))
     }
 
     // MARK: - 解码和响度

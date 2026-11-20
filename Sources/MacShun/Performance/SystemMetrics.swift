@@ -58,13 +58,19 @@ struct MemoryUsage {
         return MemoryUsage(used: min(total, max(0, (occupied - reclaimable) * pageSize)), total: total)
     }
 
+    private static let formatter = Locked<ByteCountFormatter>({
+        let f = ByteCountFormatter()
+        f.countStyle = .memory
+        f.allowedUnits = [.useGB, .useMB]
+        return f
+    }())
+
     var description: String {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .memory
-        formatter.allowedUnits = [.useGB, .useMB]
-        let usedText = formatter.string(fromByteCount: Int64(used))
-        let totalText = formatter.string(fromByteCount: Int64(total))
-        return "\(usedText) / \(totalText)"
+        Self.formatter.withLock { formatter in
+            let usedText = formatter.string(fromByteCount: Int64(used))
+            let totalText = formatter.string(fromByteCount: Int64(total))
+            return "\(usedText) / \(totalText)"
+        }
     }
 }
 
@@ -112,10 +118,24 @@ struct PerformanceHistory {
 /// 仅在 PerformanceMonitor 的串行工作队列使用，不启动进程，不写硬件，也不请求管理员权限。
 final class SystemMetricsSampler {
     private let host = mach_host_self()
+    private let pageSize: Double
+    private let totalMemory = Double(ProcessInfo.processInfo.physicalMemory)
     private var previousCPU: CPUCounters?
     private var temperatureReader: ChipTemperatureReader?
+    private var gpuServices: [io_service_t] = []
+    private var gpuServicesLoaded = false
+    private var gpuRetryAfter: TimeInterval = 0
 
-    deinit { mach_port_deallocate(mach_task_self_, host) }
+    init() {
+        var hostPageSize: vm_size_t = vm_page_size
+        _ = host_page_size(host, &hostPageSize)
+        self.pageSize = Double(hostPageSize)
+    }
+
+    deinit {
+        clearGPUServices()
+        mach_port_deallocate(mach_task_self_, host)
+    }
 
     func sample(metrics: [PerformanceMetric]) -> PerformanceSnapshot {
         var snapshot = PerformanceSnapshot()
@@ -127,16 +147,22 @@ final class SystemMetricsSampler {
             } else {
                 previousCPU = nil
             }
+        } else {
+            previousCPU = nil
         }
         if metrics.contains(.memory) { snapshot.memory = readMemory() }
         if metrics.contains(.gpu) {
             let values = readGPU()
             snapshot.gpu = values.max()
             snapshot.gpuCount = values.count
+        } else if gpuServicesLoaded {
+            clearGPUServices()
         }
         if metrics.contains(.temperature) {
             if temperatureReader == nil { temperatureReader = ChipTemperatureReader() }
             snapshot.temperature = temperatureReader?.read()
+        } else {
+            temperatureReader = nil
         }
         snapshot.sampledAt = Date()
         return snapshot
@@ -165,26 +191,71 @@ final class SystemMetricsSampler {
             }
         }
         guard result == KERN_SUCCESS else { return nil }
-        var hostPageSize: vm_size_t = vm_page_size
-        _ = host_page_size(host, &hostPageSize)
-        return MemoryUsage.calculate(total: Double(ProcessInfo.processInfo.physicalMemory), pageSize: Double(hostPageSize),
+        return MemoryUsage.calculate(total: totalMemory, pageSize: pageSize,
                                      active: info.active_count, inactive: info.inactive_count, speculative: info.speculative_count,
                                      wired: info.wire_count, compressed: info.compressor_page_count,
                                      purgeable: info.purgeable_count, external: info.external_page_count)
     }
 
-    private func readGPU() -> [Double] {
+    private func clearGPUServices() {
+        for service in gpuServices { IOObjectRelease(service) }
+        gpuServices.removeAll()
+        gpuServicesLoaded = false
+        gpuRetryAfter = 0
+    }
+
+    private func reloadGPUServices() {
+        for service in gpuServices { IOObjectRelease(service) }
+        gpuServices.removeAll()
+        gpuServicesLoaded = true
         var iterator: io_iterator_t = 0
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else { return [] }
-        defer { IOObjectRelease(iterator) }
-        var values: [Double] = []
-        while case let service = IOIteratorNext(iterator), service != 0 {
-            defer { IOObjectRelease(service) }
-            guard let statistics = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0)?
-                .takeRetainedValue() as? [String: Any], let value = Self.gpuUsage(statistics) else { continue }
-            values.append(value)
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &iterator) == KERN_SUCCESS else {
+            gpuRetryAfter = ProcessInfo.processInfo.systemUptime + 60
+            return
         }
-        return values
+        defer { IOObjectRelease(iterator) }
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            gpuServices.append(service)
+        }
+        if gpuServices.isEmpty {
+            gpuRetryAfter = ProcessInfo.processInfo.systemUptime + 60
+        }
+    }
+
+    private func readGPU() -> [Double] {
+        let now = ProcessInfo.processInfo.systemUptime
+        if !gpuServicesLoaded || (gpuServices.isEmpty && now >= gpuRetryAfter) {
+            reloadGPUServices()
+        }
+        guard !gpuServices.isEmpty else { return [] }
+        let (values, hasStaleService) = readCachedGPUValues()
+        if !hasStaleService {
+            return values
+        }
+        // 外接显卡拔插或服务句柄离开 IOService 平面时重新枚举一次。
+        reloadGPUServices()
+        return readCachedGPUValues().values
+    }
+
+    private func readCachedGPUValues() -> (values: [Double], hasStaleService: Bool) {
+        var values: [Double] = []
+        values.reserveCapacity(gpuServices.count)
+        var hasStaleService = false
+        for service in gpuServices {
+            if IORegistryEntryInPlane(service, kIOServicePlane) == 0 {
+                hasStaleService = true
+                continue
+            }
+            // 双显卡机型上休眠的独显可能暂时没有 PerformanceStatistics，跳过该卡，不影响其余存活显卡读数。
+            guard let statistics = IORegistryEntryCreateCFProperty(service, "PerformanceStatistics" as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() as? [String: Any] else {
+                continue
+            }
+            if let value = Self.gpuUsage(statistics) {
+                values.append(value)
+            }
+        }
+        return (values, hasStaleService)
     }
 
     static func gpuUsage(_ statistics: [String: Any]) -> Double? {

@@ -28,8 +28,8 @@ enum DisplayScaling {
         var isDefault = false
         /// 隔行扫描、拉伸、系统标着不显示的模式（电视上常见），不列出
         var isUnusual = false
-        /// 系统给模式的编号，切换时按它找，不怕模式列表在这期间变了
-        var modeID: Int32 = 0
+        /// 系统给模式的编号，切换时按它找，不怕模式列表在这期间变了（IOKit 里负数也是合法模式编号，nil 表示未指定）
+        var modeID: Int32? = nil
 
         var isHiDPI: Bool { pixelWidth == width * 2 && pixelHeight == height * 2 }
     }
@@ -50,7 +50,7 @@ enum DisplayScaling {
         var rate: Double
         /// 在模式列表里的位置
         var index: Int
-        var modeID: Int32 = 0
+        var modeID: Int32? = nil
 
         var id: String { DisplayScaling.refreshID(rate) }
         /// 144 Hz；不是整数时带小数：59.94 Hz
@@ -104,7 +104,10 @@ enum DisplayScaling {
     /// 和 current 一样大小的模式能用哪些刷新率，从高到低。只有一个时界面上不给选。
     static func refreshOptions(from modes: [ModeSpec], current: ModeSpec) -> [RefreshOption] {
         var best: [String: RefreshOption] = [:]
-        func isCurrent(_ mode: ModeSpec) -> Bool { mode.modeID != 0 && mode.modeID == current.modeID }
+        func isCurrent(_ mode: ModeSpec) -> Bool {
+            guard let id = mode.modeID, let currentID = current.modeID else { return false }
+            return id == currentID
+        }
         for (index, mode) in modes.enumerated() where !mode.isUnusual {
             // 有的内建屏幕读不到刷新率，是 0
             guard mode.refreshRate > 0, mode.width == current.width, mode.height == current.height,
@@ -158,6 +161,12 @@ struct DisplayInfo: Identifiable {
     var currentRefresh: DisplayScaling.RefreshOption? {
         refreshOptions.first { $0.id == DisplayScaling.refreshID(current.refreshRate) }
     }
+    /// 只有 100%（1 倍原生）和最多 200% 两个清晰档位时，说明不是高分屏；避免把只有两档 HiDPI 的视网膜屏误判为非高分屏。
+    var isNonRetinaLimited: Bool {
+        !options.isEmpty && options.count <= 2
+            && options.contains { !$0.mode.isHiDPI }
+            && options.allSatisfy { $0.percent == 100 || $0.percent == 200 }
+    }
 }
 
 /// 读取显示器、切换缩放和刷新率。显示器接上、拔掉或者分辨率变了会自动刷新。只在主线程上使用。
@@ -182,6 +191,10 @@ final class DisplayScalingModel: ObservableObject {
             DispatchQueue.main.async { DisplayScalingModel.shared.scheduleRefresh() }
         }, nil)
         refresh()
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
     /// 一次配置变化会对每块显示器各回调一次，合并成一次刷新
@@ -217,8 +230,9 @@ final class DisplayScalingModel: ObservableObject {
         var result: [DisplayInfo] = []
         var allModes: [CGDirectDisplayID: [CGDisplayMode]] = [:]
         for id in ids.prefix(Int(count)) {
-            // 镜像的副屏跟着主屏走，不单独列出
-            guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay, let current = CGDisplayCopyDisplayMode(id) else { continue }
+            // 跳过未激活（例如合盖）以及镜像的副屏
+            guard CGDisplayIsActive(id) != 0, CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay,
+                  let current = CGDisplayCopyDisplayMode(id) else { continue }
             let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
             let list = ((CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []).filter { $0.isUsableForDesktopGUI() }
             let specs = list.map(Self.spec)
@@ -251,8 +265,8 @@ final class DisplayScalingModel: ObservableObject {
         apply(modeID: option.modeID, to: display)
     }
 
-    private func apply(modeID: Int32, to display: DisplayInfo) {
-        guard let mode = modes[display.id]?.first(where: { $0.ioDisplayModeID == modeID }) else { return }
+    private func apply(modeID: Int32?, to display: DisplayInfo) {
+        guard let modeID, let mode = modes[display.id]?.first(where: { $0.ioDisplayModeID == modeID }) else { return }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
         let error = CGConfigureDisplayWithDisplayMode(config, display.id, mode, nil)

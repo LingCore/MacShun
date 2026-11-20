@@ -507,15 +507,15 @@ final class AvatarMotion: ObservableObject {
 
     func setWindowVisible(_ visible: Bool) {
         windowVisible = visible
+        if !visible { hover(false) }
         visible ? restart() : update()
     }
 
-    /// 页面打开、窗口重新露出来：摇的幅度从 0 渐渐加上，声音先解码好，第一下就能马上响
+    /// 页面打开、窗口重新露出来：摇的幅度从 0 渐渐加上；声音改为首次点击时按需解码。
     private func restart() {
         swayAmount = 0
         swayPhase = 0
         update()
-        if shown && windowVisible { clip.prepare() }
     }
 
     private func update() {

@@ -17,6 +17,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let capture: (CaptureMode) -> Void
     private var subscriptions: Set<AnyCancellable> = []
 
+    private struct RenderKey: Equatable {
+        let active: Bool
+        let needsAttention: Bool
+        let performanceConfig: PerformanceConfig
+        let sampledAt: Date?
+    }
+    private var lastRenderKey: RenderKey?
+
     init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController, openSettings: @escaping () -> Void,
          openPerformance: @escaping () -> Void, openClipboard: @escaping () -> Void,
          capture: @escaping (CaptureMode) -> Void) {
@@ -35,33 +43,50 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         item.menu = menu
 
         configStore.$config
+            .map(\.performance)
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] config in
+            .sink { [weak self] perf in
                 guard let self else { return }
-                self.performanceConfig = config.performance
-                self.performance.apply(config.performance)
+                self.performanceConfig = perf
+                self.performance.apply(perf)
                 self.updateIcon()
             }
             .store(in: &subscriptions)
         performance.$snapshot
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &subscriptions)
 
-        state.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in DispatchQueue.main.async { self?.updateIcon() } }
-            .store(in: &subscriptions)
+        Publishers.Merge3(
+            state.$accessibilityGranted.removeDuplicates(),
+            state.$inputMonitoringGranted.removeDuplicates(),
+            state.$eventTapRunning.removeDuplicates()
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] _ in self?.updateIcon() }
+        .store(in: &subscriptions)
     }
 
     private func updateIcon() {
         guard let button = item.button else { return }
         let active = performanceConfig.isActive
+        let needsAttention = !state.allGood
+        let key = RenderKey(
+            active: active,
+            needsAttention: needsAttention,
+            performanceConfig: active ? performanceConfig : PerformanceConfig(),
+            sampledAt: active ? performance.snapshot.sampledAt : nil
+        )
+        guard key != lastRenderKey else { return }
+        lastRenderKey = key
+
         item.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
         button.imageScaling = .scaleNone
         button.image = active ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, history: performance.history,
-                                                           configuration: performanceConfig, needsAttention: !state.allGood)
-                              : BrandMark.menuBarImage(needsAttention: !state.allGood)
+                                                           configuration: performanceConfig, needsAttention: needsAttention)
+                              : BrandMark.menuBarImage(needsAttention: needsAttention)
         let name = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
         let values = active ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" } : []
         let description = ([name] + values).joined(separator: "\n")

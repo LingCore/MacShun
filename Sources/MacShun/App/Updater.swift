@@ -23,6 +23,8 @@ final class Updater: ObservableObject, @unchecked Sendable {
     @Published private(set) var activity = Activity.none
     /// 最近一次手动检查或安装失败的原因，给用户看
     @Published private(set) var problem: String?
+    /// 最近一次失败来自“检查更新”还是“下载安装”，决定“重试”按钮执行哪一步
+    @Published private(set) var lastCheckFailed = false
     @Published private(set) var lastChecked: Date? {
         didSet { defaults.set(lastChecked, forKey: Keys.lastChecked) }
     }
@@ -66,8 +68,46 @@ final class Updater: ObservableObject, @unchecked Sendable {
         return UpdateFeed.url(configured ?? UpdateFeed.defaultURL.absoluteString)
     }
 
-    /// 测试用：发现新版本后不问用户，直接装（scripts/update-test.sh）
-    private static let installWithoutAsking = ProcessInfo.processInfo.environment["MACSHUN_UPDATE_AUTOINSTALL"] == "1"
+    /// 测试用：仅在指向本机环回更新源时才允许自动静默安装（scripts/update-test.sh）
+    static func allowsAutoInstall(environment: [String: String]) -> Bool {
+        guard environment["MACSHUN_UPDATE_AUTOINSTALL"] == "1",
+              let raw = environment["MACSHUN_UPDATE_FEED"],
+              let url = UpdateFeed.url(raw) else { return false }
+        return UpdateFeed.isLoopback(url)
+    }
+
+    private static let installWithoutAsking = allowsAutoInstall(environment: ProcessInfo.processInfo.environment)
+
+    /// 拒绝 HTTPS 降级为 HTTP 或重定向到非 Web 地址。
+    static func allowedRedirect(from original: URL?, to target: URL?) -> Bool {
+        guard let target, UpdateFeed.isWebURL(target) else { return false }
+        if original?.scheme == "https", target.scheme != "https" { return false }
+        return true
+    }
+
+    private final class SessionDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            let from = task.currentRequest?.url ?? task.originalRequest?.url
+            completionHandler(Updater.allowedRedirect(from: from, to: request.url) ? request : nil)
+        }
+    }
+
+    private static let sessionDelegate = SessionDelegate()
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 300
+        return URLSession(configuration: config, delegate: sessionDelegate, delegateQueue: nil)
+    }()
 
     // MARK: - 自动检查
 
@@ -81,7 +121,10 @@ final class Updater: ObservableObject, @unchecked Sendable {
         }
         guard timer == nil else { return }
         // 每小时看一眼，离上次检查满 12 小时就再查（睡眠醒来后也能补上）
-        timer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkIfDue() }
+        let t = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in self?.checkIfDue() }
+        t.tolerance = 300
+        RunLoop.main.add(t, forMode: .default)
+        timer = t
         // 刚开机时网络可能还没好，等一会儿再查
         DispatchQueue.main.asyncAfter(deadline: .now() + (Self.installWithoutAsking ? 1 : 20)) { [weak self] in
             self?.checkIfDue()
@@ -101,7 +144,10 @@ final class Updater: ObservableObject, @unchecked Sendable {
     func check(manual: Bool) {
         guard Self.isSupported, activity == .none else { return }
         activity = .checking
-        if manual { problem = nil }
+        if manual {
+            problem = nil
+            lastCheckFailed = false
+        }
 
         guard let feed = Self.feedURL else { finishCheck(.failure(UpdateError.invalidResponse), manual: manual); return }
         fetchRelease(feed, manual: manual)
@@ -111,7 +157,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
         var request = URLRequest(url: feed, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("MacShun/\(AppVersion.current)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        Self.session.dataTask(with: request) { [weak self] data, response, error in
             let result = Result { () throws -> ReleaseInfo in
                 if let error { throw error }
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -132,6 +178,8 @@ final class Updater: ObservableObject, @unchecked Sendable {
         case .success(let release):
             lastChecked = Date()
             checkedThisRun = true
+            lastCheckFailed = false
+            problem = nil
             let newer = AppVersion.isNewer(release.version, than: AppVersion.current)
             Log.app.notice("检查更新：最新 \(release.version, privacy: .public)，正在用 \(AppVersion.current, privacy: .public)")
             guard newer else {
@@ -148,7 +196,10 @@ final class Updater: ObservableObject, @unchecked Sendable {
             }
         case .failure(let error):
             Log.app.error("检查更新失败：\(error.localizedDescription, privacy: .public)")
-            if manual { problem = error.localizedDescription }
+            if manual {
+                lastCheckFailed = true
+                problem = error.localizedDescription
+            }
         }
     }
 
@@ -174,11 +225,13 @@ final class Updater: ObservableObject, @unchecked Sendable {
 
     #if DEBUG
     /// 截图用：直接摆出某个状态，不联网
-    func showPreview(available: ReleaseInfo?, activity: Activity = .none, problem: String? = nil, lastChecked: Date? = nil) {
+    func showPreview(available: ReleaseInfo?, activity: Activity = .none, problem: String? = nil,
+                     lastChecked: Date? = nil, lastCheckFailed: Bool = false) {
         self.available = available
         self.activity = activity
         self.problem = problem
         self.lastChecked = lastChecked
+        self.lastCheckFailed = lastCheckFailed
     }
     #endif
 
@@ -192,6 +245,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
             return
         }
         problem = nil
+        lastCheckFailed = false
         activity = .downloading(0)
         let target = Bundle.main.bundleURL
         let token = UUID()
@@ -280,7 +334,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let task = URLSession.shared.downloadTask(with: request) { file, response, error in
+                let task = Self.session.downloadTask(with: request) { file, response, error in
                     handle.finish()
                     do {
                         if let error { throw error }
@@ -295,7 +349,12 @@ final class Updater: ObservableObject, @unchecked Sendable {
                     }
                 }
                 if let progress {
-                    handle.observation = task.progress.observe(\.fractionCompleted) { value, _ in progress(value.fractionCompleted) }
+                    handle.observation = task.progress.observe(\.fractionCompleted) { value, _ in
+                        let fraction = value.fractionCompleted
+                        if handle.shouldReport(fraction) {
+                            progress(fraction)
+                        }
+                    }
                 }
                 handle.start(task)
             }
@@ -304,11 +363,13 @@ final class Updater: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// 让取消回调能拿到正在下载的任务；取消可能比任务创建还早
+    /// 让取消回调能拿到正在下载的任务；取消可能比任务创建还早，同时对进度回调节流避免刷屏主线程。
     private final class DownloadHandle: @unchecked Sendable {
         private let lock = NSLock()
         private var task: URLSessionDownloadTask?
         private var cancelled = false
+        private var lastReportedTime: TimeInterval = 0
+        private var lastReportedFraction: Double = -1
         var observation: NSKeyValueObservation?
 
         func start(_ task: URLSessionDownloadTask) {
@@ -327,19 +388,43 @@ final class Updater: ObservableObject, @unchecked Sendable {
             task?.cancel()
         }
 
+        func shouldReport(_ fraction: Double) -> Bool {
+            let now = ProcessInfo.processInfo.systemUptime
+            lock.lock()
+            defer { lock.unlock() }
+            guard fraction != lastReportedFraction else { return false }
+            let endpoint = fraction <= 0 || fraction >= 1
+            let enoughDelta = abs(fraction - lastReportedFraction) >= 0.01 && (now - lastReportedTime) >= 0.1
+            let enoughTime = (now - lastReportedTime) >= 0.25
+            guard endpoint || enoughDelta || enoughTime else { return false }
+            lastReportedTime = now
+            lastReportedFraction = fraction
+            return true
+        }
+
         func finish() {
             observation = nil
         }
     }
 
+    /// 区分用户主动取消与网络层自发中止（例如系统/代理重置触发的 URLError.cancelled）。
+    static func isUserCancellation(_ error: Error, taskCancelled: Bool) -> Bool {
+        taskCancelled || error is CancellationError
+    }
+
     private func fail(_ error: Error, token: UUID) {
-        // 用户点了取消
-        if error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-        Log.app.error("更新失败：\(error.localizedDescription, privacy: .public)")
+        let userCancelled = Self.isUserCancellation(error, taskCancelled: Task.isCancelled)
         DispatchQueue.main.async {
             guard self.installToken == token else { return }
+            if userCancelled {
+                if case .downloading = self.activity { self.activity = .none }
+                self.installTask = nil
+                return
+            }
+            Log.app.error("更新失败：\(error.localizedDescription, privacy: .public)")
             self.activity = .none
             self.installTask = nil
+            self.lastCheckFailed = false
             self.problem = error.localizedDescription
         }
     }
@@ -376,16 +461,16 @@ final class Updater: ObservableObject, @unchecked Sendable {
         var attached = false
         defer {
             if attached {
-                if (try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])) == nil {
+                if (try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"], timeout: 15)) == nil {
                     Thread.sleep(forTimeInterval: 0.2)
-                    _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+                    _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"], timeout: 15)
                 }
             }
-            if ((try? fm.contentsOfDirectory(atPath: mount.path)) ?? []).isEmpty {
+            if let entries = try? fm.contentsOfDirectory(atPath: mount.path), entries.isEmpty {
                 try? fm.removeItem(at: mount)
             }
         }
-        try run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount.path])
+        try run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount.path], timeout: 60)
         attached = true
         guard let app = try fm.contentsOfDirectory(at: mount, includingPropertiesForKeys: nil)
             .first(where: { $0.pathExtension == "app" })
@@ -395,7 +480,7 @@ final class Updater: ObservableObject, @unchecked Sendable {
         let staging = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: target, create: true)
         defer { try? fm.removeItem(at: staging) }
         let staged = staging.appendingPathComponent(target.lastPathComponent, isDirectory: true)
-        try run("/usr/bin/ditto", [app.path, staged.path])
+        try run("/usr/bin/ditto", [app.path, staged.path], timeout: 60)
 
         try checkSignature(of: staged)
         let info = NSDictionary(contentsOf: staged.appendingPathComponent("Contents/Info.plist"))
@@ -428,7 +513,8 @@ final class Updater: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private static func run(_ tool: String, _ arguments: [String]) throws {
+    private static func run(_ tool: String, _ arguments: [String], timeout: TimeInterval = 60) throws {
+        let name = (tool as NSString).lastPathComponent
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
@@ -436,11 +522,38 @@ final class Updater: ObservableObject, @unchecked Sendable {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        process.waitUntilExit()
+        try? pipe.fileHandleForWriting.close()
+
+        let outputBuffer = Locked(Data())
+        let readDone = DispatchSemaphore(value: 0)
+        let reader = pipe.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            defer { readDone.signal() }
+            while let chunk = try? reader.read(upToCount: 4096), !chunk.isEmpty {
+                outputBuffer.update { data in
+                    guard data.count < 64 * 1024 else { return }
+                    let room = 64 * 1024 - data.count
+                    data.append(chunk.prefix(room))
+                }
+            }
+        }
+
+        if exited.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            if exited.wait(timeout: .now() + 2) == .timedOut {
+                kill(process.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 1)
+            }
+            _ = readDone.wait(timeout: .now() + 0.5)
+            Log.app.error("\(name, privacy: .public) 超时（\(Int(timeout), privacy: .public)s）")
+            throw UpdateError.tool(name)
+        }
+        _ = readDone.wait(timeout: .now() + 0.5)
+        let output = String(decoding: outputBuffer.get(), as: UTF8.self)
         guard process.terminationStatus == 0 else {
-            let name = (tool as NSString).lastPathComponent
             Log.app.error("\(name, privacy: .public) 失败：\(output, privacy: .public)")
             throw UpdateError.tool(name)
         }
@@ -586,9 +699,14 @@ enum AppVersion {
 enum UpdateFeed {
     static let defaultURL = URL(string: "https://lcstp.com/updates/macshun/stable.json")!
     static let projectURL = URL(string: "https://lcstp.com/projects/macshun#downloads")!
+    static func isLoopback(_ url: URL) -> Bool {
+        guard let host = url.host else { return false }
+        return ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host)
+    }
+
     static func isWebURL(_ url: URL) -> Bool {
-        guard url.user == nil, url.password == nil, let host = url.host else { return false }
-        return url.scheme == "https" || (url.scheme == "http" && ["127.0.0.1", "localhost", "[::1]", "::1"].contains(host))
+        guard url.user == nil, url.password == nil, url.host != nil else { return false }
+        return url.scheme == "https" || (url.scheme == "http" && isLoopback(url))
     }
 
     /// 运行的芯片架构，和发布服务的取值一致

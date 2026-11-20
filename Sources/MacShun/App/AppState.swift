@@ -32,6 +32,11 @@ final class AppState: ObservableObject {
         if pb != pasteboardAccess { pasteboardAccess = pb }
     }
 
+    func refreshLoginItem() {
+        let enabled = SMAppService.mainApp.status == .enabled
+        if launchAtLogin != enabled { launchAtLogin = enabled }
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             if enabled {

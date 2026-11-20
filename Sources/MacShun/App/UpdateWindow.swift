@@ -4,7 +4,7 @@ import AppKit
 import SwiftUI
 
 /// “软件更新”窗口：正在检查、已是最新、有新版本（更新内容、立即更新）、下载进度、出错，都在这一个窗口里。
-final class UpdateWindowController {
+final class UpdateWindowController: NSObject, NSWindowDelegate {
     static let shared = UpdateWindowController()
 
     private var window: NSWindow?
@@ -27,6 +27,7 @@ final class UpdateWindowController {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.setContentSize(host.view.fittingSize)
             self.window = window
         }
@@ -39,6 +40,13 @@ final class UpdateWindowController {
         } else if !window.isVisible {
             window.orderFrontRegardless()
         }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        window?.delegate = nil
+        window?.contentViewController = nil
+        window = nil
     }
 }
 
@@ -90,6 +98,7 @@ struct UpdateView: View {
 
     private var headline: String {
         if updater.activity == .checking { return L("正在检查更新…") }
+        if updater.problem != nil && updater.lastCheckFailed { return L("检查更新失败") }
         if let release = updater.available { return L("Mac顺 %@ 可以更新了", release.version) }
         if updater.problem != nil { return L("检查更新失败") }
         return L("已经是最新版本")
@@ -146,7 +155,9 @@ struct UpdateView: View {
                 if updater.problem != nil {
                     Button(L("打开官网下载")) { updater.installManually() }
                         .nativeButtonHover()
-                    Button(L("重试")) { updater.install() }
+                    Button(L("重试")) {
+                        if updater.lastCheckFailed { updater.check(manual: true) } else { updater.install() }
+                    }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .nativeButtonHover()

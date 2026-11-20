@@ -11,7 +11,7 @@ final class SnapAssist {
     private var panel: SnapAssistPanel?
     /// 要填的那一半（AX 坐标）
     private var area: CGRect = .zero
-    private var showToken = 0
+    private let activeToken = Locked(0)
     private static let scanQueue = DispatchQueue(label: "MacShun.SnapAssist.scan", qos: .userInitiated)
 
     init(onChoose: @escaping (WindowElement, CGRect) -> Void) {
@@ -23,18 +23,21 @@ final class SnapAssist {
     var isVisible: Bool { panel?.isVisible == true }
 
     func show(area: CGRect, excluding id: CGWindowID?) {
-        showToken += 1
-        let token = showToken
+        let token = activeToken.update { value -> Int in
+            value += 1
+            return value
+        }
         let entries = Self.collectWindowEntries(excluding: id)
         guard !entries.isEmpty else {
             hide()
             return
         }
         // AX 跨进程查询挪到后台队列，避免有卡死的外部应用阻塞主线程和事件响应。
+        let tokenLock = activeToken
         Self.scanQueue.async { [weak self] in
-            let candidates = Self.resolveCandidates(from: entries)
+            let candidates = Self.resolveCandidates(from: entries, isCancelled: { tokenLock.get() != token })
             DispatchQueue.main.async {
-                guard let self, self.showToken == token else { return }
+                guard let self, self.activeToken.get() == token else { return }
                 guard !candidates.isEmpty else {
                     self.hide()
                     return
@@ -63,11 +66,14 @@ final class SnapAssist {
     }
 
     func hide() {
-        showToken += 1
+        activeToken.update { $0 += 1 }
         FrontAppTracker.shared.snapAssistActive.set(false)
-        guard let panel, panel.isVisible else { return }
-        panel.orderOut(nil)
-        model.candidates = []
+        if let panel, panel.isVisible {
+            panel.orderOut(nil)
+        }
+        if !model.candidates.isEmpty {
+            model.candidates = []
+        }
     }
 
     private func choose(_ candidate: SnapAssistModel.Candidate) {
@@ -126,17 +132,23 @@ final class SnapAssist {
     }
 
     /// 可在后台队列运行：通过 AX 筛选标准且可移动的非最小化窗口并读取标题。
-    private static func resolveCandidates(from entries: [WindowEntry]) -> [SnapAssistModel.Candidate] {
+    private static func resolveCandidates(
+        from entries: [WindowEntry],
+        isCancelled: () -> Bool = { false }
+    ) -> [SnapAssistModel.Candidate] {
         var elementsByPID: [pid_t: [CGWindowID: WindowElement]] = [:]
         var result: [SnapAssistModel.Candidate] = []
         for entry in entries {
+            if isCancelled() { return [] }
             if elementsByPID[entry.pid] == nil {
                 var map: [CGWindowID: WindowElement] = [:]
                 for window in WindowElement.windows(of: entry.pid) {
+                    if isCancelled() { return [] }
                     if let id = window.windowID { map[id] = window }
                 }
                 elementsByPID[entry.pid] = map
             }
+            if isCancelled() { return [] }
             guard let window = elementsByPID[entry.pid]?[entry.number],
                   window.isStandard, !window.isMinimized, window.isMovable else { continue }
             let title = window.title.flatMap { $0.isEmpty ? nil : $0 } ?? entry.appName

@@ -105,6 +105,8 @@ final class PermissionGuide {
     /// 自测用：浮窗显示的内容和位置
     var currentModel: PermissionGuideModel { model }
     var visiblePanel: NSPanel? { panel?.isVisible == true ? panel : nil }
+    var isActive: Bool { panel?.isVisible == true || !queue.isEmpty }
+    var onActiveChanged: (() -> Void)?
 
     private init() {}
 
@@ -149,6 +151,7 @@ final class PermissionGuide {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.checkGranted() }
         next()
+        onActiveChanged?()
     }
 
     func stop() {
@@ -157,9 +160,12 @@ final class PermissionGuide {
         followTimer?.invalidate()
         followTimer = nil
         panel?.orderOut(nil)
+        panel?.contentView = nil
+        panel = nil
         queue = []
         model.granted = false
         model.relaunching = false
+        onActiveChanged?()
     }
 
     private func next() {
@@ -270,7 +276,7 @@ final class PermissionGuide {
             let origin = candidates.first { visible.contains(CGRect(origin: $0, size: size)) }
                 ?? CGPoint(x: frame.maxX - size.width - 16, y: frame.maxY - size.height - 60)
             if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
-        } else if sawSettingsWindow {
+        } else if sawSettingsWindow && !model.relaunching {
             Log.app.notice("授权引导：系统设置已关闭，引导收起")
             stop()
         } else if let visible = NSScreen.main?.visibleFrame {

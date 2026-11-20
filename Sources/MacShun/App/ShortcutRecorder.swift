@@ -23,8 +23,9 @@ struct ShortcutRecorder: NSViewRepresentable {
 }
 
 final class ShortcutRecorderButton: NSButton {
-    /// 当前正在录制的按钮（同一时刻最多一个），防止切换焦点时旧按钮覆盖新按钮的录制标志。
+    /// 当前正在录制的按钮及其身份标识（同一时刻最多一个）；deinit 时 weak 引用已置空，用 activeRecorderID 兜底复位全局标志。
     private static weak var activeRecorder: ShortcutRecorderButton?
+    private static var activeRecorderID: ObjectIdentifier?
 
     var shortcut: WinShortcut? { didSet { if oldValue != shortcut { updateTitle() } } }
     var validationMessage: ((WinShortcut) -> String?)?
@@ -43,9 +44,11 @@ final class ShortcutRecorderButton: NSButton {
                     previous.stopRecording()
                 }
                 Self.activeRecorder = self
+                Self.activeRecorderID = ObjectIdentifier(self)
                 FrontAppTracker.shared.recordingShortcut.set(true)
-            } else if Self.activeRecorder === self {
+            } else if Self.activeRecorderID == ObjectIdentifier(self) {
                 Self.activeRecorder = nil
+                Self.activeRecorderID = nil
                 FrontAppTracker.shared.recordingShortcut.set(false)
             }
             updateTitle()
@@ -64,11 +67,10 @@ final class ShortcutRecorderButton: NSButton {
 
     deinit {
         removeWindowObservers()
-        if recording {
-            if Self.activeRecorder === self {
-                Self.activeRecorder = nil
-                FrontAppTracker.shared.recordingShortcut.set(false)
-            }
+        if recording, Self.activeRecorderID == ObjectIdentifier(self) {
+            Self.activeRecorder = nil
+            Self.activeRecorderID = nil
+            FrontAppTracker.shared.recordingShortcut.set(false)
         }
     }
 

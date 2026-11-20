@@ -99,7 +99,7 @@ struct GleaningPage: View {
     /// 设置窗口看不看得见，看不见时头像不动、声音停下
     var windowVisible = true
     @Environment(\.colorScheme) private var colorScheme
-    @StateObject private var userCounts = GleaningUserCounts()
+    @ObservedObject private var userCounts = GleaningUserCounts.shared
 
     private var palette: WarmPalette { .current(colorScheme) }
     private var others: [Work] { Gleaning.works.filter { !isCurrent($0) } }
@@ -116,10 +116,8 @@ struct GleaningPage: View {
             .scrollIndicators(.never)
         }
         .task(id: windowVisible) {
-            guard windowVisible, Updater.isSupported,
-                  let counts = try? await GleaningUserCounts.fetch(),
-                  !Task.isCancelled else { return }
-            userCounts.values = counts
+            guard windowVisible else { return }
+            await userCounts.refreshIfNeeded()
         }
     }
 

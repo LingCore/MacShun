@@ -73,7 +73,7 @@ enum SettingsTab: Hashable, CaseIterable, Identifiable {
     }
 }
 
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// 设置窗口的标识。标题会随语言变，找这个窗口时用它
     static let windowID = NSUserInterfaceItemIdentifier("MacShunSettings")
 
@@ -82,15 +82,24 @@ final class SettingsWindowController {
     private let clipboard: ClipboardController
     private let selection = SettingsSelection()
     private var window: NSWindow?
+    private var occlusionObserver: NSObjectProtocol?
+    private var keyMonitor: Any?
 
     init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController) {
         self.configStore = configStore
         self.state = state
         self.clipboard = clipboard
+        super.init()
+    }
+
+    deinit {
+        tearDownWindowResources()
     }
 
     func show(tab: SettingsTab? = nil, at pointer: CGPoint = NSEvent.mouseLocation) {
+        state.refreshLoginItem()
         if let tab { selection.tab = tab }
+        selection.windowVisible = true
         let screen = WindowPlacement.pointerScreen(at: pointer)
         var center = false
         if window == nil {
@@ -106,12 +115,13 @@ final class SettingsWindowController {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.setFrameAutosaveName("SettingsWindow")
             center = !window.setFrameUsingName("SettingsWindow")
             // Resolve the SwiftUI size before positioning the window for its first presentation.
             if center { window.setContentSize(host.view.fittingSize) }
             // 窗口关掉、被挡住或最小化时，“拾穗”页的动画停下来。
-            NotificationCenter.default.addObserver(
+            occlusionObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
             ) { [selection] note in
                 guard let window = note.object as? NSWindow else { return }
@@ -119,9 +129,10 @@ final class SettingsWindowController {
                 if selection.windowVisible != visible { selection.windowVisible = visible }
             }
             self.window = window
-            // ⌘F 到侧栏的搜索框
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak window] event in
-                guard event.window === window, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            // ⌘F 到侧栏的搜索框（正在录快捷键时不拦截，避免吞掉 Win+F / Alt+F）
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak window] event in
+                guard !FrontAppTracker.shared.recordingShortcut.get(),
+                      event.window === window, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                       event.charactersIgnoringModifiers == "f", let field = SettingsSearchField.current
                 else { return event }
                 window?.makeFirstResponder(field)
@@ -132,6 +143,27 @@ final class SettingsWindowController {
             if window.isMiniaturized { window.deminiaturize(nil) }
             WindowPlacement.place(window, on: screen, centered: center)
             Foreground.bring(window)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === window else { return }
+        tearDownWindowResources()
+        selection.windowVisible = false
+        selection.query = ""
+        window?.delegate = nil
+        window?.contentViewController = nil
+        window = nil
+    }
+
+    private func tearDownWindowResources() {
+        if let observer = occlusionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            occlusionObserver = nil
+        }
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
         }
     }
 }
@@ -909,7 +941,7 @@ private struct FileSearchSettings: View {
                 }
                 HStack {
                     Spacer()
-                    Button(L("重新建立索引")) { index.rebuild(); index.pollNetworkLocations() }
+                    Button(L("重新建立索引")) { index.rebuild(); index.pollNetworkLocations(forceRefresh: true) }
                         .nativeButtonHover()
                         .disabled(index.isIndexing || !config.activated)
                 }
@@ -1206,7 +1238,7 @@ private struct DisplaySettings: View {
                 } header: {
                     Text(display.isMain ? L("%@（主显示器）", display.name) : display.name)
                 } footer: {
-                    if display.options.count <= 2 {
+                    if display.isNonRetinaLimited {
                         Text(L("这块屏幕不是高分屏，macOS 只给它 100% 和 200% 两个清晰的档位，其他档位文字会发虚，所以没有列出。"))
                             .settingsFooter()
                     }
@@ -1442,13 +1474,17 @@ private struct UpdateRow: View {
         }
     }
 
-    /// “3 分钟前”“昨天”。一分钟内说“刚刚”
-    private static func relative(_ date: Date) -> String {
-        if Date().timeIntervalSince(date) < 60 { return L("刚刚") }
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.locale = AppLanguage.uiLocale
         formatter.dateTimeStyle = .named
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+
+    /// “3 分钟前”“昨天”。一分钟内说“刚刚”
+    private static func relative(_ date: Date) -> String {
+        if Date().timeIntervalSince(date) < 60 { return L("刚刚") }
+        return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 }
 

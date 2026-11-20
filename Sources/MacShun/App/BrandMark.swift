@@ -6,8 +6,15 @@ import AppKit
 /// 右上角整个是一片实心叶子（菜单栏太小，方叶的叶尖和叶脉看不清）。
 /// 做成模板图，系统会按菜单栏的深浅自动着色。
 enum BrandMark {
+    private static let normalMenuBarImage = makeMenuBarImage(needsAttention: false)
+    private static let attentionMenuBarImage = makeMenuBarImage(needsAttention: true)
+
     /// 18×18 点；尺寸按 Retina 的 36×36 像素设计：线宽 3px，每条线的两边都落在整像素上。
     static func menuBarImage(needsAttention: Bool) -> NSImage {
+        needsAttention ? attentionMenuBarImage : normalMenuBarImage
+    }
+
+    private static func makeMenuBarImage(needsAttention: Bool) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
             let c: CGFloat = 9, h: CGFloat = 2.25, loop: CGFloat = 2.25, r: CGFloat = 1.5
             let path = commandPath(center: c, h: h, loop: loop, radius: r)

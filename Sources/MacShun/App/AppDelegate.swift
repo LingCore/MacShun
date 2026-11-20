@@ -24,20 +24,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindowController!
 
     private var permissionTimer: Timer?
+    private var permissionTimerInterval: TimeInterval = 0
     private var maintenanceTimer: Timer?
     private var subscriptions: Set<AnyCancellable> = []
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var appObservers: [NSObjectProtocol] = []
     private var terminationSignal: DispatchSourceSignal?
+    private var asleep = false
+    private var screenAsleep = false
+    private var sessionInactive = false
+    private var pollingEnabled = false
+    private var maintenanceEnabled = false
+    private var timersPaused: Bool { asleep || screenAsleep || sessionInactive }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         handleTerminationSignal()
         CapsLockLeftovers.restore()
         MainMenu.install()
+        environment.onApplicationWillSwitch = { [weak self] previous in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.configStore.config.clipboard.enabled {
+                    self.clipboard.recordBeforeAppSwitch(from: previous)
+                }
+                CaptureClipboard.general.refreshIfNeeded()
+            }
+        }
         environment.start()
 
         let keyboard = KeyboardEngine(config: configStore.snapshot, environment: environment) { [weak self] command in
             self?.run(command)
         }
-        let mouse = MouseEngine(config: configStore.snapshot, environment: environment) { [weak self] command in
+        let mouse = MouseEngine(
+            config: configStore.snapshot,
+            environment: environment,
+            keyboardLayout: { keyboard.currentLayout() }
+        ) { [weak self] command in
             self?.run(command)
         }
         keyboard.devices.onDevicesChanged = { [weak self] list, seen in
@@ -51,42 +73,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.applyPointer() }
         }
         eventTaps = EventTapService(keyboard: keyboard, mouse: mouse)
+        eventTaps.onStateChanged = { [weak self] running in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.state.eventTapRunning != running {
+                    self.state.eventTapRunning = running
+                    self.logPermissionsIfChanged()
+                    self.schedulePermissionTimer()
+                }
+            }
+        }
 
         settingsWindow = SettingsWindowController(configStore: configStore, state: state, clipboard: clipboard)
         statusMenu = StatusMenu(
             configStore: configStore, state: state, clipboard: clipboard,
-            openSettings: { [weak self] in self?.settingsWindow.show() },
-            openPerformance: { [weak self] in self?.settingsWindow.show(tab: .performance) },
+            openSettings: { [weak self] in
+                self?.refreshPermissionsNow()
+                self?.settingsWindow.show()
+            },
+            openPerformance: { [weak self] in
+                self?.refreshPermissionsNow()
+                self?.settingsWindow.show(tab: .performance)
+            },
             openClipboard: { [weak self] in self?.showClipboard() },
             capture: { [weak self] mode in self?.screenCapture.start(mode) }
         )
 
         // 发现新版本时弹出“软件更新”窗口。自动检查发现的不抢键盘
         Updater.shared.onFound = { _, manual in UpdateWindowController.shared.showNewVersion(activate: manual) }
+        PermissionGuide.shared.onActiveChanged = { [weak self] in self?.schedulePermissionTimer() }
 
         configStore.$config
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] config in
-                self?.clipboard.applyConfig()
-                self?.fileSearch.applyConfig()
-                self?.windowSnapper.applyConfig()
-                self?.applyPointer()
-                Updater.shared.setAutomatic(config.update.automatic)
+                self?.applyConfig(config)
             }
             .store(in: &subscriptions)
 
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil
-        )
-        NotificationCenter.default.addObserver(forName: .openFileSearch, object: nil, queue: .main) { [weak self] _ in
+        installLifecycleObservers()
+        appObservers.append(NotificationCenter.default.addObserver(forName: .openFileSearch, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.clipboard.hide()
                 self?.fileSearch.show()
             }
-        }
+        })
 
-        clipboard.applyConfig()
-        windowSnapper.applyConfig()
+        applyConfig(configStore.config, includePointer: false)
         startEventTapsIfPossible()
 
         if GuideTest.isRequested {
@@ -102,7 +135,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if SelfTest.isRequested {
             keyboard.learningEnabled.set(false)
             startPermissionPolling()
-            windowSnapper.applyConfig()
             let test = SelfTest(config: configStore.config, layout: keyboard.currentLayout(), clipboard: clipboard,
                                 windowSnapper: windowSnapper, fileSearch: fileSearch,
                                 updateConfig: { [weak self] change in self.map { change(&$0.configStore.config) } }) { [weak self] tab in
@@ -132,21 +164,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startPermissionPolling()
 
         // 系统偶尔会重置鼠标属性，定期检查一下。
-        maintenanceTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.applyPointer()
-        }
+        maintenanceEnabled = true
+        scheduleMaintenanceTimer()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        permissionTimer?.invalidate()
+        permissionTimer = nil
+        maintenanceTimer?.invalidate()
+        maintenanceTimer = nil
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        appObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        appObservers.removeAll()
+        eventTaps?.stop()
         PerformanceMonitor.shared.stop()
         pointer.restore()
         cursor.restore()
         ContentIndex.shared.prepareForQuit()
+        ContentExtractor.terminateAllHelpers()
         if !SelfTest.isRequested { clipboard.store.saveNow() }
     }
 
     /// 再次打开程序（例如在“应用程序”里双击）时显示设置窗口。
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        refreshPermissionsNow()
         settingsWindow.show()
         return true
     }
@@ -208,6 +250,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @MainActor private func applyConfig(_ config: AppConfig, includePointer: Bool = true) {
+        clipboard.applyConfig()
+        fileSearch.applyConfig()
+        windowSnapper.applyConfig()
+        if includePointer { applyPointer() }
+        Updater.shared.setAutomatic(config.update.automatic)
+        schedulePermissionTimer()
+    }
+
+    private func installLifecycleObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.asleep = true
+            self?.updateBackgroundTimers()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.asleep = false
+            self.updateBackgroundTimers()
+            self.eventTaps?.verifyActive()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.applyPointer() }
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.screenAsleep = true
+            self?.updateBackgroundTimers()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.screenAsleep = false
+            self.updateBackgroundTimers()
+            self.eventTaps?.verifyActive()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sessionInactive = true
+            self?.updateBackgroundTimers()
+        })
+        workspaceObservers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.sessionInactive = false
+            self.updateBackgroundTimers()
+            self.eventTaps?.verifyActive()
+        })
+    }
+
+    private func updateBackgroundTimers() {
+        if timersPaused {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+            permissionTimerInterval = 0
+            maintenanceTimer?.invalidate()
+            maintenanceTimer = nil
+        } else {
+            if pollingEnabled {
+                pollPermissions()
+                schedulePermissionTimer()
+            }
+            if maintenanceEnabled {
+                scheduleMaintenanceTimer()
+            }
+        }
+    }
+
+    private func scheduleMaintenanceTimer() {
+        guard maintenanceEnabled, !timersPaused else { return }
+        guard maintenanceTimer == nil else { return }
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            self?.applyPointer()
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .default)
+        maintenanceTimer = timer
+    }
+
     private var pointerApplyScheduled = false
 
     /// 设置指针加速、速度和光标大小。短时间内的多次调用（例如几个鼠标接口同时连上）合并成一次。
@@ -216,8 +331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let scale = configStore.config.mouse.cursorScale, !cursor.writeDenied, cursor.setSystemScale(scale) {
             configStore.config.mouse.cursorScale = nil
         }
-        cursor.apply(configStore.config.mouse)
         let cursorScale = cursor.systemScale()
+        cursor.apply(configStore.config.mouse, systemScale: cursorScale)
         if cursorScale != state.systemCursorScale { state.systemCursorScale = cursorScale }
         guard state.inputMonitoringGranted || state.accessibilityGranted, !pointerApplyScheduled else { return }
         pointerApplyScheduled = true
@@ -231,20 +346,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func didWake() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.applyPointer() }
-    }
-
     // MARK: - 权限
 
     private func startEventTapsIfPossible() {
         state.refreshPermissions()
         logPermissionsIfChanged()
-        guard state.accessibilityGranted else { return }
-        let running = eventTaps.start()
-        if running != state.eventTapRunning { state.eventTapRunning = running }
-        logPermissionsIfChanged()
+        if state.accessibilityGranted {
+            let running = eventTaps.start()
+            if running != state.eventTapRunning { state.eventTapRunning = running }
+            logPermissionsIfChanged()
+        }
         applyPointer()
+        schedulePermissionTimer()
     }
 
     private var lastLoggedPermissions = ""
@@ -260,33 +373,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var tapRetryTicks = 0
 
-    /// 每秒检查一次权限，授权后马上启用，不用重启程序。
-    private func startPermissionPolling() {
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let before = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
-            self.state.refreshPermissions()
+    private var needsFastPermissionPolling: Bool {
+        !state.allGood
+            || (configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed)
+            || PermissionGuide.shared.isActive
+            || SelfTest.isRequested
+    }
 
-            let after = (self.state.accessibilityGranted, self.state.inputMonitoringGranted)
-            if before != after {
-                self.tapRetryTicks = 0
-                self.startEventTapsIfPossible()
-            } else if !self.state.eventTapRunning, after.0 {
-                // 辅助功能已授予但事件拦截暂未拉起时退避重试，避免每秒空转刷日志
-                self.tapRetryTicks += 1
-                if self.tapRetryTicks >= 5 {
-                    self.tapRetryTicks = 0
-                    self.startEventTapsIfPossible()
-                }
-            } else {
-                self.tapRetryTicks = 0
-            }
-            // macOS 27：刚开了“设备控制和数据访问”（不管是在引导里还是在系统弹窗里开的），
-            // 输入监控要重启才生效，直接重启，不用用户再点
-            if PermissionKind.accessibilityCoversInputMonitoring, !before.0, after.0, !after.1, !GuideTest.isRequested {
-                PermissionGuide.shared.start([.inputMonitoring], state: self.state)
-            }
-            self.logPermissionsIfChanged()
+    /// 缺少必需权限或事件拦截未就绪时每秒轮询，授权后马上启用；一切正常时降频到 15 秒省电。
+    private func startPermissionPolling() {
+        pollingEnabled = true
+        schedulePermissionTimer()
+    }
+
+    private func schedulePermissionTimer() {
+        guard pollingEnabled, !timersPaused else { return }
+        let desired: TimeInterval = needsFastPermissionPolling ? 1 : 15
+        guard permissionTimer == nil || permissionTimerInterval != desired else { return }
+        permissionTimer?.invalidate()
+        permissionTimerInterval = desired
+        let timer = Timer(timeInterval: desired, repeats: true) { [weak self] _ in
+            self?.pollPermissions()
         }
+        timer.tolerance = desired >= 10 ? 3 : 0.2
+        RunLoop.main.add(timer, forMode: .default)
+        permissionTimer = timer
+    }
+
+    private func refreshPermissionsNow() {
+        pollPermissions()
+        schedulePermissionTimer()
+    }
+
+    private func pollPermissions() {
+        let before = (state.accessibilityGranted, state.inputMonitoringGranted)
+        state.refreshPermissions()
+
+        let after = (state.accessibilityGranted, state.inputMonitoringGranted)
+        if before != after {
+            tapRetryTicks = 0
+            startEventTapsIfPossible()
+        } else if !state.eventTapRunning, after.0 {
+            // 辅助功能已授予但事件拦截暂未拉起时退避重试，避免每秒空转刷日志
+            tapRetryTicks += 1
+            if tapRetryTicks >= 5 {
+                tapRetryTicks = 0
+                startEventTapsIfPossible()
+            }
+        } else {
+            tapRetryTicks = 0
+        }
+        // macOS 27：刚开了“设备控制和数据访问”（不管是在引导里还是在系统弹窗里开的），
+        // 输入监控要重启才生效，直接重启，不用用户再点
+        if PermissionKind.accessibilityCoversInputMonitoring, !before.0, after.0, !after.1, !GuideTest.isRequested {
+            PermissionGuide.shared.start([.inputMonitoring], state: state)
+        }
+        logPermissionsIfChanged()
+        schedulePermissionTimer()
     }
 }

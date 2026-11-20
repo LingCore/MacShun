@@ -29,23 +29,23 @@ Mac顺（MacShun）是基于 SwiftPM 的 macOS 14+ 菜单栏应用，界面由 A
 ## 关键设计与约束
 
 ### 1. 事件拦截与设备区分
-- `EventTapService` 在独立线程拦截键盘、滚轮和鼠标侧键事件，避免界面繁忙时阻塞输入。共享配置和前台状态一律通过 `Locked` 传递。
+- `EventTapService` 在独立线程拦截键盘、滚轮和鼠标侧键事件，避免界面繁忙时阻塞输入。共享配置和前台状态一律通过基于 `OSAllocatedUnfairLock` 的 `Locked` 传递；应用睡眠/唤醒或会话切换后自动核对并自愈拦截端口。
 - `InputDeviceMonitor` 通过 IOKit 监听各输入设备原始事件，识别当前操作的键盘或鼠标：鼠标滚轮和加速按设备保存设置；键盘按设备分别记住 Windows / Mac 模式（`LayoutInference`），默认由 `KeyMapper.systemShortcut` 兼容常见组合键。
 - 密码框等“安全键盘输入”状态下，macOS 会暂停将按键送入 `CGEventTap`，这是用户态事件拦截的固有系统边界。
 
 ### 2. 文件索引与全文检索
-- 个人目录和应用程序使用 `FileIndex` 扫盘加 FSEvents 增量维护，外接硬盘（含 NTFS）改用 `readdir` 与多线程后台扫描，跳过缓存、依赖包（`node_modules` 等）、构建产物与日志文件。
-- `ContentIndex` 在 `~/Library/Application Support/MacShun/ContentIndex/` 维护 contentless SQLite FTS5 索引（WAL 模式读写分离），中文按单字加标点分隔符（`U+E000`）切分，原文经 zlib 压缩另存用于截取匹配行；PDF 与图片（含扫描件 OCR）在有 90 秒超时保护的隔离子进程中解析，避免单文件崩溃影响主进程。
+- 个人目录和应用程序使用 `FileIndex` 扫盘加 FSEvents 增量维护（排除 `~/Library` 与 `~/.Trash`），外接硬盘（含 NTFS，排除挂载的 `.dmg` 虚拟映像）改用 `readdir` 与多线程后台增量对账，跳过缓存、依赖包（`node_modules`、`Pods`、`DerivedData` 等）、构建产物与日志文件。
+- `ContentIndex` 在 `~/Library/Application Support/MacShun/ContentIndex/` 维护 contentless SQLite FTS5 索引（WAL 模式读写分离 + 增量 `auto_vacuum`），中文按单字加标点分隔符（`U+E000`）切分，原文经 zlib 压缩另存用于截取匹配行；PDF、图片 OCR（含剪贴板与截图取字）以及截图辅助打码均通过可复用短命隔离子进程（`--extract-worker`，空闲 15 秒或处理 64 次自动退出并带 90 秒超时）执行，避免单文件崩溃与 Vision/PDFKit 模型内存常驻主进程。
 - `OpenHistory`（UserDefaults 最多 300 条）与 `PinnedSearchFolders` 分别保存打开加权和固定项目夹。
 
 ### 3. 跨屏分屏与原生平铺
-- 拖动分屏采用只读全局 `NSEvent` 监听，不拦截或 warp 光标；`DragSnapIntent` 纯状态机负责外侧边缘即时预览与多屏共享边缘停留（180ms 稳定预览、250ms 跨屏保护）的防抖判定，并在屏幕参数变化或切屏时使旧候选失效。
+- 拖动分屏常态仅监听只读 `.leftMouseDown`，进入标题栏拖拽时按需挂载拖动/按键监听与看门狗，不拦截或 warp 光标；`DragSnapIntent` 纯状态机负责外侧边缘即时预览与多屏共享边缘停留（180ms 稳定预览、250ms 跨屏保护）的防抖判定，并在屏幕参数变化、休眠或切屏时使旧候选失效。
 - macOS 15+ 自带边缘拖动平铺启用时，Mac顺 自动让出拖动分屏并在设置 › 通用提示冲突检测及关闭入口；`Win+方向键` 快捷键不受系统拖动平铺开关影响。
 
 ### 4. 光标大小、显示器与性能监控
 - `CursorSizeController` 优先写入 `com.apple.universalaccess` 的 `mouseDriverCursorSize`（需完全磁盘访问权限），无该权限时退回到运行时周期性调用 `CGSSetCursorScale` 并在退出时恢复。
 - `DisplayScaling` 仅保留原生分辨率及渲染像素不少于原生分辨率的清晰 HiDPI 档位，修改通过 `CGCompleteDisplayConfiguration(.permanently)` 持久化。
-- `PerformanceMonitor` 在关闭监控、单指标关闭或系统睡眠时停止采集并清理缓存；`ChipTemperature` 与 `SystemMetrics` 改写了 MIT 许可的 `exelban/stats` 只读 SMC / GPU 统计定义，详见根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
+- `PerformanceMonitor` 在关闭监控、单指标关闭、系统睡眠、息屏或切换用户会话时停止采集并清理缓存；`ChipTemperature` 与 `SystemMetrics` 改写了 MIT 许可的 `exelban/stats` 只读 SMC / GPU 统计定义，详见根目录 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 ### 5. 更新、统计与构建环境
 - `Updater` 通过拾穗发布服务检查版本，按 `mirrors` 优先、GitHub 原始地址兜底的顺序下载 DMG，强制核对字节大小、SHA-256 与同证书代码签名（`WinShun Development` / `io.github.lingcore.winshun`）后原地替换重启。
