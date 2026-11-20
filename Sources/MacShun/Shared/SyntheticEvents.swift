@@ -75,10 +75,10 @@ enum Synthetic {
 
     /// 等用户松开所有修饰键再执行。例如按 Win+D 时，Win 键还按着，马上模拟按键会混进 ⌘。
     static func afterModifiersReleased(timeout: TimeInterval = 1.5, _ action: @escaping () -> Void) {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
         func check() {
             let held = CGEventSource.flagsState(.hidSystemState).intersection(.modifierKeys)
-            if held.isEmpty || Date() >= deadline {
+            if held.isEmpty || ProcessInfo.processInfo.systemUptime >= deadline {
                 action()
             } else {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: check)

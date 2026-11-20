@@ -18,8 +18,8 @@ enum CapsLockLeftovers {
     static func restore(defaults: UserDefaults = .standard) {
         if let saved = defaults.string(forKey: savedKey) {
             typealias SetState = @convention(c) (UInt8) -> Void
-            let carbon = dlopen("/System/Library/Frameworks/Carbon.framework/Carbon", RTLD_NOW)
-            if let symbol = dlsym(carbon, "TISSetRomanSwitchState") {
+            if let carbon = dlopen("/System/Library/Frameworks/Carbon.framework/Carbon", RTLD_NOW),
+               let symbol = dlsym(carbon, "TISSetRomanSwitchState") {
                 unsafeBitCast(symbol, to: SetState.self)(saved == "1" ? 1 : 0)
                 Log.keyboard.notice("还原 Caps Lock 切换输入法的系统设置：\(saved, privacy: .public)")
             }

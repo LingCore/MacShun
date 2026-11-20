@@ -145,7 +145,9 @@ struct MouseConfig: Codable, Equatable {
             forwardButton = SideButtonSetting(.none)
         }
         ctrlWheelZoom = c.value(.ctrlWheelZoom, default: d.ctrlWheelZoom)
-        cursorScale = c.value(.cursorScale, default: d.cursorScale)
+        cursorScale = c.value(.cursorScale, default: d.cursorScale).map {
+            min(max($0, CursorSizeController.range.lowerBound), CursorSizeController.range.upperBound)
+        }
     }
 
     private enum LegacyKeys: String, CodingKey {

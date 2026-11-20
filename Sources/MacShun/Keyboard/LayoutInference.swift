@@ -22,17 +22,24 @@ struct LayoutInference {
 
     /// 返回应该切换到的布局；不需要切换时返回 nil。
     mutating func observe(keyCode: CGKeyCode, flags: CGEventFlags, current: KeyboardLayoutKind, device: String?) -> KeyboardLayoutKind? {
-        let mods = flags.intersection([.maskCommand, .maskAlternate, .maskControl])
+        let mods = flags.intersection(.modifierKeys)
         let implied: KeyboardLayoutKind
         let conclusive: Bool
         switch keyCode {
-        case KeyCode.tab, KeyCode.f4:
+        case KeyCode.tab:
+            switch mods.subtracting(.maskShift) {
+            case .maskAlternate: implied = .windows
+            case .maskCommand: implied = .mac
+            default: return nil
+            }
+            conclusive = false
+        case KeyCode.f4:
             switch mods {
             case .maskAlternate: implied = .windows
             case .maskCommand: implied = .mac
             default: return nil
             }
-            conclusive = keyCode == KeyCode.f4
+            conclusive = true
         case KeyCode.v, KeyCode.e, KeyCode.l, KeyCode.s:
             guard mods == .maskAlternate else { return nil }
             implied = .mac

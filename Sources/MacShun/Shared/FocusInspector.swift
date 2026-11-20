@@ -16,28 +16,39 @@ enum FocusKind: Equatable {
 
 /// 通过辅助功能接口查询键盘焦点。每次查询是一次跨进程调用，只在需要时才查。
 final class FocusInspector {
-    private let systemWide = AXUIElementCreateSystemWide()
+    /// 只初始化一次系统级超时，避免每次构造对象反复改写进程级默认超时。
+    private static let sharedSystemWide: AXUIElement = {
+        let element = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(element, 0.1)
+        return element
+    }()
+    private let systemWide = FocusInspector.sharedSystemWide
+    private static let elementTimeout: Float = 0.08
 
     private static let textRoles: Set<String> = [
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField",
     ]
 
-    private static let browsingRoles: Set<String> = [
-        "AXOutline", "AXList", "AXTable", "AXBrowser", "AXScrollArea",
-        "AXGroup", "AXRow", "AXCell", "AXWebArea", "AXLayoutArea",
+    /// 明确不可直接编辑的列表/表格/树形控件：先于 isEditable 判定，省去 1–2 次跨进程 AX 查询。
+    private static let strictBrowsingRoles: Set<String> = [
+        "AXOutline", "AXList", "AXTable", "AXBrowser",
     ]
 
-    init() {
-        // 对系统级元素设置超时，会成为所有元素的默认超时。应用卡住时最多等这么久。
-        AXUIElementSetMessagingTimeout(systemWide, 0.15)
-    }
+    /// 网页正文、表格单元格或容器可能是 contenteditable / gridcell，需先核对 isEditable。
+    private static let containerBrowsingRoles: Set<String> = [
+        "AXScrollArea", "AXGroup", "AXWebArea", "AXLayoutArea", "AXRow", "AXCell",
+    ]
+
+    init() {}
 
     func focusedElement() -> AXUIElement? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &value) == .success,
               let value, CFGetTypeID(value) == AXUIElementGetTypeID()
         else { return nil }
-        return (value as! AXUIElement)
+        let element = value as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, Self.elementTimeout)
+        return element
     }
 
     func focusKind() -> FocusKind {
@@ -48,8 +59,9 @@ final class FocusInspector {
     static func focusKind(of element: AXUIElement) -> FocusKind {
         guard let role = string(element, kAXRoleAttribute) else { return .unknown }
         if textRoles.contains(role) { return .text }
+        if strictBrowsingRoles.contains(role) { return .browsing }
         if isEditable(element) { return .text }
-        if browsingRoles.contains(role) { return .browsing }
+        if containerBrowsingRoles.contains(role) { return .browsing }
         return .other
     }
 

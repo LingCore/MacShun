@@ -6,6 +6,10 @@ import AppKit
 enum WindowPlacement {
     static func screen(containing point: CGPoint) -> NSScreen? {
         NSScreen.screens.first { $0.frame.contains(point) }
+            ?? NSScreen.screens.first {
+                point.x >= $0.frame.minX && point.x <= $0.frame.maxX
+                    && point.y >= $0.frame.minY && point.y <= $0.frame.maxY
+            }
     }
 
     static func pointerScreen(at point: CGPoint) -> NSScreen? {

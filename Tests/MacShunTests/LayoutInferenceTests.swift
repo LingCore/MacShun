@@ -57,6 +57,13 @@ struct LayoutInferenceTests {
         #expect(inference.observe(keyCode: KeyCode.tab, flags: .maskControl, current: .windows, device: k99) == nil)
         #expect(inference.observe(keyCode: KeyCode.tab, flags: [.maskCommand, .maskAlternate], current: .windows, device: k99) == nil)
         #expect(inference.observe(keyCode: KeyCode.d, flags: .maskAlternate, current: .windows, device: k99) == nil)
+        // 带 Shift 的 F4 / V / E / L / S 是常见 IDE 组合键，不应误改键盘布局
+        #expect(inference.observe(keyCode: KeyCode.f4, flags: [.maskCommand, .maskShift], current: .windows, device: k99) == nil)
+        #expect(inference.observe(keyCode: KeyCode.f4, flags: [.maskAlternate, .maskShift], current: .mac, device: k99) == nil)
+        #expect(inference.observe(keyCode: KeyCode.s, flags: [.maskAlternate, .maskShift], current: .windows, device: k99) == nil)
+        #expect(inference.observe(keyCode: KeyCode.s, flags: [.maskAlternate, .maskShift], current: .windows, device: k99) == nil)
+        #expect(inference.observe(keyCode: KeyCode.l, flags: [.maskAlternate, .maskShift], current: .windows, device: k99) == nil)
+        #expect(inference.observe(keyCode: KeyCode.l, flags: [.maskAlternate, .maskShift], current: .windows, device: k99) == nil)
     }
 
     @Test func layoutPerKeyboard() {

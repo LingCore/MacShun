@@ -27,7 +27,7 @@ enum Permissions {
 
     private typealias TCCAccessPreflight = @convention(c) (CFString, CFDictionary?) -> Int32
     private static let tccAccessPreflight: TCCAccessPreflight? = {
-        let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW)
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/TCC.framework/TCC", RTLD_NOW) else { return nil }
         return dlsym(handle, "TCCAccessPreflight").map { unsafeBitCast($0, to: TCCAccessPreflight.self) }
     }()
 

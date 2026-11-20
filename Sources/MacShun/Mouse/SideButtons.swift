@@ -173,20 +173,21 @@ enum SideButtons {
                     (KeyCode.option, .maskAlternate), (KeyCode.command, .maskCommand)].filter { wanted.contains($0.1) }
         playQueue.async {
             let source = CGEventSource(stateID: .hidSystemState)
+            let baseFlags = CGEventSource.flagsState(.hidSystemState).intersection(.maskAlphaShift)
             func post(_ event: CGEvent?) {
                 event?.post(tap: .cghidEventTap)
                 usleep(4000)
             }
-            func modifier(_ key: CGKeyCode, _ flags: CGEventFlags) -> CGEvent? {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+            func modifier(_ key: CGKeyCode, _ flags: CGEventFlags, down: Bool) -> CGEvent? {
+                let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
                 event?.type = .flagsChanged
                 event?.flags = flags
                 return event
             }
-            var flags: CGEventFlags = []
+            var flags = baseFlags
             for (key, flag) in keys {
                 flags.insert(flag)
-                post(modifier(key, flags))
+                post(modifier(key, flags, down: true))
             }
             var keyFlags = flags
             if KeyCode.functionFlagKeys.contains(shortcut.keyCode) { keyFlags.insert(.maskSecondaryFn) }
@@ -198,7 +199,7 @@ enum SideButtons {
             }
             for (key, flag) in keys.reversed() {
                 flags.remove(flag)
-                post(modifier(key, flags))
+                post(modifier(key, flags, down: false))
             }
         }
     }

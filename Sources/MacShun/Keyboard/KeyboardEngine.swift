@@ -26,6 +26,8 @@ final class KeyboardEngine {
     private var switcherOpen = false
     /// 打开切换器时 Alt 键对应的修饰键。之后按这个判断 Alt 是否松开，不受布局随后变化的影响。
     private var switcherAltFlag: CGEventFlags = .maskAlternate
+    /// 按下时已消费并应吞掉后续重复与松键的物理键码（例如 Alt+Tab 期间按 Esc 关闭切换器后继续按住 Esc）。
+    private var swallowedKeys: Set<CGKeyCode> = []
     /// Finder 剪切状态（仅在主线程访问，避免事件线程读 NSPasteboard）。
     private var finderCutGeneration = 0
     private var finderCutPending: (generation: Int, before: Int, startedAt: TimeInterval)?
@@ -33,6 +35,8 @@ final class KeyboardEngine {
     private var finderCutPollWork: DispatchWorkItem?
     /// 连按两下 Ctrl 呼出文件搜索（F1）
     private var doubleControl = DoubleTapDetector()
+    /// 最近一次同步到 environment.keyboardLayout 的值，避免每次按键都获取写锁。
+    private var lastPublishedLayout: KeyboardLayoutKind?
 
     /// 滚轮缩放或鼠标按键打断连按 Ctrl，避免 Ctrl+滚轮误呼出文件搜索。
     func cancelDoubleControl() {
@@ -46,9 +50,13 @@ final class KeyboardEngine {
     }
 
     /// 只看不改：连按两下 Ctrl 时通知主线程打开文件搜索。远程桌面、虚拟机里不响应，Ctrl 留给里面的系统。
-    private func watchDoubleControl(_ event: CGEvent) {
+    private func watchDoubleControl(_ event: CGEvent, appConfig: AppConfig) {
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         guard keyCode == KeyCode.control || keyCode == KeyCode.rightControl else {
+            _ = doubleControl.feed(.other, at: 0)
+            return
+        }
+        guard appConfig.fileSearch.enabled else {
             _ = doubleControl.feed(.other, at: 0)
             return
         }
@@ -56,8 +64,13 @@ final class KeyboardEngine {
         let now = ProcessInfo.processInfo.systemUptime
         // 按着 Ctrl 点了鼠标（Mac 上的右键）：不算单按一下 Ctrl，免得连着两次 Ctrl+点击打开搜索
         if !down, let start = doubleControl.pressStart {
-            let sinceClick = [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown]
-                .map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
+            let sinceClick = min(
+                CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .leftMouseDown),
+                min(
+                    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .rightMouseDown),
+                    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .otherMouseDown)
+                )
+            )
             if sinceClick < now - start {
                 _ = doubleControl.feed(.other, at: 0)
                 return
@@ -65,23 +78,25 @@ final class KeyboardEngine {
         }
         let input = DoubleTapDetector.Input.control(down: down, flags: event.flags)
         guard doubleControl.feed(input, at: now) else { return }
-        let cfg = config.get()
-        guard cfg.fileSearch.enabled,
-              AppCatalog.kind(of: environment.current.get(), userExcluded: cfg.keyboard.excludedApps) != .excluded
+        guard AppCatalog.kind(of: environment.current.get(), userExcluded: appConfig.keyboard.excludedApps) != .excluded
         else { return }
         DispatchQueue.main.async { [onCommand] in onCommand(.fileSearch) }
     }
 
-    /// 当前这把键盘的布局（任何线程都可以调用，自测用）。
+    /// 当前这把键盘的布局（任何线程都可以调用，自测与鼠标侧键用）。
     func currentLayout() -> KeyboardLayoutKind {
         config.get().keyboard.layout(for: devices.activeDevice)
     }
 
     func handle(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
-        var cfg = config.get().keyboard
+        let appConfig = config.get()
+        var cfg = appConfig.keyboard
         let device = devices.activeDevice
         var layout = cfg.layout(for: device)
-        environment.keyboardLayout.set(layout)
+        if lastPublishedLayout != layout {
+            lastPublishedLayout = layout
+            environment.keyboardLayout.set(layout)
+        }
         // 设置里正在录快捷键：原样放行，录下实际按的键（也不算连按 Ctrl）
         if environment.recordingShortcut.get() && !switcherOpen {
             return Unmanaged.passUnretained(event)
@@ -94,7 +109,7 @@ final class KeyboardEngine {
         }
 
         if type == .flagsChanged {
-            if !environment.captureActive.get() { watchDoubleControl(event) }
+            if !environment.captureActive.get() { watchDoubleControl(event, appConfig: appConfig) }
             if switcherOpen {
                 // 切换器开着时按 Shift（Alt+Shift+Tab）：保持 ⌘、去掉 Alt，免得系统以为 ⌘ 松开了。
                 event.flags = Self.switcherFlags(event.flags, altFlag: switcherAltFlag)
@@ -122,13 +137,13 @@ final class KeyboardEngine {
             return Unmanaged.passUnretained(event)
         }
 
+        let clipboardPanelActive = environment.clipboardPanelActive.get()
         // 历史面板里 F3 留给选中的图片，即使用户把 F3 录成了全局截图键。
-        if environment.clipboardPanelActive.get(), keyCode == KeyCode.f3,
+        if clipboardPanelActive, keyCode == KeyCode.f3,
            event.flags.intersection(.modifierKeys).isEmpty {
             return Unmanaged.passUnretained(event)
         }
 
-        let clipboardPanelActive = environment.clipboardPanelActive.get()
         let fileSearchPanelActive = environment.fileSearchPanelActive.get()
         let searchPanelActive = clipboardPanelActive || fileSearchPanelActive
         let panelActive = searchPanelActive || environment.snapAssistActive.get()
@@ -140,11 +155,18 @@ final class KeyboardEngine {
             && device?.isApple != true && (panelActive || frontAppKind != .excluded),
            let learned = inference.observe(keyCode: keyCode, flags: event.flags, current: layout, device: device?.key) {
             layout = learned
+            if lastPublishedLayout != layout {
+                lastPublishedLayout = layout
+                environment.keyboardLayout.set(layout)
+            }
             record(learned, for: device)
         }
         cfg.layout = layout
         let mapper = KeyMapper(config: cfg)
         let action: KeyAction
+        if isRepeat, swallowedKeys.contains(keyCode) {
+            return nil
+        }
         if isRepeat, let previous = activeKeys[keyCode] {
             action = previous
         } else if environment.scrollingCaptureActive.get(), event.flags.intersection(.modifierKeys).isEmpty,
@@ -157,20 +179,20 @@ final class KeyboardEngine {
                 // 剪贴板面板、文件搜索框或贴靠助手开着时，按键在本程序的面板里，不按后面那个应用的规则处理。
                 context = KeyContext(
                     appKind: .normal,
-                    clipboardEnabled: config.get().clipboard.enabled,
+                    clipboardEnabled: appConfig.clipboard.enabled,
                     inputSourceID: environment.inputSourceID.get(),
                     searchPanelActive: searchPanelActive,
                     fileSearchPanelActive: fileSearchPanelActive && !clipboardPanelActive,
-                    windowShortcuts: config.get().window.enabled,
+                    windowShortcuts: appConfig.window.enabled,
                     focus: { .text }
                 )
             } else {
                 context = KeyContext(
                     appKind: frontAppKind,
                     isBrowser: AppCatalog.isBrowser(frontApp),
-                    clipboardEnabled: config.get().clipboard.enabled,
+                    clipboardEnabled: appConfig.clipboard.enabled,
                     inputSourceID: environment.inputSourceID.get(),
-                    windowShortcuts: config.get().window.enabled,
+                    windowShortcuts: appConfig.window.enabled,
                     hasCopiedScreenshot: { CaptureClipboard.general.containsScreenshot },
                     focus: { [focusInspector] in focusInspector.focusKind() }
                 )
@@ -224,6 +246,10 @@ final class KeyboardEngine {
     }
 
     private func handleKeyUp(keyCode: CGKeyCode, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
+        if swallowedKeys.remove(keyCode) != nil {
+            activeKeys.removeValue(forKey: keyCode)
+            return nil
+        }
         guard let action = activeKeys.removeValue(forKey: keyCode), action != .pass else {
             return Unmanaged.passUnretained(event)
         }
@@ -251,12 +277,14 @@ final class KeyboardEngine {
 
     /// 拦截被系统暂停后调用：之前记下的按键状态已经不可靠，补发松开事件后清空。
     func reset(proxy: CGEventTapProxy) {
+        cancelDoubleControl()
         closeSwitcher(proxy: proxy)
         for stroke in sentStrokes.values {
             post(Synthetic.keyEvent(stroke, down: false), proxy: proxy)
         }
         sentStrokes.removeAll()
         activeKeys.removeAll()
+        swallowedKeys.removeAll()
     }
 
     // MARK: - Alt+Tab
@@ -286,6 +314,15 @@ final class KeyboardEngine {
         }
         let stroke = KeyStroke(keyCode, Self.switcherFlags(event.flags, altFlag: switcherAltFlag))
         if isDown {
+            if keyCode == KeyCode.escape {
+                // 按 Esc 会立刻关闭系统切换器；同步释放合成的 ⌘，避免松开 Alt 前后续按键误带 ⌘。
+                // 记入 swallowedKeys，吞掉继续按住 Esc 产生的重复与最终松键，不向前台应用泄漏 ⌘+Esc。
+                post(Synthetic.keyEvent(stroke, down: true, original: event), proxy: proxy)
+                post(Synthetic.keyEvent(stroke, down: false, original: event), proxy: proxy)
+                closeSwitcher(proxy: proxy)
+                swallowedKeys.insert(keyCode)
+                return nil
+            }
             activeKeys[keyCode] = .send(stroke)
             send(stroke, down: true, original: event, physicalKey: keyCode, proxy: proxy)
         } else {

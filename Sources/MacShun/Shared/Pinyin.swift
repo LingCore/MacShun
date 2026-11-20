@@ -108,6 +108,12 @@ enum Pinyin {
     static func syllable(for ch: Character) -> String {
         if let override = charOverrides[ch] { return override }
         if let cached = cache.withLock({ $0[ch] }) { return cached }
+        let result = computeSyllable(for: ch)
+        cache.update { $0[ch] = result }
+        return result
+    }
+
+    private static func computeSyllable(for ch: Character) -> String {
         let s = NSMutableString(string: String(ch))
         CFStringTransform(s, nil, kCFStringTransformMandarinLatin, false)
         var latin = (s as String).lowercased()
@@ -117,20 +123,50 @@ enum Pinyin {
         }
         let plain = NSMutableString(string: latin)
         CFStringTransform(plain, nil, kCFStringTransformStripDiacritics, false)
-        let result = (plain as String).filter { $0.isLetter }
-        cache.update { $0[ch] = result }
-        return result
+        return (plain as String).filter { $0.isLetter }
     }
 
     /// 文字逐字对应的拼音。汉字给出拼音，其他字符原样（小写）。
+    /// 批量查缓存以减少并发扫盘时的锁争用。
     static func syllables(of chars: [Character]) -> [String] {
-        var result = chars.map { isHan($0) ? syllable(for: $0) : String($0).lowercased() }
+        var result = [String](repeating: "", count: chars.count)
+        var missingIndices: [Int] = []
+        cache.withLock { map in
+            for i in chars.indices {
+                let ch = chars[i]
+                if !isHan(ch) {
+                    result[i] = String(ch).lowercased()
+                } else if let override = charOverrides[ch] {
+                    result[i] = override
+                } else if let cached = map[ch] {
+                    result[i] = cached
+                } else {
+                    missingIndices.append(i)
+                }
+            }
+        }
+        if !missingIndices.isEmpty {
+            var computed: [Character: String] = [:]
+            for i in missingIndices {
+                let ch = chars[i]
+                if let existing = computed[ch] {
+                    result[i] = existing
+                } else {
+                    let s = computeSyllable(for: ch)
+                    computed[ch] = s
+                    result[i] = s
+                }
+            }
+            cache.update { map in
+                for (ch, s) in computed { map[ch] = s }
+            }
+        }
         var i = 0
         while i < chars.count {
             var advanced = false
             if let candidates = phrasesByFirstChar[chars[i]] {
                 for (phrase, syllables) in candidates where i + phrase.count <= chars.count {
-                    if Array(chars[i..<(i + phrase.count)]) == phrase {
+                    if chars[i..<(i + phrase.count)].elementsEqual(phrase) {
                         for (k, s) in syllables.enumerated() { result[i + k] = s }
                         i += phrase.count
                         advanced = true
@@ -148,31 +184,70 @@ enum Pinyin {
 struct PinyinIndex {
     /// 原文（小写），用于直接包含匹配
     let lowercased: String
-    /// 去掉空白后逐字的拼音（非汉字是字符本身）
-    let syllables: [[Character]]
+    /// 去掉空白后逐字的紧凑 ASCII 拼音（字间 0 分隔，非 ASCII 记为 0xFF），单块连续内存。
+    let encodedSyllables: [UInt8]
+
+    /// 兼容需要按音节读取的调用方（例如 SystemFeature 启动时生成别名）。
+    var syllables: [[Character]] {
+        guard !encodedSyllables.isEmpty else { return [] }
+        return encodedSyllables.split(separator: 0, omittingEmptySubsequences: false).compactMap { slice in
+            guard slice.count != 1 || slice.first != 0xFF else { return nil }
+            return slice.map { Character(UnicodeScalar($0)) }
+        }
+    }
 
     /// 只索引前面这么多字，太长的文字后面部分只能按原文搜。
     static let maxIndexedCharacters = 1000
 
     init(text: String) {
         lowercased = text.lowercased()
+        encodedSyllables = Self.encodeSyllables(text)
+    }
+
+    /// 只生成紧凑拼音字节，不额外复制一份整段小写原文（供剪贴板长文本缓存用）。
+    static func encodeSyllables(_ text: String) -> [UInt8] {
         let chars = Array(text.prefix(Self.maxIndexedCharacters)).filter { !$0.isWhitespace }
-        syllables = Pinyin.syllables(of: chars).map { Array($0) }
+        guard !chars.isEmpty else { return [] }
+        var out: [UInt8] = []
+        out.reserveCapacity(chars.count * 4)
+        for (position, syllable) in Pinyin.syllables(of: chars).enumerated() {
+            if position > 0 { out.append(0) }
+            if !syllable.isEmpty && syllable.utf8.allSatisfy({ $0 > 0 && $0 < 0x80 }) {
+                out.append(contentsOf: syllable.utf8)
+            } else {
+                out.append(0xFF)
+            }
+        }
+        return out
     }
 
     struct Query {
         let lower: String
         private let compact: String
         let letters: [Character]?
+        let asciiBytes: [UInt8]?
 
         init(_ text: String) {
             lower = text.lowercased()
             compact = lower.filter { !$0.isWhitespace }
-            letters = compact.utf8.allSatisfy { $0 < 0x80 } ? Array(compact) : nil
+            if compact.utf8.allSatisfy({ $0 < 0x80 }) {
+                letters = Array(compact)
+                asciiBytes = Array(compact.utf8)
+            } else {
+                letters = nil
+                asciiBytes = nil
+            }
         }
 
         func matchesText(_ lowercased: String) -> Bool {
             compact.isEmpty || lowercased.contains(lower) || (compact != lower && lowercased.contains(compact))
+        }
+
+        /// 直接在原文上做大小写不敏感查找，避免把超大文本再复制成一份 lowercased String。
+        func matchesOriginal(_ text: String) -> Bool {
+            compact.isEmpty
+                || text.range(of: lower, options: .caseInsensitive) != nil
+                || (compact != lower && text.range(of: compact, options: .caseInsensitive) != nil)
         }
     }
 
@@ -180,8 +255,12 @@ struct PinyinIndex {
 
     func matches(_ query: Query) -> Bool {
         if query.matchesText(lowercased) { return true }
-        guard let letters = query.letters else { return false }
-        return Self.syllableMatch(letters, syllables)
+        return Self.matchesEncoded(query, encoded: encodedSyllables)
+    }
+
+    static func matchesEncoded(_ query: Query, encoded: [UInt8]) -> Bool {
+        guard let bytes = query.asciiBytes, !encoded.isEmpty else { return false }
+        return encoded.withUnsafeBufferPointer { Self.syllableMatch(bytes, encoded: $0) }
     }
 
     /// can[i] 表示从下一个音节起能否拼完查询的第 i 个字符及其后缀。

@@ -1,38 +1,30 @@
 // SPDX-License-Identifier: MIT
 
 import Foundation
+import os
 
 /// 用锁保护的值。事件拦截线程和界面线程之间共享配置、当前应用等状态时使用。
 final class Locked<Value>: @unchecked Sendable {
-    private var value: Value
-    private let lock = NSLock()
+    private let lock: OSAllocatedUnfairLock<Value>
 
     init(_ value: Value) {
-        self.value = value
+        self.lock = OSAllocatedUnfairLock(uncheckedState: value)
     }
 
     func get() -> Value {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
+        lock.withLockUnchecked { $0 }
     }
 
     func set(_ newValue: Value) {
-        lock.lock()
-        value = newValue
-        lock.unlock()
+        lock.withLockUnchecked { $0 = newValue }
     }
 
     func withLock<R>(_ body: (Value) throws -> R) rethrows -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body(value)
+        try lock.withLockUnchecked { try body($0) }
     }
 
     @discardableResult
     func update<R>(_ body: (inout Value) throws -> R) rethrows -> R {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body(&value)
+        try lock.withLockUnchecked { try body(&$0) }
     }
 }

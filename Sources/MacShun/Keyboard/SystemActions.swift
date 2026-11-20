@@ -90,10 +90,10 @@ enum SymbolicHotKeys {
         if let enabled = entry["enabled"] as? Bool, !enabled { return nil }
         guard let value = entry["value"] as? [String: Any],
               let parameters = value["parameters"] as? [Int], parameters.count >= 3,
-              parameters[1] != 65535
+              let keyCode = CGKeyCode(exactly: parameters[1]), keyCode != 65535
         else { return nil }
-        let flags = CGEventFlags(rawValue: UInt64(parameters[2]))
-        return KeyStroke(CGKeyCode(parameters[1]), flags)
+        let flags = CGEventFlags(rawValue: UInt64(bitPattern: Int64(parameters[2])))
+        return KeyStroke(keyCode, flags)
     }
 }
 

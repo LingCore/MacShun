@@ -5,8 +5,12 @@ import CoreGraphics
 
 /// 在事件拦截线程上处理鼠标事件：滚轮方向和步长（M2、M3）、侧键（M4）、Ctrl+滚轮缩放（M5）。
 final class MouseEngine {
+    /// CoreGraphics 未公开枚举名但与 NSEvent.isDirectionInvertedFromDevice 对应的整数字段，避免在拦截线程构造 AppKit NSEvent。
+    private static let scrollDirectionInvertedField = CGEventField(rawValue: 137)!
+
     private let config: Locked<AppConfig>
     private let environment: FrontAppTracker
+    private let keyboardLayout: () -> KeyboardLayoutKind
     private let onCommand: (SystemCommand) -> Void
     let devices = InputDeviceMonitor.mice()
 
@@ -15,9 +19,15 @@ final class MouseEngine {
     /// 换成另一个侧键的，松开时也要换
     private var rewrittenButtons: [Int64: Int64] = [:]
 
-    init(config: Locked<AppConfig>, environment: FrontAppTracker, onCommand: @escaping (SystemCommand) -> Void) {
+    init(
+        config: Locked<AppConfig>,
+        environment: FrontAppTracker,
+        keyboardLayout: (() -> KeyboardLayoutKind)? = nil,
+        onCommand: @escaping (SystemCommand) -> Void
+    ) {
         self.config = config
         self.environment = environment
+        self.keyboardLayout = keyboardLayout ?? { environment.keyboardLayout.get() }
         self.onCommand = onCommand
     }
 
@@ -50,7 +60,7 @@ final class MouseEngine {
             }
         }
 
-        let inverted = NSEvent(cgEvent: event)?.isDirectionInvertedFromDevice ?? false
+        let inverted = event.getIntegerValueField(Self.scrollDirectionInvertedField) != 0
         let vertical = axis(event, .scrollWheelEventDeltaAxis1, .scrollWheelEventFixedPtDeltaAxis1, .scrollWheelEventPointDeltaAxis1)
         let horizontal = axis(event, .scrollWheelEventDeltaAxis2, .scrollWheelEventFixedPtDeltaAxis2, .scrollWheelEventPointDeltaAxis2)
 
@@ -130,7 +140,7 @@ final class MouseEngine {
         case .command(let command):
             DispatchQueue.main.async { [onCommand] in onCommand(command) }
         case .shortcut(let shortcut):
-            SideButtons.play(shortcut, layout: environment.keyboardLayout.get())
+            SideButtons.play(shortcut, layout: keyboardLayout())
         }
         swallowedButtons.insert(button)
         return nil

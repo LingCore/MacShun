@@ -88,4 +88,22 @@ struct PinyinTests {
         #expect(Pinyin.syllables(of: Array("a银行b")) == ["a", "yin", "hang", "b"])
         #expect(Pinyin.syllable(for: "绿") == "lv")
     }
+
+    @Test func encodedSyllablesAndOriginalMatch() {
+        let text = "银行卡号 Invoice 2026"
+        let encoded = PinyinIndex.encodeSyllables(text)
+        let qInitials = PinyinIndex.Query("yhkh")
+        let qFull = PinyinIndex.Query("yinhang")
+        let qWrong = PinyinIndex.Query("yinxing")
+        let qHan = PinyinIndex.Query("银行")
+        let qAscii = PinyinIndex.Query("invoice")
+
+        #expect(PinyinIndex.matchesEncoded(qInitials, encoded: encoded))
+        #expect(PinyinIndex.matchesEncoded(qFull, encoded: encoded))
+        #expect(!PinyinIndex.matchesEncoded(qWrong, encoded: encoded))
+        #expect(qHan.matchesOriginal(text))
+        #expect(!PinyinIndex.matchesEncoded(qHan, encoded: encoded))
+        #expect(qAscii.matchesOriginal(text))
+        #expect(PinyinIndex.matchesEncoded(qAscii, encoded: encoded))
+    }
 }

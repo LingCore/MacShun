@@ -37,6 +37,8 @@ final class InputDeviceMonitor {
     private let include: (InputDevice) -> Bool
 
     private var devices: [IOHIDDevice: InputDevice] = [:]
+    /// 上一次在拦截线程上触发原始输入的 HID 设备句柄，相同设备连续上报时免去字典查找与加锁。
+    private var lastInputDevice: IOHIDDevice?
     /// 这次运行中有过输入的设备。键盘列表只显示打过字的设备，鼠标上的“键盘”接口（宏按键）不算。
     private var seenInput: Set<String> = []
     private var configured = false
@@ -117,6 +119,21 @@ final class InputDeviceMonitor {
         }
     }
 
+    func stop(from runLoop: CFRunLoop) {
+        guard opened else { return }
+        opened = false
+        lastInputDevice = nil
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, nil, nil)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, nil, nil)
+        IOHIDManagerRegisterInputValueCallback(manager, nil, nil)
+        IOHIDManagerUnscheduleFromRunLoop(manager, runLoop, CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        configured = false
+        devices.removeAll()
+        singleDevice.set(nil)
+        lastActive.set(nil)
+    }
+
     private func configure() {
         IOHIDManagerSetDeviceMatchingMultiple(manager, deviceMatching as CFArray)
         IOHIDManagerSetInputValueMatchingMultiple(manager, inputMatching as CFArray)
@@ -145,9 +162,13 @@ final class InputDeviceMonitor {
     }
 
     private func removed(_ device: IOHIDDevice) {
+        if lastInputDevice == device { lastInputDevice = nil }
         guard let info = devices.removeValue(forKey: device) else { return }
         updateSingleDevice()
-        if lastActive.get()?.key == info.key { lastActive.set(nil) }
+        // 同一物理设备可能有多个 HID 接口，仅在所有同标识接口都断开时清除最近活跃记录。
+        if lastActive.get()?.key == info.key, !devices.values.contains(where: { $0.key == info.key }) {
+            lastActive.set(nil)
+        }
         notify()
     }
 
@@ -168,7 +189,9 @@ final class InputDeviceMonitor {
 
     private func input(_ value: IOHIDValue) {
         let device = IOHIDElementGetDevice(IOHIDValueGetElement(value))
+        if device == lastInputDevice { return }
         guard let info = devices[device] else { return }
+        lastInputDevice = device
         if lastActive.get() != info { lastActive.set(info) }
         if seenInput.insert(info.key).inserted { notify() }
     }

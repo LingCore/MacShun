@@ -23,18 +23,20 @@ final class FrontAppTracker {
     let recordingShortcut = Locked(false)
     /// 最近一次按键的键盘是哪种布局（Win 键发出 ⌘ 还是 ⌥），鼠标侧键按快捷键时要按它发出修饰键
     let keyboardLayout = Locked(KeyboardLayoutKind.windows)
+    /// 切到另一个应用时在主线程回调，传入切换前的前台应用标识（用于快速 Cmd+C → Cmd+Tab 归属来源应用）。
+    var onApplicationWillSwitch: ((String?) -> Void)?
 
     private var observers: [NSObjectProtocol] = []
 
     func start() {
-        update(NSWorkspace.shared.frontmostApplication)
+        update(NSWorkspace.shared.frontmostApplication, notifySwitch: false)
         updateInputSource()
 
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
-            self?.update(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+            self?.update(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, notifySwitch: true)
         })
         // 输入法切换的通知。输入源接口只能在主线程上调用，所以在这里读好存起来。
         observers.append(DistributedNotificationCenter.default().addObserver(
@@ -45,8 +47,13 @@ final class FrontAppTracker {
         })
     }
 
-    private func update(_ app: NSRunningApplication?) {
-        current.set(AppIdentity(bundleID: app?.bundleIdentifier, name: app?.localizedName))
+    private func update(_ app: NSRunningApplication?, notifySwitch: Bool) {
+        let previous = current.get().bundleID
+        let next = AppIdentity(bundleID: app?.bundleIdentifier, name: app?.localizedName)
+        if notifySwitch, previous != next.bundleID {
+            onApplicationWillSwitch?(previous)
+        }
+        current.set(next)
         CaptureClipboard.general.refreshIfNeeded()
     }
 

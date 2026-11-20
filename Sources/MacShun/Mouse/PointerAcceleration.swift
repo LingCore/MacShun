@@ -24,13 +24,17 @@ final class PointerAccelerationController {
     /// 设置失败过的鼠标和属性，同一个只记一次日志。
     private var failedKeys: Set<String> = []
 
+    private typealias CreateFunction = @convention(c) (CFAllocator?) -> Unmanaged<IOHIDEventSystemClient>?
+    private static let createClientFn: CreateFunction? = {
+        guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY),
+              let symbol = dlsym(handle, "IOHIDEventSystemClientCreate") else { return nil }
+        return unsafeBitCast(symbol, to: CreateFunction.self)
+    }()
+
     /// 公开接口创建的“简单客户端”只能读这个属性、不能改（实测 macOS 27），
     /// 所以优先用 IOKit 里未公开的 IOHIDEventSystemClientCreate；找不到时退回简单客户端。
     private static func makeClient() -> IOHIDEventSystemClient {
-        typealias CreateFunction = @convention(c) (CFAllocator?) -> Unmanaged<IOHIDEventSystemClient>?
-        if let handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY),
-           let symbol = dlsym(handle, "IOHIDEventSystemClientCreate"),
-           let client = unsafeBitCast(symbol, to: CreateFunction.self)(kCFAllocatorDefault)?.takeRetainedValue() {
+        if let client = createClientFn?(kCFAllocatorDefault)?.takeRetainedValue() {
             return client
         }
         Log.mouse.error("找不到完整的 HID 客户端，可能无法按鼠标关闭指针加速")

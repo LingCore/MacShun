@@ -44,11 +44,11 @@ final class CursorSizeController {
 
     /// 让光标跟设置一致。config.cursorScale 只在写不进系统偏好时才有值，这时每次都重新设一遍，
     /// 因为系统改回去以后 CGSGetCursorScale 可能还报着旧的倍数。
-    func apply(_ config: MouseConfig) {
+    func apply(_ config: MouseConfig, systemScale: Double? = nil) {
         if let scale = config.cursorScale {
             set(scale, force: true)
         } else {
-            set(systemScale())
+            set(systemScale ?? self.systemScale())
         }
     }
 

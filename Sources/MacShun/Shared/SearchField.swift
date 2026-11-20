@@ -12,7 +12,10 @@ extension NSTextField {
     func applySearchQuery(_ query: String, force: Bool = false) {
         if force {
             if let editor = currentEditor() as? NSTextView {
-                if editor.hasMarkedText() { editor.unmarkText() }
+                if editor.hasMarkedText() {
+                    editor.inputContext?.discardMarkedText()
+                    if editor.hasMarkedText() { editor.unmarkText() }
+                }
                 if editor.string != query {
                     stringValue = query
                     editor.selectedRange = NSRange(location: (query as NSString).length, length: 0)
