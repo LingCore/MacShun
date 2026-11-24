@@ -14,7 +14,7 @@ struct SettingsItem: Identifiable {
         case sideButtons, ctrlWheelZoom, cursorSize
         case displayScale, refreshRate
         case performanceEnabled, cpuUsage, gpuUsage, memoryUsage, chipTemperature
-        case performanceMenuBarStyle, combinePerformanceProcessors
+        case performanceMenuBarStyle, combinePerformanceProcessors, performanceRefreshInterval
         case windowSnap, dragToSnap, snapAssist
         case clipboardEnabled, maxItems, recordImages, clipboardSyncEnabled, clipboardSyncDevices, clipboardSyncAutoWrite, clipboardSyncFiles, clipboardSyncManualPeers, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
@@ -143,6 +143,8 @@ extension SettingsItem {
               keywords: "性能监控 状态栏 图表 图标 折线 menu bar style chart icon trend"),
         .init(id: .combinePerformanceProcessors, tab: .performance, title: "合并 CPU 和 GPU",
               keywords: "处理器 显卡 节省空间 图表 combine gpu cpu compact"),
+        .init(id: .performanceRefreshInterval, tab: .performance, title: "刷新间隔",
+              keywords: "性能监控 采样 频率 省电 耗电 电量 2秒 5秒 10秒 refresh interval rate power battery"),
         .init(id: .cpuUsage, tab: .performance, title: "CPU",
               keywords: "处理器 占用 使用率 cpu processor usage load"),
         .init(id: .gpuUsage, tab: .performance, title: "GPU",

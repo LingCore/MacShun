@@ -4,7 +4,7 @@ import AppKit
 import Combine
 
 /// 菜单栏图标和菜单。
-final class StatusMenu: NSObject, NSMenuDelegate {
+final class StatusMenu: NSObject, NSMenuDelegate, NSViewToolTipOwner {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let configStore: ConfigStore
     private let state: AppState
@@ -17,13 +17,28 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let capture: (CaptureMode) -> Void
     private var subscriptions: Set<AnyCancellable> = []
 
-    private struct RenderKey: Equatable {
+    private struct LayoutKey: Equatable {
+        let active: Bool
+        let visual: PerformanceConfig.VisualSignature
+    }
+
+    private struct ImageKey: Equatable {
         let active: Bool
         let needsAttention: Bool
-        let performanceConfig: PerformanceConfig
-        let sampledAt: Date?
+        let visual: PerformanceMenuBarImage.VisualKey?
     }
-    private var lastRenderKey: RenderKey?
+
+    private struct AccessibilityKey: Equatable {
+        let allGood: Bool
+        let values: [String]
+    }
+
+    private var lastLayoutKey: LayoutKey?
+    private var lastImageKey: ImageKey?
+    private var lastAllGood: Bool?
+    private var lastAccessibilityKey: AccessibilityKey?
+    private var toolTipTag: NSView.ToolTipTag?
+    private var screenObserver: NSObjectProtocol?
 
     init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController, openSettings: @escaping () -> Void,
          openPerformance: @escaping () -> Void, openClipboard: @escaping () -> Void,
@@ -41,6 +56,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
         item.menu = menu
+        item.button?.imageScaling = .scaleNone
 
         configStore.$config
             .map(\.performance)
@@ -67,32 +83,88 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         .receive(on: DispatchQueue.main)
         .sink { [weak self] _ in self?.updateIcon() }
         .store(in: &subscriptions)
+
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.lastLayoutKey = nil
+            self.lastImageKey = nil
+            self.updateIcon()
+        }
+    }
+
+    deinit {
+        if let tag = toolTipTag { item.button?.removeToolTip(tag) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+    }
+
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        let name = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
+        let values = performanceConfig.isActive
+            ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" }
+            : []
+        return ([name] + values).joined(separator: "\n")
+    }
+
+    private func refreshToolTipRegion(on button: NSStatusBarButton) {
+        if let tag = toolTipTag { button.removeToolTip(tag) }
+        toolTipTag = button.addToolTip(button.bounds, owner: self, userData: nil)
     }
 
     private func updateIcon() {
         guard let button = item.button else { return }
         let active = performanceConfig.isActive
         let needsAttention = !state.allGood
-        let key = RenderKey(
-            active: active,
-            needsAttention: needsAttention,
-            performanceConfig: active ? performanceConfig : PerformanceConfig(),
-            sampledAt: active ? performance.snapshot.sampledAt : nil
-        )
-        guard key != lastRenderKey else { return }
-        lastRenderKey = key
+        let effectiveConfig = active ? performanceConfig : PerformanceConfig()
+        let layoutKey = LayoutKey(active: active, visual: effectiveConfig.visualSignature)
+        let visual = active
+            ? PerformanceMenuBarImage.visualKey(
+                snapshot: performance.snapshot, history: performance.history,
+                configuration: performanceConfig, needsAttention: needsAttention
+            )
+            : nil
+        let imageKey = ImageKey(active: active, needsAttention: needsAttention, visual: visual)
+        let layoutChanged = layoutKey != lastLayoutKey
 
-        item.length = active ? NSStatusItem.variableLength : NSStatusItem.squareLength
-        button.imageScaling = .scaleNone
-        button.image = active ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, history: performance.history,
-                                                           configuration: performanceConfig, needsAttention: needsAttention)
-                              : BrandMark.menuBarImage(needsAttention: needsAttention)
-        let name = state.allGood ? L("Mac顺") : L("Mac顺：需要授权")
-        let values = active ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" } : []
-        let description = ([name] + values).joined(separator: "\n")
-        button.toolTip = description
-        button.setAccessibilityLabel(name)
-        button.setAccessibilityValue(values.joined(separator: ", "))
+        if layoutChanged || imageKey != lastImageKey {
+            lastImageKey = imageKey
+            let image = active
+                ? PerformanceMenuBarImage.make(snapshot: performance.snapshot, history: performance.history,
+                                               configuration: performanceConfig, needsAttention: needsAttention)
+                : BrandMark.menuBarImage(needsAttention: needsAttention)
+            if layoutChanged {
+                lastLayoutKey = layoutKey
+                if active {
+                    // 配置变化时先按系统默认边距量一次实际宽度，再锁定为固定宽度，避免后续每次刷新都触发 AutoLayout 和状态栏几何 IPC。
+                    item.length = NSStatusItem.variableLength
+                    button.image = image
+                    let measured = button.frame.width
+                    item.length = ceil(measured >= image.size.width ? measured : image.size.width + 16)
+                } else {
+                    item.length = NSStatusItem.squareLength
+                    button.image = image
+                }
+                refreshToolTipRegion(on: button)
+            } else {
+                button.image = image
+            }
+        }
+
+        if lastAllGood != state.allGood {
+            lastAllGood = state.allGood
+            button.setAccessibilityLabel(state.allGood ? L("Mac顺") : L("Mac顺：需要授权"))
+        }
+        // 悬停提示改由 NSViewToolTipOwner 按需生成，避免每 2 秒无悬停时频繁重建提示与追踪区域；
+        // 无障碍读数仅在配置变更或开启旁白时同步更新。
+        if layoutChanged || NSWorkspace.shared.isVoiceOverEnabled {
+            let values = active ? performanceConfig.metrics.map { "\($0.title)：\(performance.snapshot.text($0))" } : []
+            let accessibilityKey = AccessibilityKey(allGood: state.allGood, values: values)
+            if accessibilityKey != lastAccessibilityKey {
+                lastAccessibilityKey = accessibilityKey
+                button.setAccessibilityValue(values.joined(separator: ", "))
+            }
+        }
     }
 
     @MainActor func menuNeedsUpdate(_ menu: NSMenu) {

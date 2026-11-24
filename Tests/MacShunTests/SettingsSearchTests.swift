@@ -53,6 +53,8 @@ struct SettingsSearchTests {
         #expect(finds("温度", .chipTemperature))
         #expect(finds("ram", .memoryUsage))
         #expect(finds("菜单栏", .performanceEnabled))
+        #expect(first("刷新间隔") == .performanceRefreshInterval)
+        #expect(finds("refresh", .performanceRefreshInterval))
     }
 
     @Test func noMatch() {

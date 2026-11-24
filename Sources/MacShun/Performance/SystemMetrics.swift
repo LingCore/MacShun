@@ -137,7 +137,7 @@ final class SystemMetricsSampler {
         mach_port_deallocate(mach_task_self_, host)
     }
 
-    func sample(metrics: [PerformanceMetric]) -> PerformanceSnapshot {
+    func sample(metrics: [PerformanceMetric], temperatureMinInterval: TimeInterval = 6) -> PerformanceSnapshot {
         var snapshot = PerformanceSnapshot()
         if metrics.contains(.cpu) {
             if let counters = readCPU() {
@@ -160,7 +160,7 @@ final class SystemMetricsSampler {
         }
         if metrics.contains(.temperature) {
             if temperatureReader == nil { temperatureReader = ChipTemperatureReader() }
-            snapshot.temperature = temperatureReader?.read()
+            snapshot.temperature = temperatureReader?.read(minInterval: temperatureMinInterval)
         } else {
             temperatureReader = nil
         }

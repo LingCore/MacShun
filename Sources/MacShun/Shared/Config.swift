@@ -296,14 +296,52 @@ enum PerformanceMenuBarStyle: String, Codable, CaseIterable {
     }
 }
 
+enum PerformanceRefreshInterval: Int, Codable, CaseIterable {
+    case twoSeconds = 2
+    case fiveSeconds = 5
+    case tenSeconds = 10
+
+    var title: String {
+        switch self {
+        case .twoSeconds: L("每 2 秒")
+        case .fiveSeconds: L("每 5 秒")
+        case .tenSeconds: L("每 10 秒")
+        }
+    }
+}
+
 struct PerformanceConfig: Codable, Equatable {
+    /// 仅包含影响菜单栏渲染外观的配置项（不含刷新间隔），避免调整采样周期时触发多余重绘。
+    struct VisualSignature: Equatable {
+        let enabled: Bool
+        let cpu: Bool
+        let gpu: Bool
+        let memory: Bool
+        let temperature: Bool
+        let menuBarStyle: PerformanceMenuBarStyle
+        let combineProcessors: Bool
+    }
+
     var enabled = true
     var cpu = true
-    var gpu = true
+    var gpu = false
     var memory = true
-    var temperature = true
+    var temperature = false
     var menuBarStyle: PerformanceMenuBarStyle = .text
     var combineProcessors = true
+    var refreshInterval: PerformanceRefreshInterval = .fiveSeconds
+
+    var visualSignature: VisualSignature {
+        VisualSignature(
+            enabled: enabled,
+            cpu: cpu,
+            gpu: gpu,
+            memory: memory,
+            temperature: temperature,
+            menuBarStyle: menuBarStyle,
+            combineProcessors: combineProcessors
+        )
+    }
 
     var metrics: [PerformanceMetric] {
         PerformanceMetric.allCases.filter { metric in
@@ -331,6 +369,7 @@ struct PerformanceConfig: Codable, Equatable {
         temperature = c.value(.temperature, default: d.temperature)
         menuBarStyle = c.value(.menuBarStyle, default: d.menuBarStyle)
         combineProcessors = c.value(.combineProcessors, default: d.combineProcessors)
+        refreshInterval = c.value(.refreshInterval, default: d.refreshInterval)
     }
 }
 

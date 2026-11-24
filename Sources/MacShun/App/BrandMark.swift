@@ -6,41 +6,76 @@ import AppKit
 /// 右上角整个是一片实心叶子（菜单栏太小，方叶的叶尖和叶脉看不清）。
 /// 做成模板图，系统会按菜单栏的深浅自动着色。
 enum BrandMark {
-    private static let normalMenuBarImage = makeMenuBarImage(needsAttention: false)
-    private static let attentionMenuBarImage = makeMenuBarImage(needsAttention: true)
+    private static let normalMenuBarCGImage = makeMenuBarCGImage(needsAttention: false)
+    private static let attentionMenuBarCGImage = makeMenuBarCGImage(needsAttention: true)
+    private static let normalMenuBarImage = makeMenuBarImage(cgImage: normalMenuBarCGImage, needsAttention: false)
+    private static let attentionMenuBarImage = makeMenuBarImage(cgImage: attentionMenuBarCGImage, needsAttention: true)
 
     /// 18×18 点；尺寸按 Retina 的 36×36 像素设计：线宽 3px，每条线的两边都落在整像素上。
     static func menuBarImage(needsAttention: Bool) -> NSImage {
         needsAttention ? attentionMenuBarImage : normalMenuBarImage
     }
 
-    private static func makeMenuBarImage(needsAttention: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
-            let c: CGFloat = 9, h: CGFloat = 2.25, loop: CGFloat = 2.25, r: CGFloat = 1.5
-            let path = commandPath(center: c, h: h, loop: loop, radius: r)
-            path.lineWidth = 1.5
-            path.lineJoinStyle = .round
-            NSColor.black.setStroke()
-            NSColor.black.setFill()
-            let leaf = leafPath(center: c, h: h, loop: loop)
+    static func menuBarCGImage(needsAttention: Bool) -> CGImage? {
+        needsAttention ? attentionMenuBarCGImage : normalMenuBarCGImage
+    }
 
-            if needsAttention {
-                // 右下角挖掉一块，放一个实心圆点，提示还需要授权
-                let dot = NSRect(x: 12, y: 12, width: 6, height: 6)
-                NSGraphicsContext.current?.saveGraphicsState()
-                let clip = NSBezierPath(rect: NSRect(x: 0, y: 0, width: 18, height: 18))
-                clip.append(NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).reversed)
-                clip.addClip()
-                path.stroke()
-                leaf.fill()
-                NSGraphicsContext.current?.restoreGraphicsState()
-                NSColor.black.setFill()
-                NSBezierPath(ovalIn: dot).fill()
-            } else {
-                path.stroke()
-                leaf.fill()
+    private static func drawMenuBar(needsAttention: Bool) {
+        let c: CGFloat = 9, h: CGFloat = 2.25, loop: CGFloat = 2.25, r: CGFloat = 1.5
+        let path = commandPath(center: c, h: h, loop: loop, radius: r)
+        path.lineWidth = 1.5
+        path.lineJoinStyle = .round
+        NSColor.black.setStroke()
+        NSColor.black.setFill()
+        let leaf = leafPath(center: c, h: h, loop: loop)
+
+        if needsAttention {
+            // 右下角挖掉一块，放一个实心圆点，提示还需要授权
+            let dot = NSRect(x: 12, y: 12, width: 6, height: 6)
+            NSGraphicsContext.current?.saveGraphicsState()
+            let clip = NSBezierPath(rect: NSRect(x: 0, y: 0, width: 18, height: 18))
+            clip.append(NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).reversed)
+            clip.addClip()
+            path.stroke()
+            leaf.fill()
+            NSGraphicsContext.current?.restoreGraphicsState()
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: dot).fill()
+        } else {
+            path.stroke()
+            leaf.fill()
+        }
+    }
+
+    private static func makeMenuBarCGImage(needsAttention: Bool) -> CGImage? {
+        let scale: CGFloat = 2
+        let pixelWidth = Int(18 * scale)
+        let pixelHeight = Int(18 * scale)
+        guard let cg = CGContext(
+            data: nil, width: pixelWidth, height: pixelHeight,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        cg.translateBy(x: 0, y: CGFloat(pixelHeight))
+        cg.scaleBy(x: scale, y: -scale)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: cg, flipped: true)
+        drawMenuBar(needsAttention: needsAttention)
+        NSGraphicsContext.restoreGraphicsState()
+        return cg.makeImage()
+    }
+
+    private static func makeMenuBarImage(cgImage: CGImage?, needsAttention: Bool) -> NSImage {
+        let size = NSSize(width: 18, height: 18)
+        let image: NSImage
+        if let cgImage {
+            image = NSImage(cgImage: cgImage, size: size)
+        } else {
+            image = NSImage(size: size, flipped: true) { _ in
+                drawMenuBar(needsAttention: needsAttention)
+                return true
             }
-            return true
         }
         image.isTemplate = true
         image.accessibilityDescription = L("Mac顺")

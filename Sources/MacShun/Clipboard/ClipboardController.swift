@@ -65,6 +65,11 @@ final class ClipboardController {
         watcher.recordPendingChange(sourceApp: bundleID)
     }
 
+    /// 检测到复制/剪切快捷键后短延迟补采一次，保证低频轮询下不漏记快速连续复制。
+    func noteCopyShortcut() {
+        watcher.scheduleQuickCheck()
+    }
+
     /// 按配置开始或停止记录与跨设备共享。
     func applyConfig() {
         let cfg = configStore.config.clipboard

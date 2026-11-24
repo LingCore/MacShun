@@ -521,6 +521,7 @@ enum ContentExtractor {
         let backgroundQoS: Bool
         var readBuffer = Data()
         var handled = 0
+        private let exited = DispatchSemaphore(value: 0)
         private let state = Locked((finished: false, cancelled: false))
 
         init?(executable: URL, backgroundQoS: Bool) {
@@ -533,6 +534,8 @@ enum ContentExtractor {
             process.standardInput = input
             process.standardOutput = output
             process.standardError = FileHandle.nullDevice
+            let exited = self.exited
+            process.terminationHandler = { _ in exited.signal() }
             do { try process.run() } catch { return nil }
             self.process = process
             self.stdinHandle = input.fileHandleForWriting
@@ -567,6 +570,7 @@ enum ContentExtractor {
         }
 
         /// 只在独占该 WorkerClient 的工作线程上调用，安全关闭管道并回收子进程。
+        /// 用 terminationHandler + 信号量有界等待，规避 GCD 线程上 NSConcreteTask.waitUntilExit 偶发永久挂死。
         func shutdown(forceKill: Bool) {
             if forceKill { cancel() }
             state.update { $0.finished = true }
@@ -574,15 +578,12 @@ enum ContentExtractor {
             try? stdoutHandle.close()
             if process.isRunning {
                 if !forceKill { process.terminate() }
-                let deadline = ProcessInfo.processInfo.systemUptime + 1.0
-                while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
-                    usleep(10_000)
-                }
-                if process.isRunning, process.processIdentifier > 0 {
-                    kill(process.processIdentifier, SIGKILL)
+                if exited.wait(timeout: .now() + 1.0) == .timedOut, process.isRunning {
+                    let pid = process.processIdentifier
+                    if pid > 0 { kill(pid, SIGKILL) }
+                    _ = exited.wait(timeout: .now() + 1.0)
                 }
             }
-            process.waitUntilExit()
         }
 
         enum CallResult {
@@ -617,7 +618,7 @@ enum ContentExtractor {
                     return .cancelled
                 }
                 var pfd = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP | POLLERR), revents: 0)
-                let ready = poll(&pfd, 1, 100)
+                let ready = poll(&pfd, 1, 250)
                 if ready < 0 {
                     if errno == EINTR { continue }
                     return .crashed

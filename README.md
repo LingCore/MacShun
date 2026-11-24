@@ -153,7 +153,7 @@
 
 #### 📊 性能监控
 
-- 菜单栏显示 **CPU、GPU、内存占用和芯片温度**，每 2 秒更新；在 **设置 › 性能监控** 可选择 **文字读数、纯图标仪表或折线走势** 样式（图标与折线样式支持合并显示 CPU 和 GPU），并按需勾选项目，关闭后停止采集。
+- 菜单栏默认每 5 秒显示 **CPU 和内存占用**，可在 **设置 › 性能监控** 按需开启 **GPU 与芯片温度**、切换 **每 2 / 5 / 10 秒** 刷新间隔（低电量模式自动进一步放缓），或选择 **文字读数、纯图标仪表、折线走势** 样式（图标与折线样式支持合并显示 CPU 和 GPU），关闭后停止采集。
 - 内存显示应用、联动和压缩内存占用，不包含可回收的文件缓存；多块 GPU 时显示占用最高的一块。
 - 温度取已识别的 CPU/GPU 传感器最高读数，不代表机身温度。部分机型可能无法读取 GPU 或温度，此时显示“暂不可用”。全程在本机读取，不需要管理员权限。
 
@@ -381,7 +381,7 @@ When you open Settings, Software Update, or File Search, the window opens on the
 
 #### 📊 Performance monitor
 
-- See **CPU, GPU, memory usage and chip temperature** in the menu bar, updated every 2 seconds. Choose **Text, Icons, or Trend** styles in **Settings › Performance Monitor** (icon and trend styles can combine CPU and GPU) and pick individual readings; disabled readings stop collecting.
+- See **CPU and memory usage** in the menu bar every 5 seconds by default; turn on **GPU and chip temperature** as needed, choose **Every 2 / 5 / 10 seconds** refresh intervals (slowed further in Low Power Mode), or switch between **Text, Icons, and Trend** styles in **Settings › Performance Monitor** (icon and trend styles can combine CPU and GPU); disabled readings stop collecting.
 - Memory includes app, wired and compressed memory, excluding reclaimable file caches. With multiple GPUs, the busiest GPU is shown.
 - Temperature is the highest reading from recognized CPU/GPU sensors, rather than the enclosure temperature. Unsupported GPU or temperature readings show “Unavailable.” All readings stay on the Mac and require no administrator access.
 

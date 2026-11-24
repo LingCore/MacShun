@@ -28,14 +28,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var maintenanceTimer: Timer?
     private var subscriptions: Set<AnyCancellable> = []
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     private var appObservers: [NSObjectProtocol] = []
     private var terminationSignal: DispatchSourceSignal?
+    private let launchedAt = ProcessInfo.processInfo.systemUptime
     private var asleep = false
     private var screenAsleep = false
+    private var screenLocked = false
     private var sessionInactive = false
     private var pollingEnabled = false
     private var maintenanceEnabled = false
-    private var timersPaused: Bool { asleep || screenAsleep || sessionInactive }
+    private var timersPaused: Bool { asleep || screenAsleep || screenLocked || sessionInactive }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         handleTerminationSignal()
@@ -67,10 +70,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateKeyboardList()
         }
         keyboard.onLayoutLearned = { [weak self] device, layout in self?.layoutLearned(device, layout) }
+        keyboard.onCopyOrCut = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.configStore.config.clipboard.enabled else { return }
+                self.clipboard.noteCopyShortcut()
+            }
+        }
         mouse.devices.onDevicesChanged = { [weak self] mice, _ in
-            self?.state.mice = mice
+            guard let self else { return }
+            self.state.mice = mice
+            self.scheduleMaintenanceTimer()
             // 新接上的鼠标要过一会儿才能设置。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.applyPointer() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.applyPointer() }
         }
         eventTaps = EventTapService(keyboard: keyboard, mouse: mouse)
         eventTaps.onStateChanged = { [weak self] running in
@@ -85,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         settingsWindow = SettingsWindowController(configStore: configStore, state: state, clipboard: clipboard)
+        settingsWindow.onVisibilityChanged = { [weak self] _ in self?.schedulePermissionTimer() }
         clipboard.sync.onIncomingPairing = { [weak self] in
             self?.settingsWindow.show(tab: .clipboard)
         }
@@ -178,6 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         maintenanceTimer = nil
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
+        distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        distributedObservers.removeAll()
         appObservers.forEach { NotificationCenter.default.removeObserver($0) }
         appObservers.removeAll()
         eventTaps?.stop()
@@ -261,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if includePointer { applyPointer() }
         Updater.shared.setAutomatic(config.update.automatic)
         schedulePermissionTimer()
+        scheduleMaintenanceTimer()
     }
 
     private func installLifecycleObservers() {
@@ -298,6 +313,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.updateBackgroundTimers()
             self.eventTaps?.verifyActive()
         })
+        let distributed = DistributedNotificationCenter.default()
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.screenLocked = true
+            self?.updateBackgroundTimers()
+        })
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.screenLocked = false
+            self.updateBackgroundTimers()
+            self.eventTaps?.verifyActive()
+        })
     }
 
     private func updateBackgroundTimers() {
@@ -318,13 +348,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 没有外接鼠标且未在进程内临时覆盖光标大小时，不需要周期性维护 HID / 光标属性。
+    private var needsPointerMaintenance: Bool {
+        !state.mice.isEmpty || configStore.config.mouse.cursorScale != nil
+    }
+
     private func scheduleMaintenanceTimer() {
-        guard maintenanceEnabled, !timersPaused else { return }
-        guard maintenanceTimer == nil else { return }
-        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
-            self?.applyPointer()
+        guard maintenanceEnabled, !timersPaused, needsPointerMaintenance else {
+            maintenanceTimer?.invalidate()
+            maintenanceTimer = nil
+            return
         }
-        timer.tolerance = 5
+        guard maintenanceTimer == nil else { return }
+        let timer = Timer(timeInterval: 120, repeats: true) { [weak self] _ in
+            self?.applyPointer(fromMaintenance: true)
+        }
+        timer.tolerance = 30
         RunLoop.main.add(timer, forMode: .default)
         maintenanceTimer = timer
     }
@@ -332,15 +371,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var pointerApplyScheduled = false
 
     /// 设置指针加速、速度和光标大小。短时间内的多次调用（例如几个鼠标接口同时连上）合并成一次。
-    private func applyPointer() {
+    private func applyPointer(fromMaintenance: Bool = false) {
         // 光标大小不需要权限。以前的版本把光标大小存在 Mac顺 自己的设置里，能写进系统设置就搬过去
         if let scale = configStore.config.mouse.cursorScale, !cursor.writeDenied, cursor.setSystemScale(scale) {
             configStore.config.mouse.cursorScale = nil
+            scheduleMaintenanceTimer()
         }
-        let cursorScale = cursor.systemScale()
-        cursor.apply(configStore.config.mouse, systemScale: cursorScale)
-        if cursorScale != state.systemCursorScale { state.systemCursorScale = cursorScale }
-        guard state.inputMonitoringGranted || state.accessibilityGranted, !pointerApplyScheduled else { return }
+        if !fromMaintenance {
+            let cursorScale = cursor.systemScale()
+            cursor.apply(configStore.config.mouse, systemScale: cursorScale)
+            if cursorScale != state.systemCursorScale { state.systemCursorScale = cursorScale }
+        } else if configStore.config.mouse.cursorScale != nil {
+            cursor.apply(configStore.config.mouse)
+        }
+        guard state.inputMonitoringGranted || state.accessibilityGranted else { return }
+        if fromMaintenance {
+            guard !state.mice.isEmpty else { return }
+            pointer.apply(configStore.config.mouse)
+            return
+        }
+        guard !pointerApplyScheduled else { return }
         pointerApplyScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self else { return }
@@ -379,14 +429,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var tapRetryTicks = 0
 
-    private var needsFastPermissionPolling: Bool {
-        !state.allGood
-            || (configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed)
-            || PermissionGuide.shared.isActive
-            || SelfTest.isRequested
+    /// 计算权限轮询间隔：授权引导中或设置窗打开且缺权限时 1 秒快速感知；
+    /// 后台长期缺剪贴板权限不再 1 秒空转；一切正常时降到 60 秒省电。
+    static func permissionPollingInterval(
+        allGood: Bool,
+        clipboardNeedsPermission: Bool,
+        settingsVisible: Bool,
+        guideActive: Bool,
+        selfTest: Bool,
+        uptimeSinceLaunch: TimeInterval
+    ) -> TimeInterval {
+        if guideActive || selfTest { return 1 }
+        if !allGood {
+            return (settingsVisible || uptimeSinceLaunch < 120) ? 1 : 15
+        }
+        if clipboardNeedsPermission && settingsVisible { return 1 }
+        return 60
     }
 
-    /// 缺少必需权限或事件拦截未就绪时每秒轮询，授权后马上启用；一切正常时降频到 15 秒省电。
+    /// 缺少必需权限或设置窗口打开等待授权时每秒轮询；常态降频到 60 秒省电。
     private func startPermissionPolling() {
         pollingEnabled = true
         schedulePermissionTimer()
@@ -394,14 +455,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func schedulePermissionTimer() {
         guard pollingEnabled, !timersPaused else { return }
-        let desired: TimeInterval = needsFastPermissionPolling ? 1 : 15
+        let desired = Self.permissionPollingInterval(
+            allGood: state.allGood,
+            clipboardNeedsPermission: configStore.config.clipboard.enabled && state.pasteboardAccess != .allowed,
+            settingsVisible: settingsWindow?.isVisible == true,
+            guideActive: PermissionGuide.shared.isActive,
+            selfTest: SelfTest.isRequested,
+            uptimeSinceLaunch: ProcessInfo.processInfo.systemUptime - launchedAt
+        )
         guard permissionTimer == nil || permissionTimerInterval != desired else { return }
         permissionTimer?.invalidate()
         permissionTimerInterval = desired
         let timer = Timer(timeInterval: desired, repeats: true) { [weak self] _ in
             self?.pollPermissions()
         }
-        timer.tolerance = desired >= 10 ? 3 : 0.2
+        timer.tolerance = desired >= 60 ? 15 : (desired >= 10 ? 3 : 0.2)
         RunLoop.main.add(timer, forMode: .default)
         permissionTimer = timer
     }

@@ -80,19 +80,47 @@ struct PerformanceTests {
         #expect(!ChipTemperatureReader.sensorKeys.contains("TB0T")) // 不以电池温度冒充芯片温度
     }
 
+    private static func allMetricsConfig(
+        style: PerformanceMenuBarStyle = .text,
+        combineProcessors: Bool = true
+    ) -> PerformanceConfig {
+        var config = PerformanceConfig()
+        config.cpu = true
+        config.gpu = true
+        config.memory = true
+        config.temperature = true
+        config.menuBarStyle = style
+        config.combineProcessors = combineProcessors
+        return config
+    }
+
     @Test func olderConfigAndPartialPreferencesSurvive() throws {
         let old = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"keyboard":{"enabled":false}}"#.utf8))
         #expect(!old.keyboard.enabled)
         #expect(old.performance == PerformanceConfig())
+        #expect(old.performance.metrics == [.cpu, .memory])
+        #expect(old.performance.refreshInterval == .fiveSeconds)
+        // 老版本已显式保存四项全开的配置文件时，升级后保留原选择，同时刷新间隔落到默认省电档位。
+        let legacyAllOn = try JSONDecoder().decode(
+            AppConfig.self,
+            from: Data(#"{"performance":{"cpu":true,"gpu":true,"memory":true,"temperature":true}}"#.utf8)
+        )
+        #expect(legacyAllOn.performance.metrics == [.cpu, .gpu, .memory, .temperature])
+        #expect(legacyAllOn.performance.refreshInterval == .fiveSeconds)
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(#"{"performance":{"gpu":false,"temperature":false}}"#.utf8))
         #expect(config.performance.metrics == [.cpu, .memory])
         #expect(config.performance.menuBarStyle == .text)
         var updated = config
         updated.performance.menuBarStyle = .trend
         updated.performance.combineProcessors = false
+        updated.performance.refreshInterval = .tenSeconds
         #expect(try JSONDecoder().decode(AppConfig.self, from: JSONEncoder().encode(updated)) == updated)
-        let future = try JSONDecoder().decode(PerformanceConfig.self, from: Data(#"{"menuBarStyle":"unknown","cpu":false}"#.utf8))
+        let future = try JSONDecoder().decode(
+            PerformanceConfig.self,
+            from: Data(#"{"menuBarStyle":"unknown","refreshInterval":999,"cpu":false}"#.utf8)
+        )
         #expect(future.menuBarStyle == .text)
+        #expect(future.refreshInterval == .fiveSeconds)
         #expect(!future.cpu)
     }
 
@@ -123,15 +151,15 @@ struct PerformanceTests {
             (.text, true, 206), (.icons, true, 86), (.icons, false, 109), (.trend, true, 163), (.trend, false, 175),
         ]
         for (style, combined, width) in variants {
-            var config = PerformanceConfig()
-            config.menuBarStyle = style
-            config.combineProcessors = combined
+            let config = Self.allMetricsConfig(style: style, combineProcessors: combined)
             let pending = PerformanceMenuBarImage.make(snapshot: PerformanceSnapshot(), configuration: config, needsAttention: false)
             let full = PerformanceMenuBarImage.make(snapshot: loaded, configuration: config, needsAttention: true)
             #expect(pending.size == NSSize(width: width, height: 22))
             #expect(pending.size == full.size)
             #expect(full.isTemplate)
         }
+        // 默认只开 CPU + 内存时宽度更紧凑（28 + 40 + 6 + 40 = 114）。
+        #expect(PerformanceMenuBarImage.width(for: PerformanceConfig()) == 114)
         #expect(loaded.text(.gpu, compact: true) == "0%")
         #expect(PerformanceSnapshot().text(.gpu, compact: true) == "—")
     }
@@ -183,9 +211,7 @@ struct PerformanceTests {
         )
         for style in [PerformanceMenuBarStyle.text, .icons, .trend] {
             for combined in [true, false] {
-                var config = PerformanceConfig()
-                config.menuBarStyle = style
-                config.combineProcessors = combined
+                let config = Self.allMetricsConfig(style: style, combineProcessors: combined)
                 let image = PerformanceMenuBarImage.make(
                     snapshot: latest, history: history, configuration: config, needsAttention: !combined
                 )
@@ -207,5 +233,103 @@ struct PerformanceTests {
                 #expect(hasInk)
             }
         }
+    }
+
+    @Test func smcHotKeySelectionCoversEachFamilyAndCapsCount() {
+        let readings: [(key: String, value: Double)] = [
+            ("Tp00", 68.4), ("Tp04", 63.7), ("Tp0C", 69.9), ("Tp0G", 63.8),
+            ("Tg0U", 47.0), ("Tg0X", 47.3), ("Tg1Y", 47.6), ("Tg0a", 47.6),
+            ("Tf04", 50.4), ("Tf14", 55.5), ("Tf19", 55.5),
+        ]
+        let selected = ChipTemperatureReader.selectHotKeys(from: readings, perFamily: 2)
+        #expect(selected == ["Tp0C", "Tp00", "Tg1Y", "Tg0a", "Tf14", "Tf19"])
+        #expect(ChipTemperatureReader.selectHotKeys(from: [], perFamily: 2).isEmpty)
+    }
+
+    @Test @MainActor func visualKeySkipsRedrawWhenRenderedPixelsMatch() {
+        let textConfig = Self.allMetricsConfig(style: .text)
+        var textConfigSlow = textConfig
+        textConfigSlow.refreshInterval = .tenSeconds
+        let first = PerformanceSnapshot(
+            cpu: 12.1, gpu: 3.2,
+            memory: MemoryUsage(used: 50, total: 100),
+            temperature: 48.1,
+            sampledAt: Date(timeIntervalSince1970: 100)
+        )
+        let second = PerformanceSnapshot(
+            cpu: 12.4, gpu: 3.1,
+            memory: MemoryUsage(used: 50, total: 100),
+            temperature: 48.4,
+            sampledAt: Date(timeIntervalSince1970: 102)
+        )
+        let changed = PerformanceSnapshot(
+            cpu: 14.0, gpu: 3.1,
+            memory: MemoryUsage(used: 50, total: 100),
+            temperature: 48.4,
+            sampledAt: Date(timeIntervalSince1970: 104)
+        )
+        #expect(PerformanceMenuBarImage.visualKey(snapshot: first, configuration: textConfig, needsAttention: false, scale: 2)
+                == PerformanceMenuBarImage.visualKey(snapshot: second, configuration: textConfig, needsAttention: false, scale: 2))
+        // 仅切换刷新间隔不改变菜单栏视觉输出，VisualKey 保持一致。
+        #expect(PerformanceMenuBarImage.visualKey(snapshot: first, configuration: textConfig, needsAttention: false, scale: 2)
+                == PerformanceMenuBarImage.visualKey(snapshot: first, configuration: textConfigSlow, needsAttention: false, scale: 2))
+        #expect(PerformanceMenuBarImage.visualKey(snapshot: first, configuration: textConfig, needsAttention: false, scale: 2)
+                != PerformanceMenuBarImage.visualKey(snapshot: changed, configuration: textConfig, needsAttention: false, scale: 2))
+
+        let iconConfig = Self.allMetricsConfig(style: .icons)
+        let iconA = PerformanceSnapshot(cpu: 12.0, gpu: 10.0, memory: MemoryUsage(used: 50, total: 100), temperature: 48.0)
+        let iconB = PerformanceSnapshot(cpu: 13.0, gpu: 10.0, memory: MemoryUsage(used: 50, total: 100), temperature: 48.0)
+        let iconJump = PerformanceSnapshot(cpu: 35.0, gpu: 10.0, memory: MemoryUsage(used: 50, total: 100), temperature: 48.0)
+        #expect(PerformanceMenuBarImage.visualKey(snapshot: iconA, configuration: iconConfig, needsAttention: false, scale: 2)
+                == PerformanceMenuBarImage.visualKey(snapshot: iconB, configuration: iconConfig, needsAttention: false, scale: 2))
+        #expect(PerformanceMenuBarImage.visualKey(snapshot: iconA, configuration: iconConfig, needsAttention: false, scale: 2)
+                != PerformanceMenuBarImage.visualKey(snapshot: iconJump, configuration: iconConfig, needsAttention: false, scale: 2))
+        #expect(PerformanceMenuBarImage.width(for: iconConfig) == 86)
+        #expect(PerformanceMenuBarImage.width(for: textConfig) == 206)
+    }
+
+    @Test @MainActor func lowPowerModeAndBackgroundPermissionPollingThrottleWakeups() {
+        let fastNormal = PerformanceMonitor.samplingCadence(for: .twoSeconds, lowPowerMode: false)
+        let fastLowPower = PerformanceMonitor.samplingCadence(for: .twoSeconds, lowPowerMode: true)
+        #expect(fastNormal.interval == .seconds(2) && fastNormal.temperatureInterval == 6)
+        #expect(fastLowPower.interval == .seconds(5) && fastLowPower.temperatureInterval == 10)
+
+        let defaultNormal = PerformanceMonitor.samplingCadence(lowPowerMode: false)
+        let defaultLowPower = PerformanceMonitor.samplingCadence(lowPowerMode: true)
+        #expect(defaultNormal.interval == .seconds(5) && defaultNormal.temperatureInterval == 10)
+        #expect(defaultLowPower.interval == .seconds(10) && defaultLowPower.temperatureInterval == 20)
+
+        let slowNormal = PerformanceMonitor.samplingCadence(for: .tenSeconds, lowPowerMode: false)
+        let slowLowPower = PerformanceMonitor.samplingCadence(for: .tenSeconds, lowPowerMode: true)
+        #expect(slowNormal.interval == .seconds(10) && slowNormal.temperatureInterval == 20)
+        #expect(slowLowPower.interval == .seconds(15) && slowLowPower.temperatureInterval == 30)
+
+        let normalClip = ClipboardWatcher.pollCadence(lowPowerMode: false)
+        let lowPowerClip = ClipboardWatcher.pollCadence(lowPowerMode: true)
+        #expect(normalClip.interval >= 1.5 && normalClip.tolerance >= 0.5)
+        #expect(lowPowerClip.interval > normalClip.interval)
+
+        let steadyBeacon = SyncDiscovery.beaconCadence(highFrequency: false)
+        let pairingBeacon = SyncDiscovery.beaconCadence(highFrequency: true)
+        #expect(steadyBeacon.interval == .seconds(15))
+        #expect(pairingBeacon.interval == .seconds(5))
+
+        // 剪贴板未授权但设置窗口关闭时，不能陷入永久 1 秒轮询。
+        #expect(AppDelegate.permissionPollingInterval(
+            allGood: true, clipboardNeedsPermission: true, settingsVisible: false,
+            guideActive: false, selfTest: false, uptimeSinceLaunch: 600
+        ) == 60)
+        #expect(AppDelegate.permissionPollingInterval(
+            allGood: true, clipboardNeedsPermission: true, settingsVisible: true,
+            guideActive: false, selfTest: false, uptimeSinceLaunch: 600
+        ) == 1)
+        #expect(AppDelegate.permissionPollingInterval(
+            allGood: false, clipboardNeedsPermission: false, settingsVisible: false,
+            guideActive: false, selfTest: false, uptimeSinceLaunch: 600
+        ) == 15)
+        #expect(AppDelegate.permissionPollingInterval(
+            allGood: false, clipboardNeedsPermission: false, settingsVisible: false,
+            guideActive: true, selfTest: false, uptimeSinceLaunch: 600
+        ) == 1)
     }
 }

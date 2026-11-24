@@ -37,10 +37,12 @@ struct CaptureClipboard {
         let copiedChangeCount = Locked<Int?>(nil)
         private var timer: Timer?
         private var observers: [NSObjectProtocol] = []
+        private var distributedObservers: [NSObjectProtocol] = []
         private var asleep = false
         private var screenAsleep = false
+        private var screenLocked = false
         private var sessionInactive = false
-        private var paused: Bool { asleep || screenAsleep || sessionInactive }
+        private var paused: Bool { asleep || screenAsleep || screenLocked || sessionInactive }
 
         init(pasteboard: NSPasteboard) {
             self.pasteboard = pasteboard
@@ -49,6 +51,7 @@ struct CaptureClipboard {
         deinit {
             timer?.invalidate()
             observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+            distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         }
 
         func markCopied(_ changeCount: Int) {
@@ -65,10 +68,11 @@ struct CaptureClipboard {
         private func scheduleTimer() {
             guard Thread.isMainThread, !paused, copiedChangeCount.get() != nil else { return }
             timer?.invalidate()
-            let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            // 常规应用切换和 ClipboardWatcher 都会主动同步，这里仅作低频兜底，减少常驻唤醒。
+            let t = Timer(timeInterval: 3.0, repeats: true) { [weak self] _ in
                 self?.refreshIfNeeded()
             }
-            t.tolerance = 0.25
+            t.tolerance = 1.0
             RunLoop.main.add(t, forMode: .default)
             timer = t
         }
@@ -107,6 +111,17 @@ struct CaptureClipboard {
             })
             observers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
                 self?.setLifecycleFlag { $0.sessionInactive = false }
+            })
+            let distributed = DistributedNotificationCenter.default()
+            distributedObservers.append(distributed.addObserver(
+                forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.setLifecycleFlag { $0.screenLocked = true }
+            })
+            distributedObservers.append(distributed.addObserver(
+                forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.setLifecycleFlag { $0.screenLocked = false }
             })
         }
 

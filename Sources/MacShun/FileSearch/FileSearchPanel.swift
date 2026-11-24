@@ -966,6 +966,7 @@ final class FileSearchModel: ObservableObject {
     /// 搜索框开着
     var isShown = false {
         didSet {
+            if isShown != oldValue { index.setPanelVisible(isShown) }
             if !isShown {
                 closeQuickLook(refocus: false)
                 pendingSelectionAction = nil

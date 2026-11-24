@@ -604,7 +604,15 @@ final class FileIndex: ObservableObject {
     /// 正在扫描、还没并进索引的位置。这期间这些位置下的变化先记下来，扫完再处理，免得漏掉或被扫描结果盖掉
     private var pendingRoots: [String] = []
     private var deferredChanges: [String: Bool] = [:]
+    private var pendingLocalChanges: [String: Bool] = [:]
+    private var pendingLocalFlushWork: DispatchWorkItem?
     private var pendingDriveChanges = FileIndexChanges()
+    /// 后台收起面板时合并本地目录事件，避免高频日志/构建写入反复触发目录重读与字典拷贝。
+    private static let backgroundLocalDebounce: TimeInterval = 3.0
+    /// 搜索面板是否处于显示状态（主线程写，索引队列读）。
+    private let isPanelActive = Locked(false)
+    /// 睡眠、息屏或锁屏时暂存本地目录变化，醒来后统一合并刷新。
+    private let isBackgroundPaused = Locked(false)
     /// 搜索只读一次快照，避免匹配和后台索引更新互相占住队列。
     private let searchQueue = DispatchQueue(label: "MacShun.FileIndex.search", qos: .userInitiated)
     /// 仅在 searchQueue 上缓存已读过的直系子项。事件发布新快照时也会重新核对。
@@ -637,10 +645,14 @@ final class FileIndex: ObservableObject {
     /// 以下只在主线程上读写
     private var generation = 0
     private var started = false
-    private var suspended = false
+    private var asleep = false
+    private var screenAsleep = false
+    private var screenLocked = false
+    private var suspended: Bool { asleep || screenAsleep || screenLocked }
     private var activeDriveScans = 0
     private let driveRootTokens = Locked<(next: Int, byRoot: [String: Int])>((0, [:]))
     private var volumeObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     /// 这次扫描的外接硬盘
     private var currentDrives: [String] = []
     private var indexedLocations: [FileSearchLocation] = []
@@ -666,6 +678,7 @@ final class FileIndex: ObservableObject {
 
     deinit {
         volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         networkPoll?.invalidate()
         networkJobs.values.forEach { $0.set(true) }
         let existing = localStreams + externalStreams
@@ -747,7 +760,10 @@ final class FileIndex: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        suspended = false
+        asleep = false
+        screenAsleep = false
+        screenLocked = false
+        isBackgroundPaused.set(false)
         rebuild()
         pollNetworkLocations()
         // 接上或拔掉外接硬盘时只增量增删变化的那块盘，不重扫整个个人文件夹。
@@ -761,23 +777,69 @@ final class FileIndex: ObservableObject {
                 }
             })
         }
-        for name in [NSWorkspace.screensDidSleepNotification, NSWorkspace.willSleepNotification] {
-            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self, self.started else { return }
-                self.suspended = true
-                self.networkPoll?.invalidate()
-                self.networkPoll = nil
-            })
+        volumeObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.setSuspendedFlag { $0.asleep = true }
+        })
+        volumeObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.setSuspendedFlag { $0.asleep = false }
+        })
+        volumeObservers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.setSuspendedFlag { $0.screenAsleep = true }
+        })
+        volumeObservers.append(center.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.setSuspendedFlag { $0.screenAsleep = false }
+        })
+        let distributed = DistributedNotificationCenter.default()
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.setSuspendedFlag { $0.screenLocked = true }
+        })
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.setSuspendedFlag { $0.screenLocked = false }
+        })
+    }
+
+    private func setSuspendedFlag(_ update: (FileIndex) -> Void) {
+        guard started else { return }
+        let wasSuspended = suspended
+        update(self)
+        let nowSuspended = suspended
+        guard wasSuspended != nowSuspended else { return }
+        isBackgroundPaused.set(nowSuspended)
+        if nowSuspended {
+            networkPoll?.invalidate()
+            networkPoll = nil
+        } else {
+            flushPendingLocalChanges()
+            pollNetworkLocations()
+            if includeExternalDrives || indexedLocations.contains(where: { $0.share == nil && $0.path.hasPrefix("/Volumes/") }) {
+                reconcileDrives()
+            }
         }
-        for name in [NSWorkspace.screensDidWakeNotification, NSWorkspace.didWakeNotification] {
-            volumeObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                guard let self, self.started, self.suspended else { return }
-                self.suspended = false
-                self.pollNetworkLocations()
-                if self.includeExternalDrives || self.indexedLocations.contains(where: { $0.share == nil && $0.path.hasPrefix("/Volumes/") }) {
-                    self.reconcileDrives()
-                }
-            })
+    }
+
+    /// 面板打开时立即冲刷 FSEvents 与合并中的本地变化；收起后恢复后台合并，降低常驻唤醒。
+    func setPanelVisible(_ visible: Bool) {
+        let changed = isPanelActive.update { old in
+            guard old != visible else { return false }
+            old = visible
+            return true
+        }
+        guard changed, visible, started else { return }
+        watchQueue.async {
+            for stream in self.localStreams { FSEventStreamFlushAsync(stream) }
+        }
+        flushPendingLocalChanges()
+    }
+
+    private func flushPendingLocalChanges() {
+        let gen = generation
+        queue.async {
+            guard self.activeGeneration == gen else { return }
+            self.applyPendingLocalChanges()
         }
     }
 
@@ -785,7 +847,10 @@ final class FileIndex: ObservableObject {
     func stop() {
         guard started else { return }
         started = false
-        suspended = false
+        asleep = false
+        screenAsleep = false
+        screenLocked = false
+        isBackgroundPaused.set(false)
         activeDriveScans = 0
         generation += 1
         let gen = generation
@@ -798,6 +863,8 @@ final class FileIndex: ObservableObject {
         watchQueue.async { self.stopWatching() }
         volumeObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         volumeObservers = []
+        distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        distributedObservers = []
         networkPoll?.invalidate()
         networkPoll = nil
         networkJobs.values.forEach { $0.set(true) }
@@ -810,6 +877,9 @@ final class FileIndex: ObservableObject {
             self.scannedRoots = []
             self.pendingRoots = []
             self.deferredChanges = [:]
+            self.pendingLocalFlushWork?.cancel()
+            self.pendingLocalFlushWork = nil
+            self.pendingLocalChanges = [:]
             self.pendingDriveChanges = FileIndexChanges()
             self.plannedRoots = []
         }
@@ -950,6 +1020,9 @@ final class FileIndex: ObservableObject {
             self.plannedRoots = roots
             self.pendingRoots = roots
             self.deferredChanges = [:]
+            self.pendingLocalFlushWork?.cancel()
+            self.pendingLocalFlushWork = nil
+            self.pendingLocalChanges = [:]
             self.pendingDriveChanges = FileIndexChanges()
             self.contentIndex?.setSearchRoots(roots)
             if !retired.isEmpty {
@@ -1591,7 +1664,8 @@ final class FileIndex: ObservableObject {
         let directories = roots.filter { !$0.hasPrefix("/Volumes/") }
         restartExternalWatching(external)
         if !directories.isEmpty {
-            if let stream = startWatching(directories, fileEvents: false, latency: 0.25) {
+            // 1 秒事件合并降低常驻 fseventsd 唤醒；打开搜索面板时会主动冲刷且优先核对最近/访达目录。
+            if let stream = startWatching(directories, fileEvents: false, latency: 1.0) {
                 localStreams.append(stream)
             } else {
                 Log.app.error("文件索引：无法跟踪文件变化")
@@ -1621,7 +1695,7 @@ final class FileIndex: ObservableObject {
             if !changes.files.isEmpty || list.first?.hasPrefix("/Volumes/") == true {
                 index.enqueueDriveChanges(changes)
             } else {
-                index.apply(changes.directories)
+                index.enqueueLocalChanges(changes.directories)
             }
         }
         var flags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagWatchRoot)
@@ -1631,7 +1705,7 @@ final class FileIndex: ObservableObject {
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
         ) else { return nil }
         if !fileEvents && roots.contains(Self.home) {
-            let excluded = [Self.home + "/Library", Self.home + "/.Trash"]
+            let excluded = [Self.home + "/Library", Self.home + "/.Trash", Self.home + "/.cache"]
                 .filter { excl in !roots.contains { SearchVolume.contains($0, under: excl) } }
             if !excluded.isEmpty {
                 FSEventStreamSetExclusionPaths(stream, excluded as CFArray)
@@ -1644,6 +1718,40 @@ final class FileIndex: ObservableObject {
             return nil
         }
         return stream
+    }
+
+    private func enqueueLocalChanges(_ directories: [String: Bool]) {
+        guard !directories.isEmpty else { return }
+        for (folder, recursive) in directories {
+            pendingLocalChanges[folder] = (pendingLocalChanges[folder] ?? false) || recursive
+        }
+        if isBackgroundPaused.get() {
+            pendingLocalFlushWork?.cancel()
+            pendingLocalFlushWork = nil
+            return
+        }
+        if isPanelActive.get() {
+            applyPendingLocalChanges()
+            return
+        }
+        guard pendingLocalFlushWork == nil else { return }
+        let gen = activeGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.activeGeneration == gen else { return }
+            self.pendingLocalFlushWork = nil
+            guard !self.isBackgroundPaused.get() else { return }
+            self.applyPendingLocalChanges()
+        }
+        pendingLocalFlushWork = work
+        queue.asyncAfter(deadline: .now() + Self.backgroundLocalDebounce, execute: work)
+    }
+
+    private func applyPendingLocalChanges() {
+        pendingLocalFlushWork?.cancel()
+        pendingLocalFlushWork = nil
+        let changes = pendingLocalChanges
+        pendingLocalChanges = [:]
+        if !changes.isEmpty { apply(changes) }
     }
 
     /// 本程序自己动了这个文件夹里的文件（右键“移到废纸篓”）：马上重新列出来，不等 FSEvents。
@@ -1721,7 +1829,8 @@ final class FileIndex: ObservableObject {
             }
             guard isIndexed(folder) else { continue }
             // 在目录事件上核销查询提前显示的变化。创建和删除可能被合并，最终快照数量不变。
-            if pendingRecentFolders.update({ $0.remove(folder) }) != nil { touched = true }
+            let hadPendingRecent = pendingRecentFolders.update { $0.remove(folder) } != nil
+            if hadPendingRecent { touched = true }
             if recursive, folder.hasPrefix("/Volumes/") {
                 // 外接盘卸载时仅清内存目录，不触发内容索引删库，重新接回时保留正文索引。
                 if !mountedVolumes().contains(where: { $0.contains(folder) }) {
@@ -1730,6 +1839,13 @@ final class FileIndex: ObservableObject {
                 } else {
                     rescanDriveSubtree(folder, isCancelled: cancelled)
                 }
+                continue
+            }
+            // 不收录正文的目录（点号工具目录、缓存目录等）在只改写已有文件内容时目录元数据不变，
+            // 先做一次 lstat 核对指纹，一致则直接跳过整个 contentsOfDirectory 枚举。
+            if !recursive, !hadPendingRecent, !Self.indexesContents(in: folder),
+               let existing = folders[folder], existing.directoryFingerprint != 0,
+               let stamp = DirectoryStamp(path: folder), stamp.hashValue == existing.directoryFingerprint {
                 continue
             }
             // 主盘沿用整树替换

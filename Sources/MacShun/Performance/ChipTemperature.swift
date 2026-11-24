@@ -51,8 +51,18 @@ final class ChipTemperatureReader {
     private var metadata: [String: SMCReadPacket.KeyInfo] = [:]
     private var consecutiveFailures: [String: Int] = [:]
     private var availableKeys: [String]?
+    private var hotKeys: [String]?
+    private var lastFullScanAt: TimeInterval = 0
+    private var lastReadAt: TimeInterval = 0
+    private var cachedValue: Double?
     private var retryAfter: TimeInterval = 0
     private var scanBackoff: TimeInterval = 30
+
+    /// 定期全量校准所有传感器的间隔，用于跟踪负载在 CPU 核心簇与 GPU 之间的迁移。
+    static let fullScanInterval: TimeInterval = 60
+    /// 传感器超过该数量时启用热键子集采样，常规轮询只读每族最热的若干键以大幅减少 SMC IPC。
+    static let hotSubsetThreshold = 6
+    static let hotKeysPerFamily = 2
 
     init() {
         openConnection()
@@ -60,6 +70,16 @@ final class ChipTemperatureReader {
 
     deinit {
         if connection != 0 { IOServiceClose(connection) }
+    }
+
+    private func resetConnectionState() {
+        availableKeys = nil
+        hotKeys = nil
+        lastFullScanAt = 0
+        lastReadAt = 0
+        cachedValue = nil
+        metadata.removeAll()
+        consecutiveFailures.removeAll()
     }
 
     private func openConnection() {
@@ -74,9 +94,7 @@ final class ChipTemperatureReader {
         if IOServiceOpen(service, mach_task_self_, 0, &connection) == KERN_SUCCESS {
             openBackoff = 5
             openRetryAfter = 0
-            availableKeys = nil
-            metadata.removeAll()
-            consecutiveFailures.removeAll()
+            resetConnectionState()
         } else {
             connection = 0
             openRetryAfter = ProcessInfo.processInfo.systemUptime + openBackoff
@@ -84,8 +102,11 @@ final class ChipTemperatureReader {
         }
     }
 
-    func read() -> Double? {
+    func read(minInterval: TimeInterval = 0) -> Double? {
         let now = ProcessInfo.processInfo.systemUptime
+        if minInterval > 0, lastReadAt > 0, now - lastReadAt < minInterval {
+            return cachedValue
+        }
         if connection == 0 {
             guard now >= openRetryAfter else { return nil }
             openConnection()
@@ -94,6 +115,8 @@ final class ChipTemperatureReader {
         if availableKeys == nil || (availableKeys?.isEmpty == true && now >= retryAfter) {
             let discovered = Self.sensorKeys.filter { keyInfo($0) != nil }
             availableKeys = discovered
+            hotKeys = nil
+            lastFullScanAt = 0
             if discovered.isEmpty {
                 retryAfter = now + scanBackoff
                 scanBackoff = min(scanBackoff * 2, 600)
@@ -101,30 +124,85 @@ final class ChipTemperatureReader {
                 scanBackoff = 30
             }
         }
-        guard let keys = availableKeys, !keys.isEmpty else { return nil }
+        guard let allKeys = availableKeys, !allKeys.isEmpty else { return nil }
+        let useFullScan = allKeys.count <= Self.hotSubsetThreshold
+            || hotKeys == nil
+            || hotKeys?.isEmpty == true
+            || (now - lastFullScanAt) >= Self.fullScanInterval
+        let targetKeys = useFullScan ? allKeys : (hotKeys ?? allKeys)
+
         // 只用已识别的 CPU/GPU 芯片传感器，不用电池、硬盘或机身温度代替。
         var warmest: Double?
+        var readings: [(key: String, value: Double)] = []
+        if useFullScan && allKeys.count > Self.hotSubsetThreshold {
+            readings.reserveCapacity(allKeys.count)
+        }
         var retired: [String] = []
-        for key in keys {
+        for key in targetKeys {
             if let value = readValue(key, retired: &retired) {
                 warmest = warmest.map { max($0, value) } ?? value
+                if useFullScan && allKeys.count > Self.hotSubsetThreshold {
+                    readings.append((key, value))
+                }
             }
         }
         if !retired.isEmpty {
             let drop = Set(retired)
             availableKeys?.removeAll { drop.contains($0) }
+            hotKeys?.removeAll { drop.contains($0) }
+            if !useFullScan {
+                // 热键子集中有键退役时下次触发全量校准，避免漏掉同族其他传感器。
+                hotKeys = nil
+            }
             if availableKeys?.isEmpty == true {
                 // 全部传感器键连续失效，说明 SMC 连接可能已失效，关闭并退避重连而不是立即对死连接重扫 127 个键。
                 IOServiceClose(connection)
                 connection = 0
-                availableKeys = nil
-                metadata.removeAll()
-                consecutiveFailures.removeAll()
+                resetConnectionState()
                 openRetryAfter = now + openBackoff
                 openBackoff = min(openBackoff * 3, 300)
+                return nil
             }
         }
+        if useFullScan {
+            lastFullScanAt = now
+            if allKeys.count > Self.hotSubsetThreshold {
+                let selected = Self.selectHotKeys(from: readings, perFamily: Self.hotKeysPerFamily)
+                hotKeys = selected.isEmpty ? nil : selected
+            }
+        } else if warmest == nil {
+            // 仅读子集全部无有效读数时立即清空子集，下一轮全量扫描。
+            hotKeys = nil
+        }
+        lastReadAt = now
+        cachedValue = warmest
         return warmest
+    }
+
+    /// 按传感器前两字符分族（如 Tp/Tg/Te/Tf/TC/TG）保留每族最热的若干键，
+    /// 既覆盖 CPU/GPU 各自热点，又将单次轮询的 SMC 调用从几十次降到个位数。
+    static func selectHotKeys(
+        from readings: [(key: String, value: Double)],
+        perFamily: Int = hotKeysPerFamily
+    ) -> [String] {
+        guard perFamily > 0, !readings.isEmpty else { return [] }
+        var familyOrder: [String] = []
+        var grouped: [String: [(index: Int, key: String, value: Double)]] = [:]
+        for (index, item) in readings.enumerated() {
+            let family = String(item.key.prefix(2))
+            if grouped[family] == nil { familyOrder.append(family) }
+            grouped[family, default: []].append((index, item.key, item.value))
+        }
+        var selected: [String] = []
+        for family in familyOrder {
+            guard let list = grouped[family] else { continue }
+            let hottest = list.sorted { a, b in
+                if a.value != b.value { return a.value > b.value }
+                return a.index < b.index
+            }.prefix(perFamily)
+            selected.append(contentsOf: hottest.map(\.key))
+        }
+        return selected
     }
 
     static func code(_ key: String) -> UInt32 {

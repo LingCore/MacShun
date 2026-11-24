@@ -95,6 +95,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var lastResignedKeyAt: Date?
     private var waitingForSystemPrompt = false
     private var keyMonitor: Any?
+    var onVisibilityChanged: ((Bool) -> Void)?
+    var isVisible: Bool { window?.isVisible == true }
 
     init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController) {
         self.configStore = configStore
@@ -156,6 +158,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             if window.isMiniaturized { window.deminiaturize(nil) }
             WindowPlacement.place(window, on: screen, centered: center)
             Foreground.bring(window)
+            onVisibilityChanged?(true)
         }
     }
 
@@ -167,6 +170,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window?.delegate = nil
         window?.contentViewController = nil
         window = nil
+        onVisibilityChanged?(false)
     }
 
     private func installSystemPromptRestoreObservers(for window: NSWindow) {
@@ -382,7 +386,11 @@ struct SettingsView: View {
         case .display:
             DisplaySettings(model: DisplayScalingModel.shared)
         case .performance:
-            PerformanceSettings(config: $configStore.config.performance, monitor: PerformanceMonitor.shared)
+            PerformanceSettings(
+                config: $configStore.config.performance,
+                monitor: PerformanceMonitor.shared,
+                windowVisible: selection.windowVisible
+            )
         case .general:
             GeneralSettings(
                 state: state, update: $configStore.config.update, updater: Updater.shared,

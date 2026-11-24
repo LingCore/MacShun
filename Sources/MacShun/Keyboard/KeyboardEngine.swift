@@ -14,6 +14,8 @@ final class KeyboardEngine {
 
     /// 学到键盘的模式后在主线程上调用。设备为 nil 表示不知道是哪把键盘，改的是默认布局。
     var onLayoutLearned: ((InputDevice?, KeyboardLayoutKind) -> Void)?
+    /// 检测到常规复制/剪切快捷键时在主线程触发，让剪贴板监听在低频轮询下也能及时捕获连续复制。
+    var onCopyOrCut: (() -> Void)?
     /// 是否从按法学习键盘模式。自测时关掉：自测会故意模拟另一种模式的按法。
     let learningEnabled = Locked(true)
     private var inference = LayoutInference()
@@ -203,15 +205,26 @@ final class KeyboardEngine {
         switch action {
         case .pass:
             activeKeys[keyCode] = .pass
-            if keyCode == KeyCode.c && event.flags.contains(.maskCommand) {
-                DispatchQueue.main.async { [weak self] in self?.cancelFinderCutOnMain() }
+            let mods = event.flags.intersection(.modifierKeys)
+            let isCmdC = keyCode == KeyCode.c && event.flags.contains(.maskCommand)
+            let isCopyOrCut = (keyCode == KeyCode.c && (mods == .maskCommand || mods == [.maskCommand, .maskShift]))
+                || (keyCode == KeyCode.x && mods == .maskCommand)
+            if isCmdC || isCopyOrCut {
+                DispatchQueue.main.async { [weak self] in
+                    if isCmdC { self?.cancelFinderCutOnMain() }
+                    if isCopyOrCut { self?.onCopyOrCut?() }
+                }
             }
             return Unmanaged.passUnretained(event)
 
         case .send(let stroke):
             activeKeys[keyCode] = action
-            if stroke == KeyStroke(KeyCode.c, .maskCommand) {
-                DispatchQueue.main.async { [weak self] in self?.cancelFinderCutOnMain() }
+            let isCopy = stroke == KeyStroke(KeyCode.c, .maskCommand)
+            if isCopy || stroke == KeyStroke(KeyCode.x, .maskCommand) {
+                DispatchQueue.main.async { [weak self] in
+                    if isCopy { self?.cancelFinderCutOnMain() }
+                    self?.onCopyOrCut?()
+                }
             }
             send(stroke, down: true, original: event, physicalKey: keyCode, proxy: proxy)
             return nil

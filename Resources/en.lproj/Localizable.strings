@@ -697,11 +697,15 @@
 "纯图标仪表" = "Icon Gauges";
 "折线走势" = "Trend Lines";
 "合并 CPU 和 GPU" = "Combine CPU and GPU";
+"刷新间隔" = "Refresh Interval";
+"每 2 秒" = "Every 2 seconds";
+"每 5 秒" = "Every 5 seconds";
+"每 10 秒" = "Every 10 seconds";
 "图表样式可将 CPU 和 GPU 放在同一组。" = "Chart styles can group CPU and GPU together.";
 "芯片内左侧为 CPU，右侧为 GPU。悬停菜单栏可查看读数。" = "CPU is on the left of the chip and GPU is on the right. Hover over the menu bar item for exact readings.";
 "悬停菜单栏可查看读数。" = "Hover over the menu bar item for exact readings.";
 "实线为 CPU，虚线为 GPU。" = "The solid line shows CPU and the dashed line shows GPU.";
-"每 2 秒更新，关闭的项目不再采集。温度指芯片温度，非机身温度；部分机型可能无法读取 GPU 或温度。" = "Updates every 2 seconds. Disabled readings are not collected. Temperature refers to the chip, not the enclosure; GPU or temperature readings may be unavailable on some Macs.";
+"关闭的项目不再采集；间隔越长越省电，开启低电量模式时会自动进一步放缓。温度指芯片温度，非机身温度；部分机型可能无法读取 GPU 或温度。" = "Disabled readings are not collected. Longer intervals save more battery, and Low Power Mode slows updates further. Temperature refers to the chip, not the enclosure; GPU or temperature readings may be unavailable on some Macs.";
 "打开活动监视器" = "Open Activity Monitor";
 "想看哪个程序占用最多，可以打开活动监视器。内存占用不包含可回收的文件缓存。" = "Open Activity Monitor to see which apps use the most resources. Memory usage excludes reclaimable file caches.";
 "性能监控设置…" = "Performance Monitor Settings…";

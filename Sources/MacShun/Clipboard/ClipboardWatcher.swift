@@ -11,17 +11,26 @@ final class ClipboardWatcher {
     private let store: ClipboardStore
     private let config: () -> ClipboardConfig
     private var timer: Timer?
+    private var quickCheckWork: DispatchWorkItem?
     private var running = false
     private var asleep = false
     private var screenAsleep = false
+    private var screenLocked = false
     private var sessionInactive = false
-    private var paused: Bool { asleep || screenAsleep || sessionInactive }
+    private var lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private var paused: Bool { asleep || screenAsleep || screenLocked || sessionInactive }
     private var observers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
+    private var powerObserver: NSObjectProtocol?
     private var lastChangeCount: Int
     /// 本程序自己写进剪贴板时的计数，看到它就不再记录。
     private var ownChangeCount: Int?
     /// 仅在本机产生新的真实复制时触发，用于跨设备剪贴板广播。
     var onLocalCapture: ((ClipboardCapture) -> Void)?
+
+    static func pollCadence(lowPowerMode: Bool) -> (interval: TimeInterval, tolerance: TimeInterval) {
+        lowPowerMode ? (3.0, 1.0) : (1.5, 0.6)
+    }
 
     /// 密码管理器等用这些类型标记“不要记录”（nspasteboard.org 的约定）。
     static let ignoredTypes: Set<String> = [
@@ -49,7 +58,10 @@ final class ClipboardWatcher {
 
     deinit {
         timer?.invalidate()
+        quickCheckWork?.cancel()
         observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        if let powerObserver { NotificationCenter.default.removeObserver(powerObserver) }
     }
 
     func start() {
@@ -57,7 +69,9 @@ final class ClipboardWatcher {
         running = true
         asleep = false
         screenAsleep = false
+        screenLocked = false
         sessionInactive = false
+        lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         lastChangeCount = pasteboard.changeCount
         installObservers()
         scheduleTimer()
@@ -67,22 +81,48 @@ final class ClipboardWatcher {
         running = false
         asleep = false
         screenAsleep = false
+        screenLocked = false
         sessionInactive = false
         timer?.invalidate()
         timer = nil
+        quickCheckWork?.cancel()
+        quickCheckWork = nil
         observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         observers = []
+        distributedObservers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        distributedObservers = []
+        if let powerObserver {
+            NotificationCenter.default.removeObserver(powerObserver)
+            self.powerObserver = nil
+        }
     }
 
     private func scheduleTimer() {
         guard running, !paused, timer == nil else { return }
-        // 计时器加在主运行循环上，回调一定在主线程；.default 模式避免在菜单跟踪或滚动时频繁唤醒。
-        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+        // 计时器加在主运行循环上，回调一定在主线程；.default 模式避免在菜单跟踪或滚动时频繁唤醒，
+        // 配合较宽松容差便于系统与其它后台定时器合并唤醒；常规复制快捷键另走短延迟补采。
+        let cadence = Self.pollCadence(lowPowerMode: lowPowerMode)
+        let t = Timer(timeInterval: cadence.interval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.check() }
         }
-        t.tolerance = 0.2
+        t.tolerance = cadence.tolerance
         RunLoop.main.add(t, forMode: .default)
         timer = t
+    }
+
+    /// 复制/剪切快捷键后短延迟补采一次（合并连续触发），低频待机轮询下依然几乎实时入库。
+    func scheduleQuickCheck() {
+        guard running, !paused else { return }
+        quickCheckWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.quickCheckWork = nil
+                if self.running, !self.paused { self.check() }
+            }
+        }
+        quickCheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
     }
 
     private func setLifecycleFlag(_ update: (ClipboardWatcher) -> Void) {
@@ -94,8 +134,21 @@ final class ClipboardWatcher {
         if nowPaused {
             timer?.invalidate()
             timer = nil
+            quickCheckWork?.cancel()
+            quickCheckWork = nil
         } else {
             check()
+            scheduleTimer()
+        }
+    }
+
+    private func handlePowerStateChange() {
+        let nowLowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        guard nowLowPower != lowPowerMode else { return }
+        lowPowerMode = nowLowPower
+        if running, !paused, timer != nil {
+            timer?.invalidate()
+            timer = nil
             scheduleTimer()
         }
     }
@@ -121,6 +174,22 @@ final class ClipboardWatcher {
         observers.append(center.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.setLifecycleFlag { $0.sessionInactive = false } }
         })
+        let distributed = DistributedNotificationCenter.default()
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.screenLocked = true } }
+        })
+        distributedObservers.append(distributed.addObserver(
+            forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setLifecycleFlag { $0.screenLocked = false } }
+        })
+        powerObserver = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handlePowerStateChange() }
+        }
     }
 
     /// 复制后立刻呼出面板或切换应用时，先收下这次复制，不等下一轮计时器。
