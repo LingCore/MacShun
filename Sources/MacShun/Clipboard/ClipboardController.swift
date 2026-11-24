@@ -13,6 +13,7 @@ final class ClipboardController {
     ]
 
     let store: ClipboardStore
+    let sync: ClipboardSyncService
     private let pasteboard: NSPasteboard
     private let watcher: ClipboardWatcher
     private let configStore: ConfigStore
@@ -27,17 +28,31 @@ final class ClipboardController {
     private var fileAction: Task<Void, Never>?
     private var previewOffset: CGFloat?
     private lazy var hoverPreview = ClipboardHoverPreview()
+    private var fileToastLoaded = false
+    private lazy var fileToast: SyncFileToastController = makeFileToast()
     private(set) var isRecordingPaused = false
     /// 从本程序的文件搜索框里打开时，选中的条目交给它
     private var host: Host?
 
     /// store 不给时用默认目录。不写成默认参数：默认参数不在主线程上下文里求值，不能调用 ClipboardStore()
-    init(configStore: ConfigStore, store: ClipboardStore? = nil, pasteboard: NSPasteboard = .general) {
+    init(
+        configStore: ConfigStore,
+        store: ClipboardStore? = nil,
+        pasteboard: NSPasteboard = .general,
+        sync: ClipboardSyncService? = nil
+    ) {
         let store = store ?? ClipboardStore()
         self.configStore = configStore
         self.store = store
         self.pasteboard = pasteboard
+        self.sync = sync ?? ClipboardSyncService(enableDiscovery: !SelfTest.isRequested)
         watcher = ClipboardWatcher(store: store, pasteboard: pasteboard, config: { configStore.config.clipboard })
+        watcher.onLocalCapture = { [weak self] capture in
+            self?.sync.broadcastLocalCapture(capture)
+        }
+        self.sync.onRemoteClipboard = { [weak self] event in
+            self?.handleRemoteEvent(event)
+        }
     }
 
     deinit {
@@ -50,15 +65,201 @@ final class ClipboardController {
         watcher.recordPendingChange(sourceApp: bundleID)
     }
 
-    /// 按配置开始或停止记录。
+    /// 按配置开始或停止记录与跨设备共享。
     func applyConfig() {
         let cfg = configStore.config.clipboard
         store.setImageRecognition(enabled: cfg.enabled && cfg.recordImages)
         updateRecording()
         if cfg.enabled {
             store.trim(maxItems: cfg.maxItems)
+            sync.apply(config: cfg.sync)
         } else {
             hide()
+            var disabled = cfg.sync
+            disabled.enabled = false
+            sync.apply(config: disabled)
+        }
+    }
+
+    func toggleSyncPause() {
+        sync.togglePause()
+    }
+
+    func handleWillSleep() {
+        sync.handleWillSleep()
+    }
+
+    func handleDidWake() {
+        sync.handleDidWake()
+    }
+
+    func stopSync() {
+        if fileToastLoaded { fileToast.hide() }
+        sync.stop()
+    }
+
+    private func makeFileToast() -> SyncFileToastController {
+        fileToastLoaded = true
+        let toast = SyncFileToastController()
+        toast.onReceiveAndCopy = { [weak self] info, onProgress in
+            guard let self else { return }
+            let urls = try await self.pullWithProgress(info: info, onProgress: onProgress)
+            if !urls.isEmpty {
+                _ = self.replacePasteboard(with: urls.map { $0 as NSURL })
+            }
+        }
+        toast.onReceiveAndSaveToDownloads = { [weak self] info, onProgress in
+            guard let self else { return }
+            let urls = try await self.pullWithProgress(info: info, onProgress: onProgress)
+            let saved = try await Task.detached(priority: .userInitiated) {
+                try SyncCacheManager.copyToDownloads(urls)
+            }.value
+            if !saved.isEmpty {
+                NSWorkspace.shared.activateFileViewerSelecting(saved)
+            }
+        }
+        toast.onCancelTransfer = { [weak self] id in
+            self?.sync.cancelTransfer(id)
+        }
+        return toast
+    }
+
+    private func pullWithProgress(info: RemoteFileInfo, onProgress: @escaping (Int) -> Void) async throws -> [URL] {
+        let watch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard let self, !Task.isCancelled else { break }
+                if let prog = self.sync.activeTransfers[info.transferID] {
+                    onProgress(prog.percent)
+                }
+            }
+        }
+        defer { watch.cancel() }
+        return try await sync.pullRemoteFiles(info: info)
+    }
+
+    /// 在面板右键或预览里将远端文件（或本地文件）保存到“下载”文件夹并在访达中显示。
+    private func saveToDownloads(_ item: ClipboardItem) {
+        guard item.kind == .files else { return }
+        fileAction?.cancel()
+        fileAction = nil
+        if item.isPendingRemoteFiles, let remote = item.remoteFiles {
+            model.showFeedback(L("正在从 %@ 接收文件…", remote.originDeviceName), autoDismiss: false)
+            fileAction = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    let urls = try await self.pullWithProgress(info: remote) { [weak self] percent in
+                        self?.model.showFeedback(
+                            L("正在从 %@ 接收文件… %ld%%", remote.originDeviceName, percent),
+                            autoDismiss: false
+                        )
+                    }
+                    guard !Task.isCancelled else { return }
+                    let saved = try await Task.detached(priority: .userInitiated) {
+                        try SyncCacheManager.copyToDownloads(urls)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    self.fileAction = nil
+                    self.hide()
+                    if !saved.isEmpty {
+                        NSWorkspace.shared.activateFileViewerSelecting(saved)
+                    }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.fileAction = nil
+                    self.model.showFeedback(error.localizedDescription)
+                }
+            }
+            return
+        }
+        guard let urls = item.fileURLs, !urls.isEmpty else { return }
+        fileAction = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let saved = try await Task.detached(priority: .userInitiated) {
+                    try SyncCacheManager.copyToDownloads(urls)
+                }.value
+                guard !Task.isCancelled else { return }
+                self.fileAction = nil
+                self.hide()
+                if !saved.isEmpty {
+                    NSWorkspace.shared.activateFileViewerSelecting(saved)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.fileAction = nil
+                self.model.showFeedback(error.localizedDescription)
+            }
+        }
+    }
+
+    /// 将敏感文本（如群组邀请码）写入本机剪贴板，不记入剪贴板历史，也不向其他设备广播。
+    func copySensitiveTextLocally(_ text: String) {
+        let pbItem = NSPasteboardItem()
+        pbItem.setString(text, forType: .string)
+        pbItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pbItem.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        _ = replacePasteboard(with: [pbItem])
+    }
+
+    private func handleRemoteEvent(_ event: RemoteClipboardEvent) {
+        let cfg = configStore.config.clipboard
+        guard cfg.enabled else { return }
+        switch event {
+        case .text(let text, let fingerprint, let deviceID, let deviceName, let platform, let shouldWrite):
+            let capture = ClipboardCapture(
+                kind: .text,
+                text: text,
+                fingerprint: fingerprint,
+                sourceDeviceID: deviceID,
+                sourceDeviceName: deviceName,
+                sourcePlatform: platform
+            )
+            store.add(capture, maxItems: cfg.maxItems)
+            if shouldWrite {
+                let pbItem = NSPasteboardItem()
+                pbItem.setString(text, forType: .string)
+                _ = replacePasteboard(with: [pbItem])
+            }
+
+        case .image(let png, let width, let height, let fingerprint, let deviceID, let deviceName, let platform, let shouldWrite):
+            let capture = ClipboardCapture(
+                kind: .image,
+                png: png,
+                imageSize: CGSize(width: width, height: height),
+                fingerprint: fingerprint,
+                sourceDeviceID: deviceID,
+                sourceDeviceName: deviceName,
+                sourcePlatform: platform
+            )
+            store.add(capture, maxItems: cfg.maxItems)
+            if shouldWrite {
+                let pbItem = NSPasteboardItem()
+                pbItem.setData(png, forType: .png)
+                let provider = LazyTIFFProvider(png: png)
+                pbItem.setDataProvider(provider, forTypes: [.tiff])
+                _ = replacePasteboard(with: [pbItem], tiffProvider: provider)
+            }
+
+        case .filesManifest(let info, let fingerprint, let platform):
+            let capture = ClipboardCapture(
+                kind: .files,
+                fingerprint: fingerprint,
+                sourceDeviceID: info.originDeviceID,
+                sourceDeviceName: info.originDeviceName,
+                sourcePlatform: platform,
+                remoteFiles: info
+            )
+            store.add(capture, maxItems: cfg.maxItems)
+            if !SelfTest.isRequested && sync.shouldNotifyIncomingFiles(for: info) {
+                fileToast.show(info: info, platform: platform)
+            }
+
+        case .filesReady(let transferID, let localURLs, _, let shouldWrite):
+            store.completeRemoteFiles(transferID: transferID, localURLs: localURLs)
+            if shouldWrite, !localURLs.isEmpty {
+                _ = replacePasteboard(with: localURLs.map { $0 as NSURL })
+            }
         }
     }
 
@@ -206,13 +407,50 @@ final class ClipboardController {
         prepareWrite(item) { [weak self] in self?.model.showFeedback(L("已复制")) }
     }
 
-    /// 文件引用可能指向慢速或断开的磁盘。等待检查时保留面板和现有剪贴板。
+    /// 文件引用可能指向慢速磁盘、断开的卷或尚未拉取的远端设备。等待时保留面板和现有剪贴板。
     private func prepareWrite(_ item: ClipboardItem, completed: @escaping () -> Void) {
         fileAction?.cancel()
         fileAction = nil
         guard item.kind == .files else {
             if write(item) { completed() }
             else { model.showFeedback(L("未能写入剪贴板")) }
+            return
+        }
+        if item.isPendingRemoteFiles, let remote = item.remoteFiles {
+            let progressMessage = L("正在从 %@ 接收文件…", remote.originDeviceName)
+            model.showFeedback(progressMessage, autoDismiss: false)
+            fileAction = Task { [weak self] in
+                guard let self else { return }
+                let progressWatch = Task { [weak self] in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        guard let self, !Task.isCancelled else { break }
+                        if let prog = self.sync.activeTransfers[remote.transferID] {
+                            self.model.showFeedback(
+                                L("正在从 %@ 接收文件… %ld%%", remote.originDeviceName, prog.percent),
+                                autoDismiss: false
+                            )
+                        }
+                    }
+                }
+                defer { progressWatch.cancel() }
+                do {
+                    let urls = try await self.sync.pullRemoteFiles(info: remote)
+                    guard !Task.isCancelled else { return }
+                    self.fileAction = nil
+                    self.store.completeRemoteFiles(transferID: remote.transferID, localURLs: urls)
+                    if !urls.isEmpty, self.replacePasteboard(with: urls.map { $0 as NSURL }) {
+                        self.model.clearFeedback()
+                        completed()
+                    } else {
+                        self.model.showFeedback(L("未能写入剪贴板"))
+                    }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.fileAction = nil
+                    self.model.showFeedback(error.localizedDescription)
+                }
+            }
             return
         }
         let urls = item.fileURLs ?? []
@@ -299,12 +537,23 @@ final class ClipboardController {
 
     private func makeModel() -> ClipboardPanelModel {
         modelLoaded = true
-        let model = ClipboardPanelModel(store: store, pasteboard: pasteboard)
+        let model = ClipboardPanelModel(store: store, pasteboard: pasteboard, sync: sync)
         model.recordingPaused = isRecordingPaused
         model.setActive(false)
         model.onPaste = { [weak self] item in self?.paste(item) }
         model.onPasteBatch = { [weak self] items in self?.pasteBatch(items) }
         model.onCopy = { [weak self] item in self?.copy(item) }
+        model.onSaveToDownloads = { [weak self] item in self?.saveToDownloads(item) }
+        model.onSendToDevice = { [weak self] item, targetDeviceID in
+            guard let self else { return }
+            self.sync.sendHistoryItem(item, store: self.store, targetDeviceID: targetDeviceID)
+            if let targetDeviceID,
+               let peer = self.sync.connectedPeers.first(where: { $0.deviceID == targetDeviceID }) {
+                self.model.showFeedback(L("已发送到 %@", peer.deviceName))
+            } else {
+                self.model.showFeedback(L("已发送到所有在线设备"))
+            }
+        }
         model.onCopiedToPasteboard = { [weak self] in self?.watcher.noteOwnWrite() }
         model.onPreviewChange = { [weak self] open in self?.resizeForPreview(open) }
         model.onHoverChange = { [weak self] id in self?.updateHoverPreview(id) }

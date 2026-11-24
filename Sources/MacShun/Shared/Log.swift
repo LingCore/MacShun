@@ -10,4 +10,5 @@ enum Log {
     static let keyboard = Logger(subsystem: subsystem, category: "keyboard")
     static let mouse = Logger(subsystem: subsystem, category: "mouse")
     static let clipboard = Logger(subsystem: subsystem, category: "clipboard")
+    static let sync = Logger(subsystem: subsystem, category: "sync")
 }

@@ -55,6 +55,9 @@ final class ClipboardPanelModel: ObservableObject {
     }
     @Published private(set) var sourceApps: [String] = []
     @Published var recordingPaused = false
+    @Published private(set) var syncRunning = false
+    @Published private(set) var syncPaused = false
+    @Published private(set) var onlinePeers: [ConnectedSyncPeer] = []
     @Published private(set) var results: [ClipboardItem] = []
     @Published private(set) var isPreviewOpen = false
     @Published private(set) var opensAbove = false
@@ -102,6 +105,8 @@ final class ClipboardPanelModel: ObservableObject {
     var onPaste: (ClipboardItem) -> Void = { _ in }
     var onPasteBatch: ([ClipboardItem]) -> Void = { _ in }
     var onCopy: (ClipboardItem) -> Void = { _ in }
+    var onSaveToDownloads: (ClipboardItem) -> Void = { _ in }
+    var onSendToDevice: (ClipboardItem, String?) -> Void = { _, _ in }
     var onPreviewChange: (Bool) -> Void = { _ in }
     var onHoverChange: (UUID?) -> Void = { _ in }
     var onClose: () -> Void = {}
@@ -114,12 +119,13 @@ final class ClipboardPanelModel: ObservableObject {
     let thumbnails = ClipboardImageCache(size: .row)
     let previews = ClipboardImageCache(size: .preview)
     private var subscription: AnyCancellable?
+    private var syncSubscriptions: Set<AnyCancellable> = []
     private var clearTimeout: DispatchWorkItem?
     private var isActive = true
     private var needsRefresh = false
     private var suppressRefresh = false
 
-    init(store: ClipboardStore, pasteboard: NSPasteboard = .general) {
+    init(store: ClipboardStore, pasteboard: NSPasteboard = .general, sync: ClipboardSyncService? = nil) {
         self.store = store
         self.pasteboard = pasteboard
         subscription = store.$items
@@ -132,6 +138,23 @@ final class ClipboardPanelModel: ObservableObject {
                     self.needsRefresh = true
                 }
             }
+        if let sync {
+            syncRunning = sync.isRunning
+            syncPaused = sync.isPaused
+            onlinePeers = sync.connectedPeers
+            sync.$isRunning
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] value in self?.syncRunning = value }
+                .store(in: &syncSubscriptions)
+            sync.$isPaused
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] value in self?.syncPaused = value }
+                .store(in: &syncSubscriptions)
+            sync.$connectedPeers
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] peers in self?.onlinePeers = peers }
+                .store(in: &syncSubscriptions)
+        }
     }
 
     func setActive(_ active: Bool) {
@@ -378,11 +401,15 @@ final class ClipboardPanelModel: ObservableObject {
         }
     }
 
+    func clearFeedback() {
+        feedbackTimeout?.cancel()
+        feedbackTimeout = nil
+        copyFeedback = nil
+    }
+
     func clearFeedbackIf(_ message: String) {
         if copyFeedback == message {
-            feedbackTimeout?.cancel()
-            feedbackTimeout = nil
-            copyFeedback = nil
+            clearFeedback()
         }
     }
 
@@ -622,6 +649,13 @@ struct ClipboardPanelView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            } else if model.syncRunning {
+                HStack(spacing: 8) {
+                    syncStatusBadge
+                    if model.selectedItem != nil {
+                        KeyHint(key: "⌘Y", action: L("预览"))
+                    }
+                }
             } else if model.selectedItem != nil {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 10) {
@@ -649,6 +683,22 @@ struct ClipboardPanelView: View {
         .frame(minHeight: 24)
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
+    }
+
+    private var syncStatusBadge: some View {
+        let count = model.onlinePeers.count
+        let names = model.onlinePeers.map(\.deviceName).joined(separator: L("、"))
+        return HStack(spacing: 5) {
+            Circle()
+                .fill(model.syncPaused ? Color.orange : (count > 0 ? Color.green : Color.secondary.opacity(0.45)))
+                .frame(width: 6, height: 6)
+            Text(model.syncPaused ? L("共享已暂停")
+                 : count > 0 ? L("已连接 %ld 台", count) : L("等待设备"))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .help(names.isEmpty ? L("跨设备剪贴板共享") : L("在线设备：%@", names))
     }
 }
 
@@ -752,12 +802,22 @@ struct ClipboardRow: View {
         return .clear
     }
 
-    /// 从哪个应用复制的，找不到应用时按内容类型显示图标。
+    /// 从哪个应用或远端设备复制的，找不到应用时按设备平台或内容类型显示图标。
     @ViewBuilder
     private var sourceIcon: some View {
         if let icon = AppInfo.icon(item.sourceApp) {
             Image(nsImage: icon)
                 .resizable()
+                .frame(width: 26, height: 26)
+        } else if let platform = item.sourcePlatform {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.accentColor.opacity(0.12))
+                .frame(width: 24, height: 24)
+                .overlay {
+                    Image(systemName: item.isPendingRemoteFiles ? "icloud.and.arrow.down" : platform.displaySymbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.accentColor)
+                }
                 .frame(width: 26, height: 26)
         } else {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -827,8 +887,17 @@ struct ClipboardRow: View {
         if item.kind == .image, let w = item.imageWidth, let h = item.imageHeight {
             parts.append(L("图片 %@×%@", "\(w)", "\(h)"))
         }
-        if item.kind == .files { parts.append(L("%ld 个文件", item.fileURLs?.count ?? 0)) }
-        if let app = item.sourceApp { parts.append(AppInfo.name(app)) }
+        if item.kind == .files {
+            parts.append(L("%ld 个文件", item.fileCount))
+            if let remote = item.remoteFiles {
+                parts.append(L("待接收 · %@", SyncPathSanitizer.formatBytes(remote.totalBytes)))
+            }
+        }
+        if let device = item.sourceDeviceName, !device.isEmpty {
+            parts.append(L("来自 %@", device))
+        } else if let app = item.sourceApp {
+            parts.append(AppInfo.name(app))
+        }
         let now = Date()
         parts.append(now.timeIntervalSince(item.lastUsed) < 60 ? L("刚刚") :
             Self.timeFormatter.localizedString(for: item.lastUsed, relativeTo: now))
@@ -862,14 +931,32 @@ struct ClipboardRow: View {
 
     @ViewBuilder
     private var rowMenu: some View {
-        Button(L("粘贴")) { model.onPaste(item) }
-        Button(L("复制")) { model.onCopy(item) }
+        Button(item.isPendingRemoteFiles ? L("接收并粘贴") : L("粘贴")) { model.onPaste(item) }
+        Button(item.isPendingRemoteFiles ? L("接收并复制") : L("复制")) { model.onCopy(item) }
+        if item.kind == .files && (item.isPendingRemoteFiles || item.sourceDeviceID != nil) {
+            Button(L("保存到“下载”")) { model.onSaveToDownloads(item) }
+        }
         if item.kind == .image {
             Button(L("复制图中文字")) { model.copyImageText(item) }
             Button(L("贴到屏幕")) { model.onFloat(item) }
         } else if item.kind == .text {
             Button(L("粘贴为纯文本")) { model.pasteAsPlainText(item) }
             Button(!isBatchSelected ? L("加入合并粘贴") : L("从合并粘贴移除")) { model.toggleBatch(item) }
+        }
+        if !model.onlinePeers.isEmpty && !item.isPendingRemoteFiles {
+            Menu(L("发送到设备")) {
+                if model.onlinePeers.count > 1 {
+                    Button(L("全部在线设备")) { model.onSendToDevice(item, nil) }
+                    Divider()
+                }
+                ForEach(model.onlinePeers) { peer in
+                    Button {
+                        model.onSendToDevice(item, peer.deviceID)
+                    } label: {
+                        Label(peer.deviceName, systemImage: peer.platform.displaySymbol)
+                    }
+                }
+            }
         }
         Divider()
         Button(item.note == nil ? L("添加备注…") : L("编辑备注…")) { model.beginNote(item) }

@@ -155,11 +155,58 @@ struct MouseConfig: Codable, Equatable {
     }
 }
 
+struct ClipboardSyncConfig: Codable, Equatable {
+    /// 默认关闭，不开启时不初始化任何网络监听或局域网发现。
+    var enabled = false
+    /// 本机显示名称，留空时使用系统电脑名称。
+    var deviceName = ""
+    var syncText = true
+    var syncImages = true
+    var syncFiles = true
+    /// 收到其他设备内容后自动写入本机系统剪贴板；关闭时仅加入剪贴板历史。
+    var autoWritePasteboard = true
+    /// 收到远端文件清单时在屏幕右上角弹出不抢焦点的轻量接收提示。
+    var notifyIncomingFiles = true
+    /// 开启共享后默认允许局域网或手动地址的设备发起 6 位码配对（仍需手动核对确认，内置频控）。
+    var allowPairingRequests = true
+    /// 小于等于该体积（MB）的远端文件自动后台预取并写入剪贴板；默认 0 表示仅手动接收。
+    var autoDownloadFileLimitMB = 0
+    /// 接收文件缓存上限（MB），超限时按最久未使用自动清理。
+    var maxCacheMB = 2048
+    /// 监听的 TCP 端口（默认 37219；0 表示自动分配）。
+    var listenPort: UInt16 = SyncProtocol.defaultTCPPort
+    /// 手动添加的对端地址（`IP:端口` 或主机名），便于 Tailscale / 跨网段直连。
+    var manualPeers: [String] = []
+    /// 按设备 ID 单独覆盖是否自动写入系统剪贴板。
+    var deviceAutoWriteOverrides: [String: Bool] = [:]
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ClipboardSyncConfig()
+        enabled = c.value(.enabled, default: d.enabled)
+        deviceName = c.value(.deviceName, default: d.deviceName)
+        syncText = c.value(.syncText, default: d.syncText)
+        syncImages = c.value(.syncImages, default: d.syncImages)
+        syncFiles = c.value(.syncFiles, default: d.syncFiles)
+        autoWritePasteboard = c.value(.autoWritePasteboard, default: d.autoWritePasteboard)
+        notifyIncomingFiles = c.value(.notifyIncomingFiles, default: d.notifyIncomingFiles)
+        allowPairingRequests = c.value(.allowPairingRequests, default: d.allowPairingRequests)
+        autoDownloadFileLimitMB = min(max(c.value(.autoDownloadFileLimitMB, default: d.autoDownloadFileLimitMB), 0), 500)
+        maxCacheMB = min(max(c.value(.maxCacheMB, default: d.maxCacheMB), 128), 20_480)
+        listenPort = c.value(.listenPort, default: d.listenPort)
+        manualPeers = c.value(.manualPeers, default: d.manualPeers)
+        deviceAutoWriteOverrides = c.value(.deviceAutoWriteOverrides, default: d.deviceAutoWriteOverrides)
+    }
+}
+
 struct ClipboardConfig: Codable, Equatable {
     var enabled = true
     /// 最多保存多少条（固定的条目不算在内）。
     var maxItems = 200
     var recordImages = true
+    var sync = ClipboardSyncConfig()
 
     init() {}
 
@@ -169,6 +216,7 @@ struct ClipboardConfig: Codable, Equatable {
         enabled = c.value(.enabled, default: d.enabled)
         maxItems = min(max(c.value(.maxItems, default: d.maxItems), 10), 1000)
         recordImages = c.value(.recordImages, default: d.recordImages)
+        sync = c.value(.sync, default: d.sync)
     }
 }
 

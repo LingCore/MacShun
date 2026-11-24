@@ -1,3 +1,4 @@
 /* 应用的英文名字 */
 "CFBundleName" = "MacShun";
 "CFBundleDisplayName" = "MacShun";
+"NSLocalNetworkUsageDescription" = "Used when cross-device clipboard sharing is enabled to discover and encrypt connections with your other MacShun and WinShun computers on the local network.";

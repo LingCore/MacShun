@@ -129,6 +129,16 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             let paused = clipboard.isRecordingPaused
             menu.addItem(action(paused ? L("恢复剪贴板记录") : L("暂停剪贴板记录"),
                                 #selector(toggleClipboardPause), symbol: paused ? "play.circle" : "pause.circle"))
+            if cfg.clipboard.sync.enabled {
+                let syncPaused = clipboard.sync.isPaused
+                let count = clipboard.sync.connectedPeers.count
+                let syncTitle = syncPaused
+                    ? L("恢复剪贴板共享")
+                    : (count > 0 ? L("暂停剪贴板共享（已连接 %ld 台）", count) : L("暂停剪贴板共享"))
+                menu.addItem(action(syncTitle,
+                                    #selector(toggleClipboardSyncPause),
+                                    symbol: syncPaused ? "play.circle" : "arrow.triangle.2.circlepath.circle"))
+            }
         }
         menu.addItem(action(CaptureMode.image.title, #selector(startCapture), symbol: "viewfinder"))
         menu.addItem(action(CaptureMode.text.title, #selector(readText), symbol: "text.viewfinder"))
@@ -161,6 +171,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     @objc private func toggleMouse() { configStore.config.mouse.enabled.toggle() }
     @objc private func toggleClipboard() { configStore.config.clipboard.enabled.toggle() }
     @MainActor @objc private func toggleClipboardPause() { clipboard.toggleRecordingPause() }
+    @MainActor @objc private func toggleClipboardSyncPause() { clipboard.toggleSyncPause() }
     @objc private func startCapture() { capture(.image) }
     @MainActor @objc private func pinClipboard() { ScreenPins.shared.showClipboard() }
     @MainActor @objc private func closePins() { ScreenPins.shared.closeAll() }

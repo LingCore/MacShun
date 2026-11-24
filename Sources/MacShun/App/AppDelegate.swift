@@ -85,6 +85,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         settingsWindow = SettingsWindowController(configStore: configStore, state: state, clipboard: clipboard)
+        clipboard.sync.onIncomingPairing = { [weak self] in
+            self?.settingsWindow.show(tab: .clipboard)
+        }
         statusMenu = StatusMenu(
             configStore: configStore, state: state, clipboard: clipboard,
             openSettings: { [weak self] in
@@ -183,6 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cursor.restore()
         ContentIndex.shared.prepareForQuit()
         ContentExtractor.terminateAllHelpers()
+        clipboard.stopSync()
         if !SelfTest.isRequested { clipboard.store.saveNow() }
     }
 
@@ -264,12 +268,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             self?.asleep = true
             self?.updateBackgroundTimers()
+            MainActor.assumeIsolated { self?.clipboard.handleWillSleep() }
         })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
             self.asleep = false
             self.updateBackgroundTimers()
             self.eventTaps?.verifyActive()
+            MainActor.assumeIsolated { self.clipboard.handleDidWake() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.applyPointer() }
         })
         workspaceObservers.append(center.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in

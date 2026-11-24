@@ -77,12 +77,23 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     /// 设置窗口的标识。标题会随语言变，找这个窗口时用它
     static let windowID = NSUserInterfaceItemIdentifier("MacShunSettings")
 
+    /// macOS 系统权限弹窗（如本地网络、文件访问）对应的宿主进程，关闭后需把设置窗口带回前台。
+    private static let systemPromptHosts: Set<String> = [
+        "com.apple.UserNotificationCenter",
+        "com.apple.coreservices.uiagent",
+        "com.apple.SecurityAgent",
+    ]
+
     private let configStore: ConfigStore
     private let state: AppState
     private let clipboard: ClipboardController
     private let selection = SettingsSelection()
     private var window: NSWindow?
     private var occlusionObserver: NSObjectProtocol?
+    private var windowObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var lastResignedKeyAt: Date?
+    private var waitingForSystemPrompt = false
     private var keyMonitor: Any?
 
     init(configStore: ConfigStore, state: AppState, clipboard: ClipboardController) {
@@ -105,7 +116,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let root = SettingsView(
                 configStore: configStore, state: state,
-                clipboardStore: clipboard.store, selection: selection
+                clipboard: clipboard, selection: selection
             )
             let host = NSHostingController(rootView: root.environmentObject(selection))
             let window = NSWindow(contentViewController: host)
@@ -115,6 +126,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.isReleasedWhenClosed = false
+            window.hidesOnDeactivate = false
             window.delegate = self
             window.setFrameAutosaveName("SettingsWindow")
             center = !window.setFrameUsingName("SettingsWindow")
@@ -128,6 +140,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
                 let visible = window.occlusionState.contains(.visible)
                 if selection.windowVisible != visible { selection.windowVisible = visible }
             }
+            installSystemPromptRestoreObservers(for: window)
             self.window = window
             // ⌘F 到侧栏的搜索框（正在录快捷键时不拦截，避免吞掉 Win+F / Alt+F）
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak window] event in
@@ -156,11 +169,63 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window = nil
     }
 
+    private func installSystemPromptRestoreObservers(for window: NSWindow) {
+        let nc = NotificationCenter.default
+        windowObservers.append(nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+            self?.lastResignedKeyAt = nil
+            self?.waitingForSystemPrompt = false
+        })
+        windowObservers.append(nc.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+            self?.lastResignedKeyAt = Date()
+        })
+
+        let ws = NSWorkspace.shared.notificationCenter
+        // 菜单栏应用（LSUIElement）在系统权限弹窗关闭后，macOS 默认会把焦点交回上一个程序坞应用，
+        // 导致设置窗口被盖在后面；识别到系统弹窗关闭后把设置窗口带回前台。
+        workspaceObservers.append(ws.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self, weak window] note in
+            guard let self, let window, window.isVisible, !window.isMiniaturized,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  let bundleID = app.bundleIdentifier
+            else { return }
+            if Self.systemPromptHosts.contains(bundleID) {
+                let recentlyActive = window.isKeyWindow
+                    || self.lastResignedKeyAt.map { Date().timeIntervalSince($0) < 2 } == true
+                if recentlyActive {
+                    self.waitingForSystemPrompt = true
+                }
+            } else if self.waitingForSystemPrompt, bundleID != Bundle.main.bundleIdentifier {
+                self.waitingForSystemPrompt = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak window] in
+                    guard let window, window.isVisible, !window.isMiniaturized else { return }
+                    Foreground.bring(window)
+                }
+            }
+        })
+        workspaceObservers.append(ws.addObserver(forName: NSWorkspace.didDeactivateApplicationNotification, object: nil, queue: .main) { [weak self, weak window] note in
+            guard let self, let window, self.waitingForSystemPrompt, window.isVisible, !window.isMiniaturized,
+                  let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  let bundleID = app.bundleIdentifier,
+                  Self.systemPromptHosts.contains(bundleID)
+            else { return }
+            self.waitingForSystemPrompt = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak window] in
+                guard let window, window.isVisible, !window.isMiniaturized else { return }
+                Foreground.bring(window)
+            }
+        })
+    }
+
     private func tearDownWindowResources() {
         if let observer = occlusionObserver {
             NotificationCenter.default.removeObserver(observer)
             occlusionObserver = nil
         }
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        windowObservers.removeAll()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        waitingForSystemPrompt = false
+        lastResignedKeyAt = nil
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
@@ -198,7 +263,7 @@ final class SettingsSelection: ObservableObject {
 struct SettingsView: View {
     @ObservedObject var configStore: ConfigStore
     @ObservedObject var state: AppState
-    let clipboardStore: ClipboardStore
+    let clipboard: ClipboardController
     @ObservedObject var selection: SettingsSelection
     @ObservedObject var tiling = NativeTilingStatus.shared
 
@@ -308,7 +373,8 @@ struct SettingsView: View {
             )
         case .clipboard:
             ClipboardSettings(config: $configStore.config.clipboard, keyboardShortcuts: configStore.config.keyboard.enabled,
-                              store: clipboardStore, state: state)
+                              store: clipboard.store, sync: clipboard.sync, state: state,
+                              onCopyInviteCode: { clipboard.copySensitiveTextLocally($0) })
         case .fileSearch:
             FileSearchSettings(config: $configStore.config.fileSearch, index: FileIndex.shared, contentIndex: ContentIndex.shared)
         case .window:
@@ -799,7 +865,9 @@ private struct ClipboardSettings: View {
     @Binding var config: ClipboardConfig
     let keyboardShortcuts: Bool
     @ObservedObject var store: ClipboardStore
+    @ObservedObject var sync: ClipboardSyncService
     @ObservedObject var state: AppState
+    let onCopyInviteCode: (String) -> Void
 
     private var openingHint: String {
         guard config.enabled else { return L("开启后，复制的内容会保存在这台 Mac 上。") }
@@ -839,11 +907,20 @@ private struct ClipboardSettings: View {
             }
             .disabled(!config.enabled)
 
+            ClipboardSyncSettingsSections(
+                config: $config.sync,
+                sync: sync,
+                clipboardEnabled: config.enabled,
+                onCopyInviteCode: onCopyInviteCode
+            )
+
             Section {
                 InfoRow(
                     symbol: "lock.shield",
-                    title: L("只保存在这台电脑上"),
-                    detail: L("不联网，不需要账号。密码管理器标记为隐藏的内容、在 Finder 里复制的文件都不记录。")
+                    title: config.sync.enabled ? L("仅在你的设备间端到端加密传输") : L("只保存在这台电脑上"),
+                    detail: config.sync.enabled
+                        ? L("不经过第三方服务器，不需要账号。密码管理器标记为隐藏的内容永远不会记录或同步。")
+                        : L("不联网，不需要账号。密码管理器标记为隐藏的内容、在 Finder 里复制的文件都不记录。")
                 )
                 .settingsAnchor(.clipboardPrivacy)
                 HStack {

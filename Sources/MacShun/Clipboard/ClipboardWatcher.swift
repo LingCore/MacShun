@@ -20,6 +20,8 @@ final class ClipboardWatcher {
     private var lastChangeCount: Int
     /// 本程序自己写进剪贴板时的计数，看到它就不再记录。
     private var ownChangeCount: Int?
+    /// 仅在本机产生新的真实复制时触发，用于跨设备剪贴板广播。
+    var onLocalCapture: ((ClipboardCapture) -> Void)?
 
     /// 密码管理器等用这些类型标记“不要记录”（nspasteboard.org 的约定）。
     static let ignoredTypes: Set<String> = [
@@ -145,6 +147,7 @@ final class ClipboardWatcher {
         guard let capture = Self.capture(from: pasteboard, recordImages: cfg.recordImages, sourceApp: sourceAppOverride) else { return }
         guard pasteboard.changeCount == count else { return }
         store.add(capture, maxItems: cfg.maxItems)
+        onLocalCapture?(capture)
     }
 
     static func capture(from pasteboard: NSPasteboard, recordImages: Bool, sourceApp: String? = nil) -> ClipboardCapture? {

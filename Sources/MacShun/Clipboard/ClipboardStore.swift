@@ -36,9 +36,27 @@ struct ClipboardItem: Codable, Identifiable, Equatable {
     /// 从哪个应用复制的
     var sourceApp: String?
     var note: String?
+    /// 跨设备同步来源（本机记录为 nil，兼容旧历史文件）。
+    var sourceDeviceID: String?
+    var sourceDeviceName: String?
+    var sourcePlatform: SyncPlatform?
+    /// 尚未落盘的远端文件清单（拉取完成后写入 fileURLs 并置空）。
+    var remoteFiles: RemoteFileInfo?
+
+    var isPendingRemoteFiles: Bool {
+        kind == .files && (fileURLs == nil || fileURLs?.isEmpty == true) && remoteFiles != nil
+    }
 
     var fileNames: [String] {
-        (fileURLs ?? []).map { $0.lastPathComponent.isEmpty ? $0.path : $0.lastPathComponent }
+        if let fileURLs, !fileURLs.isEmpty {
+            return fileURLs.map { $0.lastPathComponent.isEmpty ? $0.path : $0.lastPathComponent }
+        }
+        return remoteFiles?.topLevelNames ?? []
+    }
+
+    var fileCount: Int {
+        if let fileURLs, !fileURLs.isEmpty { return fileURLs.count }
+        return remoteFiles?.topLevelNames.count ?? 0
     }
 
     var isWebLink: Bool {
@@ -89,6 +107,10 @@ struct ClipboardCapture {
     var fileURLs: [URL]?
     var fingerprint: String
     var sourceApp: String?
+    var sourceDeviceID: String?
+    var sourceDeviceName: String?
+    var sourcePlatform: SyncPlatform?
+    var remoteFiles: RemoteFileInfo?
 }
 
 /// 剪贴板历史的存储。内容只保存在本机（C5）：
@@ -162,7 +184,8 @@ final class ClipboardStore: ObservableObject {
         let term = PinyinIndex.Query(q)
         return sorted.filter { item in
             let content = item.kind == .files ? item.fileNames.joined(separator: "\n") : item.imageText ?? item.text
-            let searchable = item.note.map { note in content.map { note + "\n" + $0 } ?? note } ?? content
+            let parts = [item.note, item.sourceDeviceName, content].compactMap { $0 }.filter { !$0.isEmpty }
+            let searchable = parts.isEmpty ? nil : parts.joined(separator: "\n")
             guard let text = searchable, !text.isEmpty else { return false }
             if item.kind == .image && text.localizedCaseInsensitiveContains(q) { return true }
             if term.matchesOriginal(text) { return true }
@@ -213,7 +236,19 @@ final class ClipboardStore: ObservableObject {
                 }
             }
             items[i].sourceApp = capture.sourceApp
+            items[i].sourceDeviceID = capture.sourceDeviceID
+            items[i].sourceDeviceName = capture.sourceDeviceName
+            items[i].sourcePlatform = capture.sourcePlatform
+            if capture.kind == .files {
+                if let urls = capture.fileURLs, !urls.isEmpty {
+                    items[i].fileURLs = urls
+                    items[i].remoteFiles = nil
+                } else if let remote = capture.remoteFiles {
+                    items[i].remoteFiles = remote
+                }
+            }
             items[i].lastUsed = now
+            indexes[items[i].id] = nil
             scheduleSave()
             return
         }
@@ -223,7 +258,11 @@ final class ClipboardStore: ObservableObject {
             id: id, kind: capture.kind, text: capture.text, extraFiles: [:],
             imageFile: nil, imageWidth: nil, imageHeight: nil, fileURLs: capture.fileURLs,
             fingerprint: capture.fingerprint, created: now, lastUsed: now,
-            pinned: false, sourceApp: capture.sourceApp
+            pinned: false, sourceApp: capture.sourceApp,
+            sourceDeviceID: capture.sourceDeviceID,
+            sourceDeviceName: capture.sourceDeviceName,
+            sourcePlatform: capture.sourcePlatform,
+            remoteFiles: capture.remoteFiles
         )
         do {
             if let data = capture.png ?? capture.tiff {
@@ -409,6 +448,19 @@ final class ClipboardStore: ObservableObject {
         guard items[index].note != note else { return }
         indexes[id] = nil
         items[index].note = note
+        scheduleSave()
+    }
+
+    /// 远端文件拉取完成后，将历史中的待接收条目更新为真实的本机文件引用。
+    func completeRemoteFiles(transferID: UUID, localURLs: [URL]) {
+        guard !localURLs.isEmpty,
+              let index = items.firstIndex(where: { $0.remoteFiles?.transferID == transferID })
+        else { return }
+        items[index].fileURLs = localURLs
+        items[index].remoteFiles = nil
+        let paths = Data(localURLs.map(\.path).joined(separator: "\0").utf8)
+        items[index].fingerprint = Self.fingerprint([Data("files".utf8), paths])
+        indexes[items[index].id] = nil
         scheduleSave()
     }
 

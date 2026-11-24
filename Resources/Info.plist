@@ -37,5 +37,11 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 LingCore. MIT License.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>开启跨设备剪贴板共享后，用于在局域网内发现并加密连接你的其他 Mac顺 和 Win顺 电脑。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_shunsync._tcp</string>
+	</array>
 </dict>
 </plist>

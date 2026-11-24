@@ -72,5 +72,47 @@
 			<string>%ld 行</string>
 		</dict>
 	</dict>
+	<key>已连接 %ld 台</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>other</key>
+			<string>已连接 %ld 台</string>
+		</dict>
+	</dict>
+	<key>已连接 %ld 台设备</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>other</key>
+			<string>已连接 %ld 台设备</string>
+		</dict>
+	</dict>
+	<key>暂停剪贴板共享（已连接 %ld 台）</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>other</key>
+			<string>暂停剪贴板共享（已连接 %ld 台）</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

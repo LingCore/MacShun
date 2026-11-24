@@ -16,7 +16,7 @@ struct SettingsItem: Identifiable {
         case performanceEnabled, cpuUsage, gpuUsage, memoryUsage, chipTemperature
         case performanceMenuBarStyle, combinePerformanceProcessors
         case windowSnap, dragToSnap, snapAssist
-        case clipboardEnabled, maxItems, recordImages, clipboardPrivacy, showInFinder, clearHistory
+        case clipboardEnabled, maxItems, recordImages, clipboardSyncEnabled, clipboardSyncDevices, clipboardSyncAutoWrite, clipboardSyncFiles, clipboardSyncManualPeers, clipboardPrivacy, showInFinder, clearHistory
         case grantAll, accessibility, inputMonitoring, pasteboardPermission, fullDiskAccess, relaunch, launchAtLogin, language, version
         case autoUpdate, tilingConflict, stats
         case works, feedback
@@ -158,6 +158,16 @@ extension SettingsItem {
               keywords: "数量 条数 上限 limit count"),
         .init(id: .recordImages, tab: .clipboard, title: "记录图片",
               keywords: "截图 图片 images screenshots"),
+        .init(id: .clipboardSyncEnabled, tab: .clipboard, title: "跨设备剪贴板共享",
+              keywords: "同步 共享 多设备 windows winshun macshun 局域网 传文件 sync share cross device lan"),
+        .init(id: .clipboardSyncDevices, tab: .clipboard, title: "我的设备",
+              keywords: "配对 邀请码 设备 群组 密钥 连接 pair invite code group devices connect"),
+        .init(id: .clipboardSyncAutoWrite, tab: .clipboard, title: "收到内容时自动写入系统剪贴板",
+              keywords: "自动粘贴 覆盖 剪贴板 历史 auto write pasteboard"),
+        .init(id: .clipboardSyncFiles, tab: .clipboard, title: "小文件自动预取",
+              keywords: "文件 文件夹 传输 大文件 缓存 预下载 下载 提示 file transfer prefetch cache downloads"),
+        .init(id: .clipboardSyncManualPeers, tab: .clipboard, title: "已保存的手动设备地址（Tailscale / 跨网段）",
+              keywords: "tailscale zerotier vpn ip 端口 跨网段 manual peer host port"),
         .init(id: .clipboardPrivacy, tab: .clipboard, title: "只保存在这台电脑上",
               keywords: "隐私 本地 联网 账号 密码 privacy local password"),
         .init(id: .showInFinder, tab: .clipboard, title: "在 Finder 中显示",

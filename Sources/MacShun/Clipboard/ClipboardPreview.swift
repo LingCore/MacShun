@@ -26,6 +26,10 @@ struct ClipboardPreview: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: item.fileURLs) {
             guard item.kind == .files else { return }
+            if item.isPendingRemoteFiles {
+                files.unavailable = false
+                return
+            }
             let available = await ClipboardController.filesAvailable(item.fileURLs ?? [])
             if !Task.isCancelled { files.unavailable = !available }
         }
@@ -35,7 +39,12 @@ struct ClipboardPreview: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(L("预览")).font(.headline)
-                if let source = item.sourceApp {
+                if let device = item.sourceDeviceName, !device.isEmpty {
+                    Text(L("来自 %@", device))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let source = item.sourceApp {
                     Text(AppInfo.name(source))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -85,7 +94,14 @@ struct ClipboardPreview: View {
         case .files:
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
-                    if files.unavailable {
+                    if let remote = item.remoteFiles, item.isPendingRemoteFiles {
+                        Label(
+                            L("来自 %@ · %@，粘贴或复制时自动接收", remote.originDeviceName, SyncPathSanitizer.formatBytes(remote.totalBytes)),
+                            systemImage: "icloud.and.arrow.down"
+                        )
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    } else if files.unavailable {
                         Label(L("部分文件已移动、删除或暂不可用"), systemImage: "exclamationmark.triangle")
                             .font(.callout)
                     }
@@ -118,11 +134,20 @@ struct ClipboardPreview: View {
     private var actions: some View {
         HStack(spacing: 8) {
             Button { model.onCopy(item) } label: {
-                Label(L("复制"), systemImage: "doc.on.doc")
+                Label(item.isPendingRemoteFiles ? L("接收并复制") : L("复制"), systemImage: "doc.on.doc")
+            }
+            if item.kind == .files && (item.isPendingRemoteFiles || item.sourceDeviceID != nil) {
+                Button { model.onSaveToDownloads(item) } label: {
+                    Label(L("存到下载"), systemImage: "arrow.down.circle")
+                }
             }
             Spacer(minLength: 0)
             Button { model.pastePreview(item) } label: {
-                Label(model.hasPreviewSelection ? L("粘贴选中文字") : L("粘贴"), systemImage: "return")
+                Label(
+                    model.hasPreviewSelection ? L("粘贴选中文字")
+                        : item.isPendingRemoteFiles ? L("接收并粘贴") : L("粘贴"),
+                    systemImage: "return"
+                )
             }
             .buttonStyle(.borderedProminent)
         }

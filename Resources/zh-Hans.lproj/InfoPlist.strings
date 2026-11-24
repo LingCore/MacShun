@@ -1,3 +1,4 @@
 /* 应用的中文名字 */
 "CFBundleName" = "Mac顺";
 "CFBundleDisplayName" = "Mac顺";
+"NSLocalNetworkUsageDescription" = "开启跨设备剪贴板共享后，用于在局域网内发现并加密连接你的其他 Mac顺 和 Win顺 电脑。";

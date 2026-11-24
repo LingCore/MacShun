@@ -82,5 +82,53 @@
 			<string>%ld lines</string>
 		</dict>
 	</dict>
+	<key>已连接 %ld 台</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld connected</string>
+			<key>other</key>
+			<string>%ld connected</string>
+		</dict>
+	</dict>
+	<key>已连接 %ld 台设备</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld device connected</string>
+			<key>other</key>
+			<string>%ld devices connected</string>
+		</dict>
+	</dict>
+	<key>暂停剪贴板共享（已连接 %ld 台）</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@n@</string>
+		<key>n</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>Pause Clipboard Sharing (%ld device)</string>
+			<key>other</key>
+			<string>Pause Clipboard Sharing (%ld devices)</string>
+		</dict>
+	</dict>
 </dict>
 </plist>
