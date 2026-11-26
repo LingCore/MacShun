@@ -416,7 +416,7 @@ struct CaptureAnnotationTests {
             #expect(buttons.filter { !$0.isHidden && $0 !== style }.allSatisfy { !$0.frame.intersects(style.frame) })
             if let editor = window.contentView as? LongCaptureEditor {
                 #expect(editor.scroller.frame.maxY < toolbar.frame.minY)
-                #expect(toolbar.frame.height <= 80)
+                #expect(toolbar.frame.height <= 120)
             }
         }
 

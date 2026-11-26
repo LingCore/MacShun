@@ -215,6 +215,9 @@ final class StatusMenu: NSObject, NSMenuDelegate, NSViewToolTipOwner {
         menu.addItem(action(CaptureMode.image.title, #selector(startCapture), symbol: "viewfinder"))
         menu.addItem(action(CaptureMode.text.title, #selector(readText), symbol: "text.viewfinder"))
         menu.addItem(action(L("贴出剪贴板图片"), #selector(pinClipboard), symbol: "macwindow.on.rectangle"))
+        if ScreenPins.shared.hasClickThroughWindows {
+            menu.addItem(action(L("恢复贴图交互"), #selector(restorePinInteraction), symbol: "hand.raised"))
+        }
         if !ScreenPins.shared.windows.isEmpty {
             menu.addItem(action(L("关闭全部贴图"), #selector(closePins), symbol: "xmark.rectangle"))
         }
@@ -246,6 +249,7 @@ final class StatusMenu: NSObject, NSMenuDelegate, NSViewToolTipOwner {
     @MainActor @objc private func toggleClipboardSyncPause() { clipboard.toggleSyncPause() }
     @objc private func startCapture() { capture(.image) }
     @MainActor @objc private func pinClipboard() { ScreenPins.shared.showClipboard() }
+    @MainActor @objc private func restorePinInteraction() { ScreenPins.shared.disableAllClickThrough() }
     @MainActor @objc private func closePins() { ScreenPins.shared.closeAll() }
     @objc private func readText() { capture(.text) }
     @objc private func showClipboard() { openClipboard() }

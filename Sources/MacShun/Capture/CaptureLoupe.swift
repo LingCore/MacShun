@@ -77,12 +77,15 @@ struct CaptureLoupeSample {
 @MainActor
 final class CaptureLoupe: NSView {
     private static let inset: CGFloat = 8
-    private static let gridBottom: CGFloat = 47
+    private static let gridBottom: CGFloat = 60
     private static let minimumWidth: CGFloat = 151
     private let grid = CALayer()
+    private let horizontalGuide = CALayer()
+    private let verticalGuide = CALayer()
     private let darkOutline = CALayer()
     private let lightOutline = CALayer()
     private let swatch = CALayer()
+    private let coordsLabel = NSTextField(labelWithString: "")
     private let valueLabel = NSTextField(labelWithString: "")
     private let formatShortcutLabel = NSTextField(labelWithString: L("⇧ 格式"))
     private let shortcutLabel = NSTextField(labelWithString: "")
@@ -95,11 +98,19 @@ final class CaptureLoupe: NSView {
         }
     }
     var displayedColor: String? { sample == nil ? nil : valueLabel.stringValue }
+    var displayedCoords: String { coordsLabel.stringValue }
 
     var sample: CaptureLoupeSample? {
         didSet {
             copied = false
             grid.contents = sample?.image
+            if oldValue?.pixel != sample?.pixel {
+                if let pixel = sample?.pixel {
+                    coordsLabel.stringValue = "\(Int(pixel.x)), \(Int(pixel.y))"
+                } else {
+                    coordsLabel.stringValue = ""
+                }
+            }
             if oldValue?.hex != sample?.hex {
                 swatch.backgroundColor = sample?.color.cgColor
                 updateValue()
@@ -113,18 +124,22 @@ final class CaptureLoupe: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
-        // 只更新 15×15 的像素纹理。放大和中心框交给合成器，色值相同时也无需重画文字。
+        // 只更新 15×15 的像素纹理。放大、十字准星和中心框交给合成器，色值相同时也无需重画文字。
         grid.contentsGravity = .resize
         grid.magnificationFilter = .nearest
         grid.cornerRadius = 4
         grid.masksToBounds = true
         grid.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull()]
+        horizontalGuide.actions = grid.actions
+        verticalGuide.actions = grid.actions
         darkOutline.borderColor = NSColor.black.cgColor
         darkOutline.borderWidth = 3
         darkOutline.actions = grid.actions
         lightOutline.borderColor = NSColor.white.cgColor
         lightOutline.borderWidth = 1
         lightOutline.actions = grid.actions
+        grid.addSublayer(horizontalGuide)
+        grid.addSublayer(verticalGuide)
         grid.addSublayer(darkOutline)
         grid.addSublayer(lightOutline)
         layer?.addSublayer(grid)
@@ -132,13 +147,15 @@ final class CaptureLoupe: NSView {
         swatch.cornerRadius = 3
         swatch.actions = ["backgroundColor": NSNull()]
         layer?.addSublayer(swatch)
+        coordsLabel.font = NSFont(name: "Menlo-Regular", size: 10.5) ?? .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+        coordsLabel.textColor = .secondaryLabelColor
         valueLabel.textColor = .labelColor
         shortcutLabel.alignment = .right
         for label in [formatShortcutLabel, shortcutLabel] {
             label.font = .systemFont(ofSize: 11, weight: .medium)
             label.textColor = .secondaryLabelColor
         }
-        for label in [valueLabel, formatShortcutLabel, shortcutLabel] {
+        for label in [coordsLabel, valueLabel, formatShortcutLabel, shortcutLabel] {
             label.setAccessibilityElement(false)
             addSubview(label)
         }
@@ -164,6 +181,9 @@ final class CaptureLoupe: NSView {
         layer?.borderWidth = line
         swatch.borderColor = NSColor.separatorColor.cgColor
         swatch.borderWidth = line
+        let guideColor = NSColor.controlAccentColor.withAlphaComponent(0.24).cgColor
+        horizontalGuide.backgroundColor = guideColor
+        verticalGuide.backgroundColor = guideColor
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -177,6 +197,8 @@ final class CaptureLoupe: NSView {
         grid.frame = CGRect(x: floor((bounds.width - side) / 2), y: Self.gridBottom, width: side, height: side)
         let radius = CGFloat(CaptureLoupeSample.radius) * side / CGFloat(CaptureLoupeSample.side)
         let center = CGRect(origin: .zero, size: grid.bounds.size).insetBy(dx: radius, dy: radius)
+        horizontalGuide.frame = CGRect(x: 0, y: center.minY, width: grid.bounds.width, height: center.height)
+        verticalGuide.frame = CGRect(x: center.minX, y: 0, width: center.width, height: grid.bounds.height)
         darkOutline.frame = center.insetBy(dx: -1.5, dy: -1.5)
         lightOutline.frame = center.insetBy(dx: -0.5, dy: -0.5)
 
@@ -189,7 +211,8 @@ final class CaptureLoupe: NSView {
         let copyWidth = ceil(shortcutLabel.intrinsicContentSize.width)
         layoutLabel(formatShortcutLabel, x: 26, centerY: 14, width: formatWidth)
         layoutLabel(shortcutLabel, x: bounds.maxX - Self.inset - copyWidth, centerY: 14, width: copyWidth)
-        layoutLabel(valueLabel, x: Self.inset, centerY: 34, width: max(0, bounds.width - 2 * Self.inset))
+        layoutLabel(valueLabel, x: Self.inset, centerY: 32, width: max(0, bounds.width - 2 * Self.inset))
+        layoutLabel(coordsLabel, x: Self.inset, centerY: 48, width: max(0, bounds.width - 2 * Self.inset))
     }
 
     private func layoutLabel(_ label: NSTextField, x: CGFloat, centerY: CGFloat, width: CGFloat) {
@@ -212,7 +235,7 @@ final class CaptureLoupe: NSView {
 
     static func frame(near point: CGPoint, in bounds: CGRect, avoiding obstacles: [CGRect], scale: CGFloat) -> CGRect? {
         let available = bounds.insetBy(dx: 6, dy: 6)
-        for (cellSize, gap) in [(10, 18), (7, 12), (6, 12), (5, 12)] {
+        for (cellSize, gap) in [(10, 18), (7, 12), (6, 12), (5, 12), (4, 12)] {
             let grid = CGFloat(CaptureLoupeSample.side * cellSize)
             let size = CGSize(width: max(minimumWidth, grid + 2 * inset), height: grid + gridBottom + inset)
             if let origin = origin(near: point, size: size, gap: CGFloat(gap), in: available, avoiding: obstacles, scale: scale) {

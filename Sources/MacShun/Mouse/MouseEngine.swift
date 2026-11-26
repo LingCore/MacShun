@@ -64,8 +64,9 @@ final class MouseEngine {
         let vertical = axis(event, .scrollWheelEventDeltaAxis1, .scrollWheelEventFixedPtDeltaAxis1, .scrollWheelEventPointDeltaAxis1)
         let horizontal = axis(event, .scrollWheelEventDeltaAxis2, .scrollWheelEventFixedPtDeltaAxis2, .scrollWheelEventPointDeltaAxis2)
 
-        // M5：Ctrl+滚轮缩放，换成 ⌘= / ⌘-。
+        // M5：Ctrl+滚轮缩放，换成 ⌘= / ⌘-。截图选区期间放行，避免误缩放底层窗口。
         if cfg.mouse.ctrlWheelZoom,
+           !environment.captureActive.get(),
            event.flags.intersection(.modifierKeys) == .maskControl,
            !isExcluded(cfg),
            let up = ScrollTransform.isPhysicallyUp(vertical, invertedFromDevice: inverted) {
@@ -120,7 +121,7 @@ final class MouseEngine {
             }
             return swallowedButtons.remove(button) != nil ? nil : pass
         }
-        guard cfg.mouse.enabled else { return pass }
+        guard cfg.mouse.enabled, !environment.captureActive.get() else { return pass }
         let app = environment.current.get()
         let setting = button == SideButtons.backButton ? cfg.mouse.backButton : cfg.mouse.forwardButton
         let decision = SideButtons.decide(

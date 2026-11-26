@@ -116,7 +116,7 @@ struct CaptureTests {
             var copies = 0, cancellations = 0, saves = 0
             canvas.onCopy = { copies += 1 }
             canvas.onCancel = { cancellations += 1 }
-            canvas.onSave = { saves += 1 }
+            canvas.onSave = { _ in saves += 1 }
             func mouse(_ type: NSEvent.EventType, _ p: CGPoint) throws -> NSEvent {
                 try #require(NSEvent.mouseEvent(with: type, location: p, modifierFlags: [], timestamp: 1,
                                                 windowNumber: window.windowNumber, context: nil,
@@ -147,20 +147,25 @@ struct CaptureTests {
             let toolbar = try #require(canvas.subviews.compactMap { $0 as? CaptureToolbar }.first)
             toolbar.layoutSubtreeIfNeeded()
             let buttons = toolbar.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }
-            #expect(buttons.count == CaptureMark.Kind.allCases.count + 10 && canvas.bounds.contains(toolbar.frame))
+            #expect(buttons.count == CaptureMark.Kind.allCases.count + 11 && canvas.bounds.contains(toolbar.frame))
             #expect(buttons.contains { $0.accessibilityLabel() == CaptureMark.Kind.ellipse.title })
             for button in buttons { #expect(button.frame.width >= 26 && button.accessibilityLabel() != nil) }
-            let redact = try #require(buttons.first { $0.toolTip == CaptureMark.Kind.cover.title })
+            let redact = try #require(buttons.first { $0.accessibilityLabel() == CaptureMark.Kind.cover.title })
             redact.performClick(nil)
             try drag(middle, CGPoint(x: middle.x + 30, y: middle.y + 20))
             #expect(canvas.marks.count == 1)
             try key(KeyCode.z, .command)
             #expect(canvas.marks.isEmpty)
             try key(KeyCode.s, .command)
+            // 阶梯回退：第 1 下 Esc 退出当前工具，第 2 下放弃选区回悬停，第 3 下退出截图。
             try key(KeyCode.escape)
-            #expect(saves == 1 && cancellations == 1 && copies == 0)
+            #expect(cancellations == 0 && canvas.selection != nil)
             try key(KeyCode.returnKey)
             #expect(copies == 1)
+            try key(KeyCode.escape)
+            #expect(cancellations == 0 && canvas.selection == nil)
+            try key(KeyCode.escape)
+            #expect(saves == 1 && cancellations == 1 && copies == 1)
         }
     }
     @Test func polygonExportsTransparentCornersAndClipsMarksAtRetinaScale() throws {
@@ -202,11 +207,11 @@ struct CaptureTests {
         toolbar.setPrimaryRowOnTop(false)
         #expect(line.frame.maxY < copy.frame.minY)
         toolbar.setPrimaryRowOnTop(true)
-        toolbar.fit(within: 408)
-        #expect(toolbar.frame.width <= 408 && Set(buttons.map { $0.frame.minY }).count == 2)
+        toolbar.fit(within: 492)
+        #expect(toolbar.frame.width <= 492 && Set(buttons.map { $0.frame.minY }).count == 2)
         #expect(copy.frame.maxY < line.frame.minY)
-        toolbar.fit(within: 308)
-        #expect(toolbar.frame.width <= 308 && toolbar.frame.height > fullWidth.height)
+        toolbar.fit(within: 340)
+        #expect(toolbar.frame.width <= 340 && toolbar.frame.height > fullWidth.height)
         for (index, button) in buttons.enumerated() {
             #expect(toolbar.bounds.contains(button.frame))
             #expect(buttons.dropFirst(index + 1).allSatisfy { !$0.frame.intersects(button.frame) })
@@ -308,6 +313,9 @@ struct CaptureTests {
         let initialCount = pb.changeCount
         var panel = try await begin(.image)
         try clickWindow(panel)
+        // 有选区时第 1 下 Esc 退回悬停重选，第 2 下退出截图。
+        try press(KeyCode.escape, "\u{1b}", in: panel)
+        #expect(panel.isVisible && (panel.contentView as? CaptureCanvas)?.selection == nil)
         try press(KeyCode.escape, "\u{1b}", in: panel)
         #expect(!panel.isVisible && pb.changeCount == initialCount && pb.string(forType: .string) == "original")
 
@@ -342,9 +350,13 @@ struct CaptureTests {
         try press(KeyCode.rightArrow, "\u{f703}", in: panel)
         #expect(restored.selection == target.offsetBy(dx: 1, dy: 0))
         try press(KeyCode.escape, "\u{1b}", in: panel)
+        #expect(restored.selection == nil && panel.isVisible)
+        try press(KeyCode.escape, "\u{1b}", in: panel)
+        #expect(!panel.isVisible)
         panel = try await begin(.image)
         try press(KeyCode.r, "r", in: panel)
         #expect((panel.contentView as? CaptureCanvas)?.selection == target)
+        try press(KeyCode.escape, "\u{1b}", in: panel)
         try press(KeyCode.escape, "\u{1b}", in: panel)
 
         // 从冻结选区按 F3：关闭选区，贴图保持选区大小，创建时不改剪贴板。
@@ -367,7 +379,7 @@ struct CaptureTests {
         panel = try await begin(.text)
         try clickWindow(panel)
         #expect(!panel.isVisible)
-        for _ in 0..<200 where pb.string(forType: .string) == nil {
+        for _ in 0..<400 where pb.string(forType: .string) == nil {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         #expect(pb.string(forType: .string)?.lowercased().contains("capture example") == true)
@@ -642,6 +654,251 @@ struct CaptureTests {
         let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: rep)
         #expect(rep.pixelsWide > 0 && rep.pixelsHigh > 0)
+    }
+
+    @Test func hitChainBuildsSmallestToLargestAndHandlesBlankDesktopAndWindowsOnly() throws {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let front = CGRect(x: 100, y: 100, width: 600, height: 500)
+        let back = CGRect(x: 50, y: 50, width: 700, height: 600)
+        let sidebar = CGRect(x: 100, y: 100, width: 200, height: 500)
+        let button = CGRect(x: 120, y: 400, width: 120, height: 32)
+        let tiny = CGRect(x: 125, y: 410, width: 4, height: 4)
+        let duplicate = CGRect(x: 120.2, y: 400.1, width: 120, height: 32)
+
+        let controls: [Int: [CGRect]] = [0: [front, sidebar, button, tiny, duplicate]]
+        let point = CGPoint(x: 150, y: 415)
+        let res = CaptureHitChain.hitChain(
+            windows: [front, back],
+            controlsForWindow: { controls[$0] ?? [] },
+            at: point,
+            screenBounds: screen,
+            windowsOnly: false
+        )
+        #expect(res.windowIndex == 0)
+        #expect(res.chain == [button, sidebar, front, screen])
+
+        let winOnly = CaptureHitChain.hitChain(
+            windows: [front, back],
+            controlsForWindow: { controls[$0] ?? [] },
+            at: point,
+            screenBounds: screen,
+            windowsOnly: true
+        )
+        #expect(winOnly.windowIndex == 0)
+        #expect(winOnly.chain == [front, screen])
+
+        let blank = CaptureHitChain.hitChain(
+            windows: [front, back],
+            controlsForWindow: { controls[$0] ?? [] },
+            at: CGPoint(x: 900, y: 700),
+            screenBounds: screen,
+            windowsOnly: false
+        )
+        #expect(blank.windowIndex == nil && blank.chain == [screen])
+
+        // 优先面积更小的可用控件，避免多层全尺寸容器压过小按钮。
+        let deepWrappers = [front, front.insetBy(dx: 2, dy: 2), front.insetBy(dx: 4, dy: 4)]
+        let smallTarget = [sidebar, button]
+        #expect(CaptureHitChain.preferChain(smallTarget, over: deepWrappers))
+        #expect(!CaptureHitChain.preferChain(deepWrappers, over: smallTarget))
+    }
+
+    @Test func windowSnapshotFiltersLayersDockChromiumAndExcludedSurfaces() throws {
+        let screen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let dockBar = CGRect(x: 300, y: 1000, width: 1320, height: 76)
+        let ownPID: pid_t = 500
+        let raw: [CaptureRawWindow] = [
+            // 输入法极高层：应过滤
+            CaptureRawWindow(windowID: 1, ownerPID: 10, bundleID: "com.ime", ownerName: "IME", name: "", layer: 2_147_483_629, alpha: 1, bounds: CGRect(x: 100, y: 100, width: 200, height: 32), isChromium: false),
+            // 菜单栏：应保留
+            CaptureRawWindow(windowID: 2, ownerPID: 11, bundleID: nil, ownerName: "Window Server", name: "Menubar", layer: Int(CGWindowLevelForKey(.mainMenuWindow)), alpha: 1, bounds: CGRect(x: 0, y: 0, width: 1920, height: 30), isChromium: false),
+            // 状态栏极小占位图标：应过滤
+            CaptureRawWindow(windowID: 3, ownerPID: 12, bundleID: "com.apple.controlcenter", ownerName: "ControlCenter", name: "", layer: Int(CGWindowLevelForKey(.statusWindow)), alpha: 1, bounds: CGRect(x: 1700, y: 0, width: 28, height: 28), isChromium: false),
+            // 控制中心弹窗：应保留
+            CaptureRawWindow(windowID: 4, ownerPID: 12, bundleID: "com.apple.controlcenter", ownerName: "ControlCenter", name: "Control Center", layer: Int(CGWindowLevelForKey(.statusWindow)), alpha: 1, bounds: CGRect(x: 1500, y: 36, width: 320, height: 400), isChromium: false),
+            // 程序坞全屏透明画布：应替换为真实 Dock AXList 栏矩形
+            CaptureRawWindow(windowID: 5, ownerPID: 20, bundleID: "com.apple.dock", ownerName: "Dock", name: "Dock", layer: Int(CGWindowLevelForKey(.dockWindow)), alpha: 1, bounds: screen, isChromium: false),
+            // 本程序贴图（在 excludedWindowIDs 内）：应过滤
+            CaptureRawWindow(windowID: 6, ownerPID: ownPID, bundleID: "io.github.lingcore.winshun", ownerName: "Mac顺", name: "屏幕贴图", layer: 3, alpha: 1, bounds: CGRect(x: 200, y: 200, width: 200, height: 200), isChromium: false),
+            // 本程序设置窗（不在 excludedWindowIDs 内）：应保留，且不对其走跨进程 AX
+            CaptureRawWindow(windowID: 7, ownerPID: ownPID, bundleID: "io.github.lingcore.winshun", ownerName: "Mac顺", name: "Mac顺 设置", layer: 0, alpha: 1, bounds: CGRect(x: 300, y: 200, width: 700, height: 600), isChromium: false),
+            // Chromium 窗口：应保留整窗，但禁止 AX 探测
+            CaptureRawWindow(windowID: 8, ownerPID: 30, bundleID: "com.microsoft.VSCode", ownerName: "Code", name: "VS Code", layer: 0, alpha: 1, bounds: CGRect(x: 0, y: 30, width: 1200, height: 800), isChromium: true),
+            // 原生访达窗口：应保留且允许 AX 探测
+            CaptureRawWindow(windowID: 9, ownerPID: 40, bundleID: "com.apple.finder", ownerName: "Finder", name: "Downloads", layer: 0, alpha: 1, bounds: CGRect(x: 100, y: 100, width: 800, height: 500), isChromium: false),
+            // 桌面小组件：应保留在最底层
+            CaptureRawWindow(windowID: 10, ownerPID: 50, bundleID: "com.apple.notificationcenterui", ownerName: "NotificationCenter", name: "Weather", layer: Int(CGWindowLevelForKey(.desktopIconWindow)) + 2, alpha: 1, bounds: CGRect(x: 20, y: 50, width: 180, height: 180), isChromium: false),
+            // 0 透明窗口：应过滤
+            CaptureRawWindow(windowID: 11, ownerPID: 60, bundleID: "com.ghost", ownerName: "Ghost", name: "", layer: 0, alpha: 0, bounds: CGRect(x: 50, y: 50, width: 300, height: 300), isChromium: false),
+        ]
+        let targets = CaptureWindowSnapshot.targets(
+            from: raw,
+            in: screen,
+            allScreens: [screen],
+            excludedWindowIDs: [6],
+            ownPID: ownPID,
+            dockBarRect: dockBar
+        )
+        #expect(targets.map(\.windowID) == [2, 4, 5, 7, 8, 9, 10])
+        let dock = try #require(targets.first { $0.windowID == 5 })
+        #expect(dock.isDock && dock.axFrame == dockBar && dock.supportsAXProbe)
+        let ownSettings = try #require(targets.first { $0.windowID == 7 })
+        #expect(!ownSettings.supportsAXProbe)
+        let vscode = try #require(targets.first { $0.windowID == 8 })
+        #expect(vscode.isChromium && !vscode.supportsAXProbe)
+        let finder = try #require(targets.first { $0.windowID == 9 })
+        #expect(finder.supportsAXProbe)
+        #expect(CaptureWindowSnapshot.isChromiumApp(bundleID: "com.google.Chrome"))
+        #expect(CaptureWindowSnapshot.isChromiumApp(bundleID: "com.microsoft.VSCode"))
+        #expect(!CaptureWindowSnapshot.isChromiumApp(bundleID: "com.apple.finder"))
+    }
+
+    @Test func axProbeGateBlacklistsSlowAndRepeatedlyEmptyWindows() {
+        var gate = CaptureAXProbeGate()
+        #expect(gate.allowed(100))
+        for _ in 0 ..< (CaptureAXProbeGate.emptyLimit - 1) {
+            gate.record(100, elapsedMs: 12, controlCount: 0)
+            #expect(gate.allowed(100))
+        }
+        gate.record(100, elapsedMs: 12, controlCount: 0)
+        #expect(!gate.allowed(100))
+
+        gate.record(200, elapsedMs: 10, controlCount: 0)
+        gate.record(200, elapsedMs: 10, controlCount: 3)
+        #expect(gate.allowed(200))
+        gate.record(200, elapsedMs: CaptureAXProbeGate.budgetMs + 1, controlCount: 2)
+        #expect(!gate.allowed(200) && gate.isSlow(200))
+    }
+
+    @Test func selectionGeometryHitsFullEdgesAndFlipsAcrossOppositeEdge() {
+        let bounds = CGRect(x: 0, y: 0, width: 600, height: 400)
+        let rect = CGRect(x: 100, y: 100, width: 200, height: 120)
+        // 整条边线任意位置（远离中点圆点）均可命中缩放手柄。
+        #expect(CaptureSelectionGeometry.handle(at: CGPoint(x: 135, y: 222), in: rect) == .top)
+        #expect(CaptureSelectionGeometry.handle(at: CGPoint(x: 302, y: 145), in: rect) == .right)
+        #expect(CaptureSelectionGeometry.handle(at: CGPoint(x: 100, y: 220), in: rect) == .topLeft)
+        #expect(CaptureSelectionGeometry.handle(at: CGPoint(x: 200, y: 160), in: rect) == nil)
+        // 拖过对边自动翻转且受边界约束。
+        let flipped = CaptureSelectionGeometry.resized(from: rect, handle: .left, delta: CGSize(width: 260, height: 0), in: bounds)
+        #expect(flipped == CGRect(x: 300, y: 100, width: 60, height: 120))
+        let flippedTop = CaptureSelectionGeometry.resized(from: rect, handle: .top, delta: CGSize(width: 0, height: -200), in: bounds)
+        #expect(flippedTop == CGRect(x: 100, y: 20, width: 200, height: 80))
+    }
+
+    @Test func hitChainCollapsesRedundantWrapperBordersForCleanWheelStepping() {
+        let screen = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let window = CGRect(x: 100, y: 100, width: 600, height: 500)
+        let windowWrapper = window.insetBy(dx: 2, dy: 2)
+        let sidebar = CGRect(x: 100, y: 100, width: 200, height: 500)
+        let button = CGRect(x: 120, y: 400, width: 120, height: 32)
+        let buttonBorder = button.insetBy(dx: -1.5, dy: -1.5)
+        let res = CaptureHitChain.hitChain(
+            windows: [window],
+            controlsForWindow: { _ in [windowWrapper, sidebar, button, buttonBorder] },
+            at: CGPoint(x: 150, y: 416),
+            screenBounds: screen,
+            windowsOnly: false
+        )
+        #expect(res.chain == [button, sidebar, window, screen])
+    }
+
+    @Test func sizePresetsAspectRatioLockAndEdgeSnappingWorkCleanly() throws {
+        let presets = CaptureSizePreset.parseList("1920x1080, 1280×720, 16:9, 4：3, invalid, 1920x1080")
+        #expect(presets.count == 4)
+        #expect(presets[0] == CaptureSizePreset(width: 1920, height: 1080, isRatio: false))
+        #expect(presets[2] == CaptureSizePreset(width: 16, height: 9, isRatio: true))
+        #expect(CaptureSizePreset.serialize(presets) == "1920x1080,1280x720,16:9,4:3")
+
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        let start = CGRect(x: 100, y: 100, width: 160, height: 90)
+        let locked = CaptureSelectionGeometry.resized(
+            from: start, handle: .topRight, delta: CGSize(width: 160, height: 20), in: bounds, aspectRatio: 16.0 / 9.0
+        )
+        #expect(abs(locked.width / locked.height - 16.0 / 9.0) < 0.01)
+        #expect(abs(locked.width - 320) < 0.5 && abs(locked.height - 180) < 0.5)
+
+        let squareEnd = CaptureSelectionGeometry.squareEnd(from: CGPoint(x: 50, y: 50), to: CGPoint(x: 180, y: 90), in: CGRect(x: 0, y: 0, width: 300, height: 300))
+        #expect(squareEnd == CGPoint(x: 180, y: 180))
+
+        let snapped = CaptureSelectionGeometry.snapResized(
+            CGRect(x: 100, y: 100, width: 197.5, height: 120),
+            handle: .right,
+            xGuides: [0, 300, 1000],
+            yGuides: [0, 800],
+            in: bounds
+        )
+        #expect(snapped.maxX == 300)
+        let unsnapped = CaptureSelectionGeometry.snapResized(
+            CGRect(x: 100, y: 100, width: 190, height: 120),
+            handle: .right,
+            xGuides: [0, 300, 1000],
+            yGuides: [0, 800],
+            in: bounds
+        )
+        #expect(unsnapped.maxX == 290)
+    }
+
+    @Test func visualRegionsPass3DetectsBorderlessContentBlockOnUniformBackground() throws {
+        // 模拟白底网页上的一张无边框拼色图/二维码块（右侧部分接近白色背景，仅靠四边直线无法闭合，由 Pass 3 连通块补检）。
+        let size = CGSize(width: 480, height: 320)
+        let ctx = try #require(CGContext(data: nil, width: 480, height: 320, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+        ctx.fill(CGRect(origin: .zero, size: size))
+        // 绘出一个不规则非矩形轮廓的彩色图表/内容块（左下角和右上角有实心色块，其余空白），测试 Pass 3 精确外框收缩。
+        let expected = CGRect(x: 110, y: 80, width: 180, height: 120)
+        ctx.setFillColor(CGColor(srgbRed: 0.15, green: 0.45, blue: 0.9, alpha: 1))
+        ctx.fillEllipse(in: CGRect(x: 110, y: 80, width: 110, height: 110))
+        ctx.setFillColor(CGColor(srgbRed: 0.9, green: 0.35, blue: 0.2, alpha: 1))
+        ctx.fillEllipse(in: CGRect(x: 190, y: 100, width: 100, height: 100))
+
+        let photo = CaptureImage(image: try #require(ctx.makeImage()), size: size)
+        let regions = CaptureVisualRegions.detect(in: photo, windowLocalRect: photo.bounds)
+        let matched = regions.contains { r in
+            abs(r.minX - expected.minX) <= 6
+                && abs(r.minY - expected.minY) <= 6
+                && abs(r.maxX - expected.maxX) <= 6
+                && abs(r.maxY - expected.maxY) <= 6
+        }
+        #expect(matched)
+    }
+
+    @Test func pinPictureTransformRotatesAndFlipsPixelsAccurately() throws {
+        // 4×2 图像：左上红、右上绿、左下蓝、右下黄（top-down PNG 坐标）
+        let ctx = try #require(CGContext(data: nil, width: 4, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                                         space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        // AppKit/CGContext: y=0 为底行，y=1 为顶行
+        ctx.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)) // 底左蓝
+        ctx.fill(CGRect(x: 0, y: 0, width: 2, height: 1))
+        ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 0, alpha: 1)) // 底右黄
+        ctx.fill(CGRect(x: 2, y: 0, width: 2, height: 1))
+        ctx.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)) // 顶左红
+        ctx.fill(CGRect(x: 0, y: 1, width: 2, height: 1))
+        ctx.setFillColor(CGColor(srgbRed: 0, green: 1, blue: 0, alpha: 1)) // 顶右绿
+        ctx.fill(CGRect(x: 2, y: 1, width: 2, height: 1))
+        let cg = try #require(ctx.makeImage())
+        let png = try #require(CaptureImage.pngData(cg))
+        let pic = try #require(PinPicture(cgImage: cg, png: png))
+
+        // 顺时针旋转 90° -> 2×4：原顶左(红) -> 顶右(1,0)；原底左(蓝) -> 顶左(0,0)
+        let rotated = try #require(pic.transformed(.rotate90CW))
+        #expect(rotated.cgImage.width == 2 && rotated.cgImage.height == 4)
+        let rotRep = NSBitmapImageRep(cgImage: rotated.cgImage)
+        let topLeft = try #require(rotRep.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB))
+        let topRight = try #require(rotRep.colorAt(x: 1, y: 0)?.usingColorSpace(.sRGB))
+        #expect(topLeft.blueComponent > 0.9 && topRight.redComponent > 0.9)
+
+        // 水平翻转 -> 顶左变为原顶右(绿)
+        let flippedH = try #require(pic.transformed(.flipHorizontal))
+        let hRep = NSBitmapImageRep(cgImage: flippedH.cgImage)
+        #expect(try #require(hRep.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB)).greenComponent > 0.9)
+
+        // 垂直翻转 -> 顶左变为原底左(蓝)
+        let flippedV = try #require(pic.transformed(.flipVertical))
+        let vRep = NSBitmapImageRep(cgImage: flippedV.cgImage)
+        #expect(try #require(vRep.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB)).blueComponent > 0.9)
     }
 
 }

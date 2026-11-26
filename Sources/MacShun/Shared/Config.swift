@@ -373,11 +373,25 @@ struct PerformanceConfig: Codable, Equatable {
     }
 }
 
+struct CaptureConfig: Codable, Equatable {
+    /// 截图默认保存目录（留空时 ⌘S 打开“另存为”对话框；设置后 ⌘S 静默保存，⇧⌘S 另存为）。
+    var saveDirectory = ""
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CaptureConfig()
+        saveDirectory = c.value(.saveDirectory, default: d.saveDirectory)
+    }
+}
+
 struct AppConfig: Codable, Equatable {
     var keyboard = KeyboardConfig()
     var mouse = MouseConfig()
     var clipboard = ClipboardConfig()
     var fileSearch = FileSearchConfig()
+    var capture = CaptureConfig()
     var window = WindowConfig()
     var update = UpdateConfig()
     var performance = PerformanceConfig()
@@ -390,6 +404,7 @@ struct AppConfig: Codable, Equatable {
         mouse = c.value(.mouse, default: MouseConfig())
         clipboard = c.value(.clipboard, default: ClipboardConfig())
         fileSearch = c.value(.fileSearch, default: FileSearchConfig())
+        capture = c.value(.capture, default: CaptureConfig())
         window = c.value(.window, default: WindowConfig())
         update = c.value(.update, default: UpdateConfig())
         performance = c.value(.performance, default: PerformanceConfig())

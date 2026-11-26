@@ -369,7 +369,7 @@ struct SettingsView: View {
     private var page: some View {
         switch selection.tab {
         case .keyboard:
-            KeyboardSettings(config: $configStore.config.keyboard, state: state)
+            KeyboardSettings(config: $configStore.config.keyboard, capture: $configStore.config.capture, state: state)
         case .mouse:
             MouseSettings(
                 config: $configStore.config.mouse, state: state, mice: state.mice,
@@ -482,6 +482,7 @@ private struct SidebarRow: View {
 
 private struct KeyboardSettings: View {
     @Binding var config: KeyboardConfig
+    @Binding var capture: CaptureConfig
     @ObservedObject var state: AppState
 
     var body: some View {
@@ -531,10 +532,11 @@ private struct KeyboardSettings: View {
             Section {
                 captureRow(.image, $config.captureShortcut, other: config.captureTextShortcut)
                 captureRow(.text, $config.captureTextShortcut, other: config.captureShortcut)
+                captureSaveDirectoryRow
             } header: {
                 Text(L("截图快捷键")).settingsAnchor(.captureShortcuts)
             } footer: {
-                Text(L("也可以从菜单栏直接截图或取字。")).settingsFooter()
+                Text(L("也可以从菜单栏直接截图或取字；设置默认保存目录后，⌘S 将直接保存，⇧⌘S 仍可另存为。")).settingsFooter()
             }
 
             Section {
@@ -548,6 +550,40 @@ private struct KeyboardSettings: View {
             }
             .disabled(!config.enabled)
         }
+    }
+
+    private var captureSaveDirectoryRow: some View {
+        LabeledContent(L("默认保存目录")) {
+            HStack(spacing: 8) {
+                let path = capture.saveDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+                Text(path.isEmpty ? L("每次询问") : URL(fileURLWithPath: path).lastPathComponent)
+                    .foregroundStyle(path.isEmpty ? .secondary : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(path.isEmpty ? L("未设置默认目录，按 ⌘S 时弹出保存对话框") : path)
+                Button(L("选择…")) {
+                    let panel = NSOpenPanel()
+                    panel.canChooseFiles = false
+                    panel.canChooseDirectories = true
+                    panel.allowsMultipleSelection = false
+                    panel.canCreateDirectories = true
+                    if !path.isEmpty { panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true) }
+                    if panel.runModal() == .OK, let url = panel.url {
+                        capture.saveDirectory = url.path
+                    }
+                }
+                .buttonStyle(.chip())
+                if !path.isEmpty {
+                    Button { capture.saveDirectory = "" } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.medium)).frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.chip())
+                    .help(L("恢复每次询问"))
+                    .accessibilityLabel(L("恢复每次询问"))
+                }
+            }
+        }
+        .settingsAnchor(.captureSaveDirectory)
     }
 
     private func captureRow(_ mode: CaptureMode, _ shortcut: Binding<WinShortcut?>, other: WinShortcut?) -> some View {

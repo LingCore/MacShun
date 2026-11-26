@@ -35,7 +35,7 @@ private final class CaptureToolbarCard: NSView {
 /// 截图的两组工具各有一张卡片，宽度不足时在各自卡片内换行。
 @MainActor
 final class CaptureToolbar: NSView {
-    enum Action { case select, anchors, tool(CaptureMark.Kind), style, lineEnds, arrowHead, redact, undo, redo, scroll, pin, save, cancel, copy }
+    enum Action { case select, anchors, tool(CaptureMark.Kind), style, lineEnds, arrowHead, ocr, redact, undo, redo, scroll, pin, save, cancel, copy }
 
     private let document: Bool
     private let cards = [CaptureToolbarCard(), CaptureToolbarCard()]
@@ -93,9 +93,14 @@ final class CaptureToolbar: NSView {
             button.action = #selector(clicked(_:))
             addSubview(button)
         }
-        let secondaryTools: [CaptureMark.Kind] = [.line, .ellipse]
-        let tools = CaptureMark.Kind.allCases.filter { document || !secondaryTools.contains($0) }
-            .map { button(.tool($0), $0.title, $0.symbol) }
+        let secondaryTools: [CaptureMark.Kind] = [.ellipse, .line, .highlighter, .spotlight, .polygon, .cover]
+        func toolButton(_ kind: CaptureMark.Kind) -> CaptureToolButton {
+            button(.tool(kind), kind.title, kind.symbol, keys: kind.shortcutHint)
+        }
+        let primaryOrder: [CaptureMark.Kind] = [.rectangle, .arrow, .pen, .mosaic, .text, .number]
+        let tools = document
+            ? CaptureMark.Kind.allCases.map(toolButton)
+            : primaryOrder.map(toolButton)
         groups.append(document ? [select] + tools : tools)
         if document { groups.append(styleButtons) }
         let historyGroup = groups.count
@@ -108,8 +113,9 @@ final class CaptureToolbar: NSView {
             groups.append([button(.cancel, L("取消（Esc）"), "xmark"),
                            button(.copy, L("复制图片（Enter）"), "checkmark")])
             secondaryStart = groups.count
-            groups.append(secondaryTools.map { button(.tool($0), $0.title, $0.symbol) } + styleButtons)
-            groups.append([button(.redact, L("辅助打码"), "text.viewfinder"),
+            groups.append(secondaryTools.map(toolButton) + styleButtons)
+            groups.append([button(.ocr, L("识别选区文字"), "doc.text.viewfinder", keys: "⇧C"),
+                           button(.redact, L("辅助打码"), "text.viewfinder"),
                            button(.scroll, L("长截图（⌘L）"), "arrow.up.and.down.text.horizontal")])
         }
         for _ in groups.dropFirst() {
@@ -267,7 +273,7 @@ final class CaptureToolbar: NSView {
         styleButton.stylePreview = style
         styleButton.setAccessibilityValue(style.map {
             let alignment: String? = if case .lettering(_, let format) = $0 { format?.alignment.title } else { nil }
-            return [lineMode?.title, $0.color.title, $0.sizeTitle, alignment].compactMap { $0 }.joined(separator: " · ")
+            return [lineMode?.title, $0.color?.title, $0.sizeTitle, alignment].compactMap { $0 }.joined(separator: " · ")
         })
         if let lineStyle {
             endsButton.setGlyph(lineStyle.ends.symbol)
@@ -317,7 +323,7 @@ final class CaptureToolbar: NSView {
                 else if hasMarks { tip = L("先撤销标注，再开始长截图") }
                 else { tip = canScroll ? L("长截图（⌘L）") : L("请调整选区大小后再开始长截图") }
                 if button.toolTip != tip { button.toolTip = tip }
-            case .copy, .save, .pin:
+            case .copy, .save, .pin, .ocr:
                 let enabled = anchorStatus == nil
                 if button.isEnabled != enabled { button.isEnabled = enabled }
             case .style, .lineEnds, .arrowHead, .cancel: break
@@ -377,6 +383,38 @@ final class CaptureToolbar: NSView {
     func makeStyleMenu() -> NSMenu {
         let menu = NSMenu(title: L("标注样式"))
         guard let style else { return menu }
+        if case .mosaic(let mosaic) = style {
+            menu.addItem(.sectionHeader(title: L("打码样式")))
+            for mode in AnnotationMosaicStyle.Mode.allCases {
+                let item = NSMenuItem(title: mode.title, action: #selector(chooseMosaicMode(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = mode
+                item.state = mode == mosaic.mode ? .on : .off
+                item.image = NSImage(systemSymbolName: mode.symbol, accessibilityDescription: nil)
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: L("打码强度")))
+            for level in AnnotationMosaicStyle.Level.allCases {
+                let item = NSMenuItem(title: level.title, action: #selector(chooseMosaicLevel(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = level
+                item.state = level == mosaic.level ? .on : .off
+                menu.addItem(item)
+            }
+            return menu
+        }
+        if case .spotlight(let spotlight) = style {
+            menu.addItem(.sectionHeader(title: L("遮罩深浅")))
+            for shade in AnnotationSpotlightStyle.Shade.allCases {
+                let item = NSMenuItem(title: shade.title, action: #selector(chooseSpotlightShade(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = shade
+                item.state = shade == spotlight.shade ? .on : .off
+                menu.addItem(item)
+            }
+            return menu
+        }
         if case .lettering(_, let format?) = style {
             addTextFormatItems(to: menu, format: format)
         }
@@ -488,7 +526,30 @@ final class CaptureToolbar: NSView {
             changeStyle?(.lettering(lettering, text: format))
         case .fill:
             changeStyle?(.fill(color))
+        case .mosaic, .spotlight:
+            break
         }
+    }
+
+    @objc private func chooseMosaicMode(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? AnnotationMosaicStyle.Mode,
+              case .mosaic(var mosaic) = style else { return }
+        mosaic.mode = mode
+        changeStyle?(.mosaic(mosaic))
+    }
+
+    @objc private func chooseMosaicLevel(_ sender: NSMenuItem) {
+        guard let level = sender.representedObject as? AnnotationMosaicStyle.Level,
+              case .mosaic(var mosaic) = style else { return }
+        mosaic.level = level
+        changeStyle?(.mosaic(mosaic))
+    }
+
+    @objc private func chooseSpotlightShade(_ sender: NSMenuItem) {
+        guard let shade = sender.representedObject as? AnnotationSpotlightStyle.Shade,
+              case .spotlight(var spotlight) = style else { return }
+        spotlight.shade = shade
+        changeStyle?(.spotlight(spotlight))
     }
 
     @objc private func chooseWidth(_ sender: NSMenuItem) {
@@ -624,6 +685,31 @@ private final class CaptureToolButton: CaptureHoverButton {
             sample.fill()
             NSColor.separatorColor.setStroke()
             sample.stroke()
+            return
+        }
+        if case .mosaic(let mosaic) = stylePreview {
+            let symbol = NSImage(systemSymbolName: mosaic.mode.symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))?
+                .withSymbolConfiguration(.init(paletteColors: [ink]))
+            if let symbol {
+                let rect = CGRect(x: (bounds.width - symbol.size.width) / 2, y: (bounds.height - symbol.size.height) / 2,
+                                  width: symbol.size.width, height: symbol.size.height)
+                symbol.draw(in: backingAlignedRect(rect, options: [.alignMinXNearest, .alignMinYNearest, .alignWidthNearest, .alignHeightNearest]),
+                            from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            return
+        }
+        if case .spotlight(let spotlight) = stylePreview {
+            let outer = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 9, y: bounds.midY - 7, width: 18, height: 14),
+                                     xRadius: 3, yRadius: 3)
+            NSColor.labelColor.withAlphaComponent(spotlight.shade.alpha).setFill()
+            outer.fill()
+            let inner = NSBezierPath(roundedRect: CGRect(x: bounds.midX - 4, y: bounds.midY - 3, width: 8, height: 6),
+                                     xRadius: 1.5, yRadius: 1.5)
+            NSColor.windowBackgroundColor.setFill()
+            inner.fill()
+            NSColor.separatorColor.setStroke()
+            outer.stroke()
             return
         }
         if case .stroke(let stroke) = stylePreview {

@@ -8,7 +8,7 @@ import SwiftUI
 struct SettingsItem: Identifiable {
     enum ID: String {
         case keyboardEnabled, keyboardMode, ctrlAsCommand, textNavigation, systemShortcuts, finderShortcuts
-        case captureShortcuts, terminal, remoteDesktop, excludedApps
+        case captureShortcuts, captureSaveDirectory, terminal, remoteDesktop, excludedApps
         case fileSearchEnabled, fileIndex, externalDrives, indexedLocations, fileContents, imageText
         case mouseEnabled, linearPointer, pointerSpeed, scrollDirection, linearScroll, scrollLines, perMouse
         case sideButtons, ctrlWheelZoom, cursorSize
@@ -83,6 +83,8 @@ extension SettingsItem {
               keywords: "访达 文件 剪切 移动 重命名 删除 f2 files rename move"),
         .init(id: .captureShortcuts, tab: .keyboard, title: "截图快捷键",
               keywords: "截图 截屏 识别屏幕文字 取字 screenshot capture screen text ocr"),
+        .init(id: .captureSaveDirectory, tab: .keyboard, title: "默认保存目录",
+              keywords: "截图 保存 文件夹 路径 快速保存 自动保存 screenshot save folder directory"),
         .init(id: .terminal, tab: .keyboard, title: "终端",
               keywords: "terminal iterm shell ctrl+shift+c ctrl+shift+v 中断 interrupt"),
         .init(id: .remoteDesktop, tab: .keyboard, title: "远程桌面、虚拟机",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import AppKit
+import CoreImage
 import CoreText
 import ImageIO
 import UniformTypeIdentifiers
@@ -17,7 +18,7 @@ enum CaptureMode: Equatable {
 }
 
 /// 坐标始终是当前屏幕内的点（AppKit，左下为原点），裁切和取色时换成图片像素。
-struct CaptureImage {
+struct CaptureImage: @unchecked Sendable {
     let image: CGImage
     let size: CGSize
     var bounds: CGRect { CGRect(origin: .zero, size: size) }
@@ -97,7 +98,8 @@ struct CaptureImage {
         context.scaleBy(x: CGFloat(image.width) / size.width, y: CGFloat(image.height) / size.height)
         let cropArea = pointRect(pixels)
         context.draw(crop, in: cropArea)
-        for mark in marks { mark.draw(in: context) }
+        CaptureMark.drawSpotlights(marks, within: cropArea, in: context)
+        for mark in marks where mark.kind != .spotlight { mark.draw(in: context, backdrop: self) }
         if let polygon {
             // 对截图和所有标注一次性应用抗锯齿蒙版，避免重叠图层使斜边变厚。
             context.setBlendMode(.destinationOut)
@@ -179,10 +181,68 @@ struct AnnotationStroke: Equatable {
 
         var points: CGFloat { CGFloat(rawValue) }
         var title: String { L("线宽 %ld pt", rawValue) }
+
+        func stepped(_ delta: Int) -> Self {
+            let all = Self.allCases
+            guard let i = all.firstIndex(of: self) else { return self }
+            return all[min(max(0, i + delta), all.count - 1)]
+        }
     }
 
     var color: AnnotationColor = .red
     var width: Width = .medium
+}
+
+struct AnnotationMosaicStyle: Equatable {
+    enum Mode: CaseIterable {
+        case pixelate, blur
+
+        var title: String {
+            switch self {
+            case .pixelate: L("像素马赛克")
+            case .blur: L("高斯模糊")
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .pixelate: "checkerboard.rectangle"
+            case .blur: "drop.halffull"
+            }
+        }
+    }
+
+    enum Level: Int, CaseIterable {
+        case fine = 6, medium = 10, coarse = 16, heavy = 24
+
+        var title: String { L("强度 %ld", rawValue) }
+
+        func stepped(_ delta: Int) -> Self {
+            let all = Self.allCases
+            guard let i = all.firstIndex(of: self) else { return self }
+            return all[min(max(0, i + delta), all.count - 1)]
+        }
+    }
+
+    var mode: Mode = .pixelate
+    var level: Level = .medium
+}
+
+struct AnnotationSpotlightStyle: Equatable {
+    enum Shade: Int, CaseIterable {
+        case light = 35, medium = 50, dark = 65, deep = 80
+
+        var alpha: CGFloat { CGFloat(rawValue) / 100.0 }
+        var title: String { L("遮罩 %ld%%", rawValue) }
+
+        func stepped(_ delta: Int) -> Self {
+            let all = Self.allCases
+            guard let i = all.firstIndex(of: self) else { return self }
+            return all[min(max(0, i + delta), all.count - 1)]
+        }
+    }
+
+    var shade: Shade = .medium
 }
 
 struct AnnotationLineStyle: Equatable {
@@ -239,6 +299,12 @@ struct AnnotationLettering: Equatable {
         var points: CGFloat { CGFloat(rawValue) }
         var title: String { L("字号 %ld pt", rawValue) }
         var typeface: CTFont { CTFontCreateUIFontForLanguage(.system, points, nil)! }
+
+        func stepped(_ delta: Int) -> Self {
+            let all = Self.allCases
+            guard let i = all.firstIndex(of: self) else { return self }
+            return all[min(max(0, i + delta), all.count - 1)]
+        }
     }
 
     var color: AnnotationColor
@@ -296,12 +362,15 @@ enum AnnotationStyle: Equatable {
     case stroke(AnnotationStroke)
     case lettering(AnnotationLettering, text: AnnotationTextFormat? = nil)
     case fill(AnnotationColor)
+    case mosaic(AnnotationMosaicStyle)
+    case spotlight(AnnotationSpotlightStyle)
 
-    var color: AnnotationColor {
+    var color: AnnotationColor? {
         switch self {
         case .stroke(let stroke): stroke.color
         case .lettering(let lettering, _): lettering.color
         case .fill(let color): color
+        case .mosaic, .spotlight: nil
         }
     }
 
@@ -310,18 +379,22 @@ enum AnnotationStyle: Equatable {
         case .stroke(let stroke): stroke.width.title
         case .lettering(let lettering, _): lettering.size.title
         case .fill: nil
+        case .mosaic(let mosaic): "\(mosaic.mode.title) · \(mosaic.level.title)"
+        case .spotlight(let spotlight): spotlight.shade.title
         }
     }
 }
 
 struct CaptureMark: Equatable {
     enum Kind: CaseIterable {
-        case arrow, line, rectangle, ellipse, polygon, cover, text, number
+        case arrow, line, rectangle, ellipse, pen, highlighter, polygon, mosaic, cover, spotlight, text, number
 
         var isLine: Bool { self == .line || self == .arrow }
+        var isFreehand: Bool { self == .pen || self == .highlighter }
         var isBasicShape: Bool { self == .rectangle || self == .ellipse || self == .cover }
-        var usesStroke: Bool { self != .cover && (isLine || isBasicShape || self == .polygon) }
+        var usesStroke: Bool { self != .cover && (isLine || isFreehand || isBasicShape || self == .polygon) }
         var usesLettering: Bool { self == .text || self == .number }
+        var supportsSquareConstrain: Bool { self == .rectangle || self == .ellipse || self == .spotlight }
 
         var title: String {
             switch self {
@@ -329,8 +402,12 @@ struct CaptureMark: Equatable {
             case .line: L("直线")
             case .rectangle: L("矩形")
             case .ellipse: L("椭圆")
+            case .pen: L("画笔")
+            case .highlighter: L("荧光笔")
             case .polygon: L("锚点标注")
+            case .mosaic: L("马赛克")
             case .cover: L("实心遮挡")
+            case .spotlight: L("聚光灯")
             case .text: L("文字标注")
             case .number: L("步骤序号")
             }
@@ -341,10 +418,29 @@ struct CaptureMark: Equatable {
             case .line: "line.diagonal"
             case .rectangle: "rectangle"
             case .ellipse: "oval"
+            case .pen: "scribble"
+            case .highlighter: "highlighter"
             case .polygon: "point.3.filled.connected.trianglepath.dotted"
+            case .mosaic: "checkerboard.rectangle"
             case .cover: "rectangle.fill"
+            case .spotlight: "lightbulb.max"
             case .text: "text.cursor"
             case .number: "1.circle"
+            }
+        }
+        var shortcutHint: String? {
+            switch self {
+            case .rectangle: "1"
+            case .ellipse: "2"
+            case .arrow: "3"
+            case .line: "4"
+            case .pen: "5"
+            case .highlighter: "6"
+            case .text: "7"
+            case .number: "8"
+            case .mosaic: "9"
+            case .spotlight: "0"
+            default: nil
             }
         }
     }
@@ -354,9 +450,12 @@ struct CaptureMark: Equatable {
     var text = ""
     var number = 0
     var polygon: CapturePolygon?
+    var freehandPoints: [CGPoint] = []
     var stroke = AnnotationStroke()
     var letteringStyle: AnnotationLettering?
     var fillColor: AnnotationColor = .black
+    var mosaicStyle = AnnotationMosaicStyle()
+    var spotlightStyle = AnnotationSpotlightStyle()
     var customLineStyle: AnnotationLineStyle?
     var lineShape: CaptureLineShape?
     var hasFixedTextWidth = false
@@ -368,6 +467,12 @@ struct CaptureMark: Equatable {
         cache.countLimit = 128
         return cache
     }()
+    private static let mosaicCache: NSCache<NSString, CGImage> = {
+        let cache = NSCache<NSString, CGImage>()
+        cache.countLimit = 64
+        return cache
+    }()
+    private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private var textLayoutWidth: CGFloat { max(1, end.x - start.x - 2 * Self.textInset.width) }
 
     var lineStyle: AnnotationLineStyle {
@@ -379,10 +484,16 @@ struct CaptureMark: Equatable {
         .systemFont(ofSize: lettering.size.points, weight: kind == .text && textFormat.bold ? .bold : .regular)
     }
 
+    var effectiveStrokeWidth: CGFloat {
+        kind == .highlighter ? stroke.width.points * 3.4 + 6 : stroke.width.points
+    }
+
     var style: AnnotationStyle? {
         if kind.usesStroke { return .stroke(stroke) }
         if kind.usesLettering { return .lettering(lettering, text: kind == .text ? textFormat : nil) }
         if kind == .cover { return .fill(fillColor) }
+        if kind == .mosaic { return .mosaic(mosaicStyle) }
+        if kind == .spotlight { return .spotlight(spotlightStyle) }
         return nil
     }
 
@@ -419,11 +530,30 @@ struct CaptureMark: Equatable {
         return CGRect(x: start.x - width / 2, y: start.y - height / 2, width: width, height: height)
     }
 
+    private var freehandPath: CGPath {
+        let pts = freehandPoints.count >= 2 ? freehandPoints : [start, end]
+        let path = CGMutablePath()
+        guard let first = pts.first else { return path }
+        path.move(to: first)
+        if pts.count == 2 {
+            path.addLine(to: pts[1])
+            return path
+        }
+        for i in 1 ..< pts.count - 1 {
+            let mid = CGPoint(x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2)
+            path.addQuadCurve(to: mid, control: pts[i])
+        }
+        if let last = pts.last { path.addLine(to: last) }
+        return path
+    }
+
     var bounds: CGRect {
         switch kind {
         case .line, .arrow: return linePath(from: start, to: end).boundingBoxOfPath
+        case .pen, .highlighter: return freehandPath.boundingBoxOfPath
         case .polygon: return polygon?.bounds ?? .null
         case .cover: return polygon?.bounds ?? CaptureImage.rect(from: start, to: end)
+        case .mosaic, .spotlight: return CaptureImage.rect(from: start, to: end)
         case .number: return badgeBounds(for: CTLineGetBoundsWithOptions(numberLine, .useGlyphPathBounds))
         case .text:
             let maxWidth = textLayoutWidth
@@ -506,7 +636,7 @@ struct CaptureMark: Equatable {
 
     var selectionBounds: CGRect {
         guard kind.usesStroke else { return bounds.insetBy(dx: -3, dy: -3) }
-        let margin = stroke.width.points / 2 + 2
+        let margin = effectiveStrokeWidth / 2 + 2
         let shaft = bounds.insetBy(dx: -margin, dy: -margin)
         guard kind.isLine else { return shaft }
         let heads = arrowHeads
@@ -517,7 +647,7 @@ struct CaptureMark: Equatable {
 
     func hit(_ point: CGPoint) -> Bool {
         let box = bounds
-        let tolerance = kind == .cover ? 5 : stroke.width.points / 2 + 4
+        let tolerance = (kind == .cover || kind == .mosaic || kind == .spotlight) ? 5 : effectiveStrokeWidth / 2 + 4
         switch kind {
         case .arrow, .line:
             let heads = arrowHeads
@@ -528,6 +658,10 @@ struct CaptureMark: Equatable {
             }
             return linePath(from: start, to: end).copy(strokingWithWidth: tolerance * 2,
                        lineCap: .round, lineJoin: .round, miterLimit: 10).contains(point)
+        case .pen, .highlighter:
+            guard box.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { return false }
+            return freehandPath.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
+                                     lineJoin: .round, miterLimit: 10).contains(point)
         case .rectangle:
             return box.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
                 && !box.insetBy(dx: tolerance, dy: tolerance).contains(point)
@@ -540,6 +674,8 @@ struct CaptureMark: Equatable {
             guard let polygon else { return kind == .cover }
             return polygon.contains(point) || polygon.path.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
                                                                 lineJoin: .round, miterLimit: 10).contains(point)
+        case .mosaic, .spotlight:
+            return box.insetBy(dx: -tolerance, dy: -tolerance).contains(point)
         default: return box.insetBy(dx: -5, dy: -5).contains(point)
         }
     }
@@ -550,19 +686,112 @@ struct CaptureMark: Equatable {
         copy.start = CGPoint(x: start.x + dx, y: start.y + dy)
         copy.end = CGPoint(x: end.x + dx, y: end.y + dy)
         copy.lineShape = lineShape?.translated(dx: dx, dy: dy)
+        if !copy.freehandPoints.isEmpty {
+            copy.freehandPoints = copy.freehandPoints.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        }
         return copy
     }
 
-    func draw(in context: CGContext) {
+    /// 渲染所有聚光灯的联合暗色遮罩层（位于普通标注之下，使多个高亮区域并存）。
+    static func drawSpotlights(_ marks: [CaptureMark], within area: CGRect, in context: CGContext) {
+        let spotlights = marks.filter { $0.kind == .spotlight }
+        guard !spotlights.isEmpty else { return }
+        let alpha = spotlights.last?.spotlightStyle.shade.alpha ?? AnnotationSpotlightStyle.Shade.medium.alpha
+        context.saveGState()
+        context.addRect(area.insetBy(dx: -1, dy: -1))
+        for mark in spotlights {
+            let rect = mark.bounds.intersection(area)
+            guard !rect.isNull, !rect.isEmpty else { continue }
+            let radius = min(6, min(rect.width, rect.height) / 4)
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        }
+        context.setFillColor(CGColor(gray: 0, alpha: alpha))
+        context.drawPath(using: .eoFill)
+        context.setStrokeColor(CGColor(gray: 1, alpha: 0.45))
+        context.setLineWidth(1)
+        for mark in spotlights {
+            let rect = mark.bounds.intersection(area)
+            guard !rect.isNull, !rect.isEmpty else { continue }
+            let radius = min(6, min(rect.width, rect.height) / 4)
+            context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+        }
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func mosaicTileImage(backdrop: CaptureImage, rect: CGRect) -> (image: CGImage, drawRect: CGRect)? {
+        let pixels = backdrop.pixelRect(rect)
+        guard !pixels.isEmpty, let crop = backdrop.image.cropping(to: pixels) else { return nil }
+        let drawRect = backdrop.pointRect(pixels)
+        let imgID = ObjectIdentifier(backdrop.image as AnyObject).hashValue
+        let modeTag = mosaicStyle.mode == .pixelate ? "p" : "b"
+        let key = "\(imgID)|\(Int(pixels.minX))|\(Int(pixels.minY))|\(Int(pixels.width))|\(Int(pixels.height))|\(modeTag)|\(mosaicStyle.level.rawValue)" as NSString
+        if let cached = Self.mosaicCache.object(forKey: key) {
+            return (cached, drawRect)
+        }
+        let scale = max(1, CGFloat(backdrop.image.width) / max(1, backdrop.size.width))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        let rendered: CGImage?
+        switch mosaicStyle.mode {
+        case .pixelate:
+            let cellPx = max(2, Int((CGFloat(mosaicStyle.level.rawValue) * scale).rounded()))
+            let cols = max(1, Int(ceil(CGFloat(crop.width) / CGFloat(cellPx))))
+            let rows = max(1, Int(ceil(CGFloat(crop.height) / CGFloat(cellPx))))
+            guard let ctx = CGContext(data: nil, width: cols, height: rows, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: colorSpace, bitmapInfo: bitmapInfo) else { return nil }
+            ctx.interpolationQuality = .low
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: cols, height: rows))
+            rendered = ctx.makeImage()
+        case .blur:
+            let downscale = min(1.0, 240.0 / CGFloat(max(crop.width, crop.height)))
+            let bw = max(2, Int((CGFloat(crop.width) * downscale).rounded()))
+            let bh = max(2, Int((CGFloat(crop.height) * downscale).rounded()))
+            guard let ctx = CGContext(data: nil, width: bw, height: bh, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: colorSpace, bitmapInfo: bitmapInfo) else { return nil }
+            ctx.interpolationQuality = .low
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: bw, height: bh))
+            guard let small = ctx.makeImage() else { return nil }
+            let ci = CIImage(cgImage: small)
+            let sigma = Double(mosaicStyle.level.rawValue) * Double(scale) * Double(downscale) * 0.75
+            let blurred = ci.clampedToExtent().applyingGaussianBlur(sigma: max(1.5, sigma)).cropped(to: ci.extent)
+            rendered = Self.ciContext.createCGImage(blurred, from: ci.extent)
+        }
+        guard let result = rendered else { return nil }
+        Self.mosaicCache.setObject(result, forKey: key)
+        return (result, drawRect)
+    }
+
+    func draw(in context: CGContext, backdrop: CaptureImage? = nil) {
         context.saveGState()
         defer { context.restoreGState() }
         let rect = CaptureImage.rect(from: start, to: end)
         let ink = stroke.color.ink
-        context.setLineWidth(stroke.width.points)
+        context.setLineWidth(effectiveStrokeWidth)
         context.setLineCap(.round)
         context.setLineJoin(.round)
         context.setStrokeColor(ink)
         switch kind {
+        case .pen:
+            context.addPath(freehandPath)
+            context.strokePath()
+        case .highlighter:
+            context.setStrokeColor(ink.copy(alpha: 0.36) ?? ink)
+            context.addPath(freehandPath)
+            context.strokePath()
+        case .mosaic:
+            guard !rect.isEmpty else { return }
+            context.clip(to: rect)
+            if let backdrop, let tile = mosaicTileImage(backdrop: backdrop, rect: rect) {
+                context.interpolationQuality = mosaicStyle.mode == .pixelate ? .none : .medium
+                context.draw(tile.image, in: tile.drawRect)
+            } else {
+                context.setFillColor(CGColor(gray: 0.5, alpha: 0.9))
+                context.fill(rect)
+            }
+        case .spotlight:
+            // 由 CaptureMark.drawSpotlights 统一绘制联合暗色遮罩。
+            break
         case .number:
             let line = numberLine
             let glyph = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)

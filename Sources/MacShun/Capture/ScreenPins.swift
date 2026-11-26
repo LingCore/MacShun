@@ -69,6 +69,42 @@ struct PinPicture {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
             ?? CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
+
+    enum Transform {
+        case rotate90CW, flipHorizontal, flipVertical
+    }
+
+    /// 顺时针旋转 90° 或水平/垂直翻转贴图，返回新的 PNG 与 CGImage。
+    func transformed(_ op: Transform) -> PinPicture? {
+        let oldW = cgImage.width
+        let oldH = cgImage.height
+        let newW = op == .rotate90CW ? oldH : oldW
+        let newH = op == .rotate90CW ? oldW : oldH
+        let fallbackSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        let colorSpace = cgImage.colorSpace.flatMap { space -> CGColorSpace? in
+            guard space.model == .rgb, space.supportsOutput, !CGColorSpaceUsesExtendedRange(space) else { return nil }
+            return space
+        } ?? fallbackSpace
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: colorSpace, bitmapInfo: bitmapInfo)
+            ?? CGContext(data: nil, width: newW, height: newH, bitsPerComponent: 8, bytesPerRow: 0,
+                         space: fallbackSpace, bitmapInfo: bitmapInfo) else { return nil }
+        switch op {
+        case .rotate90CW:
+            ctx.translateBy(x: 0, y: CGFloat(oldW))
+            ctx.rotate(by: -.pi / 2)
+        case .flipHorizontal:
+            ctx.translateBy(x: CGFloat(oldW), y: 0)
+            ctx.scaleBy(x: -1, y: 1)
+        case .flipVertical:
+            ctx.translateBy(x: 0, y: CGFloat(oldH))
+            ctx.scaleBy(x: 1, y: -1)
+        }
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: oldW, height: oldH))
+        guard let output = ctx.makeImage(), let data = CaptureImage.pngData(output) else { return nil }
+        return PinPicture(cgImage: output, png: data)
+    }
 }
 
 enum PinGeometry {
@@ -152,18 +188,31 @@ final class ScreenPins: NSObject, NSWindowDelegate {
     }
     func windowDidResize(_ notification: Notification) { windowDidMove(notification) }
 
+    var hasClickThroughWindows: Bool {
+        windows.contains(where: \.clickThrough)
+    }
+
+    func disableAllClickThrough() {
+        for panel in windows where panel.clickThrough {
+            panel.setClickThrough(false)
+        }
+    }
+
     func closeAll() { windows.forEach { $0.close() } }
 }
 
 @MainActor
 final class ScreenPinPanel: NSPanel {
-    let picture: PinPicture
-    let naturalSize: CGSize
+    private(set) var picture: PinPicture
+    private(set) var naturalSize: CGSize
     let initialZoom: CGFloat
     private let pasteboard: NSPasteboard
     private var savePanel: NSSavePanel?
+    private var editorWindow: NSPanel?
+    private var ocrCancelled: Locked<Bool>?
     private let surface: PinSurface
     private(set) var zoom: CGFloat
+    private(set) var clickThrough = false
 
     /// 限制贴图窗口最大后备存储尺寸，防止大图或长截图放大后超过 GPU 纹理上限或暴涨内存。
     static let maxBackingDimension: CGFloat = 8192
@@ -222,7 +271,123 @@ final class ScreenPinPanel: NSPanel {
         let item = NSPasteboardItem()
         guard item.setData(picture.png, forType: .png) else { return }
         pasteboard.clearContents()
-        if !pasteboard.writeObjects([item]) { NSSound.beep() }
+        if pasteboard.writeObjects([item]) {
+            surface.showMessage(L("已复制图片"))
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    func replacePicture(_ updated: PinPicture, swapDimensions: Bool = false) {
+        picture = updated
+        if swapDimensions {
+            naturalSize = CGSize(width: naturalSize.height, height: naturalSize.width)
+        }
+        surface.setPicture(updated.cgImage)
+        let center = CGPoint(x: frame.midX, y: frame.midY)
+        scale(to: zoom, around: center)
+        ScreenPins.frames.update { $0[windowNumber] = frame }
+    }
+
+    func transformPicture(_ op: PinPicture.Transform) {
+        guard let updated = picture.transformed(op) else { return }
+        replacePicture(updated, swapDimensions: op == .rotate90CW)
+        let msg: String
+        switch op {
+        case .rotate90CW: msg = L("已旋转 90°")
+        case .flipHorizontal: msg = L("已水平翻转")
+        case .flipVertical: msg = L("已垂直翻转")
+        }
+        surface.showMessage(msg)
+    }
+
+    func setClickThrough(_ enabled: Bool) {
+        guard clickThrough != enabled else { return }
+        clickThrough = enabled
+        ignoresMouseEvents = enabled
+        if enabled {
+            ScreenPins.hovered.update { $0.remove(windowNumber) }
+            if alphaValue > 0.72 { alphaValue = 0.72 }
+            surface.showMessage(L("鼠标穿透 · 菜单栏恢复"), duration: 1.8)
+        } else {
+            if alphaValue < 0.99 { alphaValue = 1 }
+            surface.showMessage(L("已恢复贴图交互"), duration: 1.2)
+        }
+    }
+
+    func recognizeText() {
+        ocrCancelled?.set(true)
+        let cancelled = Locked(false)
+        ocrCancelled = cancelled
+        let cg = picture.cgImage
+        surface.showMessage(L("正在识别文字…"), duration: 10)
+        Task {
+            let text = await Task.detached(priority: .userInitiated) {
+                ContentExtractor.recognizeTextInSubprocess(in: cg, isCancelled: { cancelled.get() })
+            }.value
+            guard !cancelled.get() else { return }
+            self.ocrCancelled = nil
+            guard !text.isEmpty else {
+                self.surface.showMessage(L("选区里没有识别到文字"), duration: 1.4)
+                return
+            }
+            let item = NSPasteboardItem()
+            item.setString(text, forType: .string)
+            self.pasteboard.clearContents()
+            if self.pasteboard.writeObjects([item]) {
+                self.surface.showMessage(L("已复制识别的文字"), duration: 1.4)
+            } else {
+                NSSound.beep()
+            }
+        }
+    }
+
+    func editAnnotations() {
+        if let editorWindow {
+            editorWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let photo = CaptureImage(image: picture.cgImage, size: naturalSize)
+        let visible = (screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+        let width = min(visible.width - 80, max(540, min(naturalSize.width + 40, visible.width * 0.8)))
+        let height = min(visible.height - 80, max(360, min(naturalSize.height + 140, visible.height * 0.8)))
+        let origin = CGPoint(
+            x: min(max(visible.minX + 20, frame.midX - width / 2), visible.maxX - width - 20),
+            y: min(max(visible.minY + 20, frame.midY - height / 2), visible.maxY - height - 20)
+        )
+        let editorRect = CGRect(origin: origin, size: CGSize(width: width, height: height)).integral
+        let panel = NSPanel(contentRect: editorRect, styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        panel.title = L("编辑贴图标注")
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.minSize = CGSize(width: 440, height: 300)
+        let editor = LongCaptureEditor(
+            photo: photo,
+            annotations: CaptureAnnotations(),
+            frame: CGRect(origin: .zero, size: editorRect.size),
+            position: 0,
+            onDone: { [weak self, weak panel] annotations in
+                guard let self else { return }
+                if !annotations.marks.isEmpty,
+                   let rendered = photo.render(photo.bounds, marks: annotations.marks),
+                   let data = CaptureImage.pngData(rendered),
+                   let updated = PinPicture(cgImage: rendered, png: data) {
+                    self.replacePicture(updated)
+                    self.surface.showMessage(L("已更新贴图标注"))
+                }
+                panel?.close()
+                self.editorWindow = nil
+            },
+            onBack: { [weak self, weak panel] in
+                panel?.close()
+                self?.editorWindow = nil
+            }
+        )
+        panel.contentView = editor
+        editorWindow = panel
+        NSApp.activate()
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(editor.canvas)
     }
 
     func savePicture() {
@@ -257,6 +422,10 @@ final class ScreenPinPanel: NSPanel {
     }
 
     override func close() {
+        ocrCancelled?.set(true)
+        ocrCancelled = nil
+        editorWindow?.close()
+        editorWindow = nil
         savePanel?.cancel(nil)
         super.close()
     }
@@ -273,9 +442,16 @@ final class ScreenPinPanel: NSPanel {
         switch (event.keyCode, mods) {
         case (KeyCode.escape, []): close()
         case (KeyCode.c, .control), (KeyCode.c, .command): copyPicture()
+        case (KeyCode.c, .shift), (KeyCode.o, []): recognizeText()
+        case (KeyCode.e, []): editAnnotations()
+        case (KeyCode.r, []): transformPicture(.rotate90CW)
+        case (KeyCode.h, []): transformPicture(.flipHorizontal)
+        case (KeyCode.v, []): transformPicture(.flipVertical)
+        case (KeyCode.t, []): setClickThrough(true)
         case (KeyCode.s, .control), (KeyCode.s, .command): savePicture()
         case (KeyCode.equal, []), (KeyCode.equal, .shift): scale(to: zoom * 1.1, around: center)
         case (KeyCode.minus, []): scale(to: zoom / 1.1, around: center)
+        case (KeyCode.zero, []): scale(to: 1, around: center)
         default: return false
         }
         return true
@@ -379,13 +555,17 @@ private final class PinSurface: NSView {
     }
 
     func showPercent(_ value: Int, opacity: Bool) {
-        badge.stringValue = opacity ? L("透明度 %ld%%", value) : String(value) + "%"
+        showMessage(opacity ? L("透明度 %ld%%", value) : String(value) + "%", duration: 0.8)
+    }
+
+    func showMessage(_ text: String, duration: TimeInterval = 1.0) {
+        badge.stringValue = text
         badge.isHidden = false
         needsLayout = true
         hideBadge?.cancel()
         let hide = DispatchWorkItem { [weak self] in self?.badge.isHidden = true }
         hideBadge = hide
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: hide)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: hide)
     }
 
     @objc private func closePin() { panel?.close() }
@@ -486,8 +666,15 @@ private final class PinSurface: NSView {
         guard let panel else { return nil }
         let menu = NSMenu()
         menu.addItem(ActionMenuItem(L("复制图片"), symbol: "doc.on.doc") { panel.copyPicture() })
+        menu.addItem(ActionMenuItem(L("识别文字"), symbol: "doc.text.viewfinder") { panel.recognizeText() })
+        menu.addItem(ActionMenuItem(L("编辑标注…"), symbol: "pencil.tip.crop.circle") { panel.editAnnotations() })
         menu.addItem(ActionMenuItem(L("保存 PNG…"), symbol: "square.and.arrow.down") { panel.savePicture() })
         menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(L("顺时针旋转 90°"), symbol: "rotate.right") { panel.transformPicture(.rotate90CW) })
+        menu.addItem(ActionMenuItem(L("水平翻转"), symbol: "arrow.left.and.right.righttriangle.left.righttriangle.right") { panel.transformPicture(.flipHorizontal) })
+        menu.addItem(ActionMenuItem(L("垂直翻转"), symbol: "arrow.up.and.down.righttriangle.up.righttriangle.down") { panel.transformPicture(.flipVertical) })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(L("鼠标穿透（T）"), symbol: "hand.tap") { panel.setClickThrough(true) })
         menu.addItem(ActionMenuItem(L("恢复原始大小")) { panel.scale(to: 1, around: CGPoint(x: panel.frame.midX, y: panel.frame.midY)) })
         menu.addItem(ActionMenuItem(L("恢复不透明")) { panel.adjustOpacity(1) })
         menu.addItem(.separator())

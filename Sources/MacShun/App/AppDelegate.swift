@@ -16,7 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let pointer = PointerAccelerationController()
     private let cursor = CursorSizeController.shared
     @MainActor private lazy var fileSearch = FileSearchController(configStore: configStore)
-    @MainActor private lazy var screenCapture = ScreenCaptureController()
+    @MainActor private lazy var screenCapture = ScreenCaptureController(defaultSaveDirectory: { [weak self] in
+        let path = self?.configStore.config.capture.saveDirectory.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
+    })
     private lazy var windowSnapper = WindowSnapper(configStore: configStore)
     private var knownKeyboards: ([InputDevice], Set<String>) = ([], [])
     private var eventTaps: EventTapService!
