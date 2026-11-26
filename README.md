@@ -55,7 +55,8 @@
 - 记录文字、图片和 Finder 复制的文件。可按文件名搜索并重新粘贴一组文件，文件移动、删除或暂时不可用时会提示。常用内容可以固定并优先显示。在搜索栏右侧点「全部清除」并确认，即可清除未固定的记录。
 - 历史图片上右键选 **复制图中文字**，即可复制完整识别结果；按 Enter 仍粘贴图片。
 - **按图中文字找图片**：已记录的截图和图片会在本机后台识别，旧历史也会补上。按 Win+V 输入图里的文字或拼音，按 Enter 粘贴原图，按 F3 将它贴到屏幕。
-- 自动跳过密码管理器标记为隐藏的内容。内容只存在你自己的电脑上。
+- 自动跳过密码管理器标记为隐藏的内容。默认不联网，内容只存在你自己的电脑上。
+- **跨设备剪贴板共享（ShunSync v1）**：可在 **设置 › 剪贴板** 按需开启，在局域网或虚拟局域网（如 Tailscale）内与多台 Mac顺 和 Win顺 端到端加密共享文字、图片、文件与文件夹，不需要账号或云端服务器。支持局域网自动发现、6 位确认码配对或群组邀请码加入；文件默认只同步清单并在角落弹出提示卡片，可一键「接收并复制」或「存到下载」按需流式传输，隐藏密码条目永不同步。菜单栏可一键暂停或恢复共享。
 - 从菜单栏「暂停剪贴板记录」可暂时停止收录，已有历史仍能搜索和粘贴。恢复后从下一次复制开始记录。
 
 <p align="center">
@@ -67,7 +68,8 @@
 
 #### 截图与识别屏幕文字
 
-- 从菜单栏点 **开始截图**，拖选区域或点选窗口。拖动选区或边框可调整范围。双行工具条把常用标注和复制放在靠近选区的一行，另一行有直线、样式、辅助打码和长截图。按 **Enter** 复制、**⌘S** 保存 PNG、**Esc** 取消。
+- 从菜单栏点 **开始截图**，拖选区域或自动悬停识别界面元素、窗口与面板。自动选区融合视觉边缘识别与系统辅助功能探测，支持**滚轮切换层级**、**Tab** 切换仅框窗口、视觉边缘磁吸及整边拖拽缩放与翻转。按 **Enter** 或双击选区复制、**⌘S** 保存 PNG（设置默认保存目录后静默直存，**⇧⌘S** 另存为）、**⇧C** 在选区内一键 OCR 取字、**Esc** 或右键阶梯回退。按 **? / F1** 查看当前阶段快捷键浮卡，按 **H** 隐藏工具栏。
+- **标注工具与快捷键**：除矩形、椭圆、箭头、直线/折线/曲线、文字、步骤序号、多边形与实心遮挡外，还提供**马赛克/高斯模糊、自由画笔、荧光笔与聚光灯**。支持 **1–9 / 0** 单键切换工具、**[** / **]** 调整粗细或强度，按住 **Shift** 锁定正方形/正圆或 15° 角度。
 - 选中直线或箭头工具后，可设置箭头放在起点、终点或两端，或去掉箭头。箭头有实心、空心和开口三种样式。切回选择工具后点击已有线条，可以改样式或拖动两端。
 - 在「标注样式 › 线型」里，直线工具可选折线或曲线，箭头工具可选曲线。折线单击加点，按 **Enter**、双击或右键完成，点击起点可闭合。绘制中按 **Delete** 撤回最后一个点，按 **Esc** 取消这笔。曲线拖出起终点，拖动控制点调弧度。画完后双击路径插入节点，直线和直箭头插点后可以像折线一样编辑，并保留箭头样式。单击节点再按 **Delete** 可删除，支持 **⌘Z** 撤销和 **⇧⌘Z** 重做。绘制和拖动节点或控制点时按住 **Shift**，方向每 15° 吸附一次。
 - **屏幕取色**：开始截图后，把鼠标移到目标像素，放大镜会显示色块和色值。单按 **Shift** 在 **HEX、RGB、HSL** 之间切换，下次截图会沿用该格式。按 **C** 复制当前色值并退出截图。使用锚点选区或已编辑标注时，复制后可以继续编辑。
@@ -77,9 +79,9 @@
 - 只想复制文字时，选 **识别屏幕文字**，框选后松开鼠标即可。简体、繁体中文和英文在本机识别。
 - **写说明和标步骤**：选「文字标注」后点一下输入，Shift+Enter 换行，Enter 确认，双击可再改。选中文字框后，可拖动左右边框调整宽度，也可在「标注样式」里切换对齐、粗体和文字底框。选「步骤序号」后连续点击即可放置 1、2、3，双击序号可改编号。用选择工具点中标注可拖动，按 Delete 删除。删除序号时，后面的编号会自动补位。⌘Z 撤销，⇧⌘Z 重做。
 - **多边形与标注样式**：用多边形标注圈出不规则区域；「锚点选区」可以沿物体轮廓逐点选取，导出的范围外透明。选区和多边形标注闭合后都能拖动锚点、双击边线插入锚点，或单击选点后按 **Delete** 删除。双击矩形或椭圆的边线可插点，分别转为多边形或闭合曲线编辑，沿用颜色和线宽。逐点绘制或拖动时，按住 **Shift** 可按 15° 吸附。选区编辑和标注按操作顺序用 **⌘Z** 撤销、**⇧⌘Z** 重做。通过「标注样式」选择颜色、线宽或文字大小。
-- **对齐同一区域**：再次截图时按 R 恢复上一次成功输出的选框。方向键移动 1 个实际像素，Shift 加方向键调整宽高。选框旁显示导出尺寸。
+- **尺寸预设、最近选区与历史回看**：按 **F** 或点击选区尺寸气泡可原地输入像素宽高、锁定比例或套用常用尺寸预设；再次截图时按 **R / ⇧R** 循环恢复最近 10 个选区，按 **, / .** 翻看最近截图历史。方向键移动 1 个实际像素，Shift 加方向键调整宽高。
 - **长截图**：框住网页、文档或聊天记录里需要滚动的内容，点「长截图」或按 **⌘L / Ctrl+L**。等蓝框旁提示可以滚动后，用鼠标或触控板慢慢向下滚，点「完成」预览。要在长图上写说明或遮住一行，点「标注」，滚动到对应位置编辑，点「完成标注」后再复制、保存 PNG 或贴到屏幕。允许辅助功能后也可用 Enter 完成、Esc 取消。选区尽量只框正文，避开固定侧栏；如果画面中有大面积视频，先暂停播放。如果提示找不到重叠内容，往回滚一些再继续。
-- **贴图**：选好截图后按 **F3** 或点「贴到屏幕」，含标注的图片会留在原处。也可从菜单栏「贴出剪贴板图片」，或在历史图片上右键贴出。拖动移动、拖角或滚轮缩放、双击恢复原始大小，Ctrl 加滚轮调透明度。右键可复制、保存和关闭；点中贴图后按 Esc 也能关闭。
+- **贴图**：选好截图后按 **F3** 或点「贴到屏幕」，含标注的图片会留在原处。也可从菜单栏「贴出剪贴板图片」，或在历史图片上右键贴出。拖动移动、拖角或滚轮缩放、双击恢复原始大小，Ctrl 加滚轮调透明度。右键支持贴图内 OCR 取字、原地二次标注编辑、90° 旋转、水平/垂直翻转、鼠标穿透（可从菜单栏「恢复贴图交互」一键恢复）、复制、保存和关闭；点中贴图后按 Esc 也能关闭。
 - 两个操作都可以在 **设置 › 键盘 › 截图快捷键** 录入快捷键，默认留空。首次使用按系统提示允许屏幕录制。
 
 #### 🔍 文件搜索（像 Everything）
@@ -191,6 +193,7 @@
 | 剪贴板读取 | 在后台记录剪贴板历史（在系统设置里选“始终允许”） |
 | 文件和文件夹 | 第一次打开文件搜索时，系统会问能不能访问“桌面”“文稿”“下载”；点了不允许的文件夹搜不到 |
 | 屏幕录制 | 首次截图、长截图或识别屏幕文字时由系统提示授权 |
+| 本地网络 | 仅开启跨设备剪贴板共享时，用于在局域网内发现并加密连接你的其他 Mac顺 和 Win顺 电脑 |
 
 ### 常见问题
 
@@ -219,7 +222,7 @@ Mac顺 的文件搜索也能按内容搜：txt、CSV、JSON、代码、Word、Ex
 macOS 本来就支持每块屏幕单独设置。Mac顺 的“显示器”页把它做成了 Windows 那样的百分比，每块屏一个下拉菜单。
 
 **收费吗？会上传我的数据吗？**
-完全免费，源代码公开。检查更新时连接拾穗发布服务，下载安装包时先走第三方加速镜像（目前依次是 gh-proxy.com、ghfast.top），都不行再用 GitHub。可以在设置里关掉自动检查。打开“拾穗计划”页时会读取公开的作品用户数，查询不携带电脑标识。每天最多一次的匿名装机报告只包含随机化的电脑标识（由机器标识加项目名做 SHA-256 得到，不可还原）、版本号、系统版本和芯片架构。可以在“设置 › 通用”里关掉“发送匿名统计”，关掉后便不再发送装机报告。剪贴板内容只保存在你自己的电脑上。
+完全免费，源代码公开。检查更新时连接拾穗发布服务，下载安装包时先走第三方加速镜像（目前依次是 gh-proxy.com、ghfast.top），都不行再用 GitHub。可以在设置里关掉自动检查。打开“拾穗计划”页时会读取公开的作品用户数，查询不携带电脑标识。每天最多一次的匿名装机报告只包含随机化的电脑标识（由机器标识加项目名做 SHA-256 得到，不可还原）、版本号、系统版本和芯片架构。可以在“设置 › 通用”里关掉“发送匿名统计”，关掉后便不再发送装机报告。剪贴板内容默认只保存在你自己的电脑上；开启跨设备共享后，数据仅在你局域网或虚拟局域网内的设备间端到端加密直传，不经过云端服务器。
 
 **怎么更新到新版本？**
 Mac顺 定期向拾穗发布服务检查有没有新版本，有的话弹出窗口，写着新版本改了什么，点“立即更新”就会先从加速镜像下载（镜像不可用时换下一个地址，最后用 GitHub 原始地址），核对大小、SHA-256 和签名，通过后装好并重新打开，设置和授权都保留。镜像是第三方，安装包是否可信完全靠这些核对：摘要不符的文件会被丢弃。所有地址都失败才会提示重试。也可以在菜单栏图标里选“检查更新…”。0.3.0 仍通过 GitHub 检查更新，升到 0.4.0 后会自动切换到拾穗发布服务。
@@ -283,7 +286,8 @@ When you open Settings, Software Update, or File Search, the window opens on the
 - Stores text, images, and files copied in Finder. Find files by name and paste them together again. MacShun reports files that have moved, been deleted, or are temporarily unavailable. Pin frequently used items to show them first. Choose **Clear All** on the right side of the search bar and confirm to clear unpinned history.
 - Right-click an image and choose **Copy Text from Image** for the full recognized text. Enter pastes the image.
 - **Find pictures by their text.** MacShun recognizes saved clipboard images locally, including older entries. Search for a word or its pinyin, then press Enter to paste the original image or F3 to float it on screen.
-- Skips content that password managers mark as concealed. Everything stays on your Mac.
+- Skips content that password managers mark as concealed. Stays offline and local to your Mac by default.
+- **Cross-device clipboard sharing (ShunSync v1).** Optionally enable in **Settings › Clipboard** to sync text, images, files, and folders end-to-end encrypted with other MacShun and WinShun computers on your LAN or virtual LAN (such as Tailscale), with no account or cloud server. Supports LAN auto-discovery, 6-digit pairing, and group invite codes; files sync as manifests with a lightweight corner toast offering one-click **Receive & Copy** or **Save to Downloads** streaming transfer, and concealed password entries are never synced. Pause or resume sharing anytime from the menu bar.
 - Choose **Pause Clipboard Recording** from the menu bar to pause new entries. Existing history stays available for search and paste. After resuming, recording starts with the next copy.
 
 <p align="center">
@@ -295,7 +299,8 @@ When you open Settings, Software Update, or File Search, the window opens on the
 
 #### Screenshots and text capture
 
-- Choose **Take a Screenshot** from the menu bar. Drag an area or click a window, then move or resize the selection. The row next to the selection has common annotations and the copy button. The other row has lines, style controls, assisted redaction and scrolling capture. Press **Enter** to copy, **⌘S** to save a PNG, or **Esc** to cancel.
+- Choose **Take a Screenshot** from the menu bar to drag an area or hover-detect UI elements, panels, and windows. Auto-detection fuses pixel-based visual UI analysis with Accessibility probing, with **scroll wheel** to step through hierarchy levels, **Tab** for window-only mode, visual edge snapping, and full-edge drag resizing/flipping. Press **Enter** or double-click to copy, **⌘S** to save PNG (saves directly when a default folder is set, **⇧⌘S** for Save As), **⇧C** to OCR text inside the selection, and **Esc** or right-click to step back. Press **? / F1** for contextual shortcut hints and **H** to hide the toolbar.
+- **Annotation tools and shortcuts.** Alongside rectangle, ellipse, arrow, line/polyline/curve, text, step number, polygon, and solid redaction, MacShun includes **mosaic/blur, freehand brush, highlighter, and spotlight**. Press **1–9 / 0** to switch tools, **[ / ]** to adjust stroke width or strength, and hold **Shift** to lock squares, circles, or 15° angles.
 - The line and arrow tools support arrowheads at the start, end or both ends, or a plain line. Choose filled, outlined or open arrowheads. Switch to the selection tool and click an existing line to restyle it or drag its endpoints.
 - Open **Annotation Style › Line shape** to draw a polyline or curve with the line tool, or a curve with the arrow tool. Click to add polyline nodes, then press **Enter**, double-click or right-click to finish. Click the first node to close the path. While drawing, press **Delete** to remove the last node or **Esc** to cancel the stroke. Drag out a curve and adjust its curvature with the control points. Double-click a finished line, arrow, polyline or curve to insert a node. Straight lines and arrows become editable polylines and retain their arrowhead styles. Select a node and press **Delete** to remove it. Use **⌘Z** to undo and **⇧⌘Z** to redo. Hold **Shift** to snap to 15° increments while drawing or editing points.
 - **Screen color picker**. Hover over a pixel to see its swatch and value in the magnifier. Tap **Shift** to cycle through **HEX, RGB and HSL**. MacShun remembers the format for your next screenshot. Press **C** to copy the displayed value and exit. If you have a polygon selection or annotation edits, the screenshot stays open so you can keep editing.
@@ -305,9 +310,9 @@ When you open Settings, Software Update, or File Search, the window opens on the
 - Choose **Copy Text from Screen** and release the mouse to copy text. Simplified Chinese, Traditional Chinese and English are recognized on the Mac.
 - **Add notes and numbered steps.** Select Text and click to type. Shift+Enter inserts a line break, and Enter commits the text. Double-click a label to edit it. Drag either side of a selected text box to adjust its width and wrap the text. Use Annotation Style to change the alignment, bold weight, or background of a text box. Choose Step Number and click to place successive badges. Double-click a badge to change its number. Select a mark to move or delete it. Deleting a badge shifts the following numbers down. ⌘Z undoes a change and ⇧⌘Z redoes it.
 - **Polygons and annotation styles.** Outline an irregular area with a polygon, or use Anchor Selection to select a shape with a transparent exterior. Once a selection or polygon annotation is closed, drag points to reshape it, double-click an edge to insert a point, or select a point and press **Delete** to remove it. Double-click a rectangle or ellipse edge to insert a point and edit it as a polygon or closed curve, respectively, with its original color and stroke width. Hold **Shift** to snap to 15° increments when drawing or dragging points. Undo selection edits and annotations in order with **⌘Z**, or redo with **⇧⌘Z**. Annotation Style offers color, stroke width and text size controls.
-- **Repeat a region.** Press R to recall the last successfully exported region on its display. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height. The size beside the selection is the exported pixel size.
+- **Size presets, recent regions, and history.** Press **F** or click the dimension badge to type exact pixel dimensions, lock aspect ratios, or apply common presets. Press **R / ⇧R** to cycle through the last 10 regions on that display, and **, / .** to browse recent captures. Arrow keys move the selection by one physical pixel, and Shift with an arrow adjusts its width or height.
 - **Scrolling screenshots**: select the scrollable content of a page, document or chat and press **⌘L / Ctrl+L**. When the controls are ready, scroll slowly down inside the blue frame. Click **Finish** to review. Choose **Annotate** to mark any part of the long image, then **Done** to return to the preview and copy, save a PNG or float it. With Accessibility access, Enter finishes and Esc cancels. Select the scrolling body to avoid repeating a fixed sidebar, and pause large videos before capturing. If an overlap is lost, scroll back slightly and continue.
-- **Float an image** with F3 or the Float on Screen button after making a selection. You can also float a clipboard image from the menu bar or an image entry in history. Drag to move, drag a corner or scroll to zoom, double-click for actual size, and Control-scroll for opacity. Right-click to copy, save or close.
+- **Float an image** with F3 or the Float on Screen button after making a selection. You can also float a clipboard image from the menu bar or an image entry in history. Drag to move, drag a corner or scroll to zoom, double-click for actual size, and Control-scroll for opacity. Right-click for in-pin OCR text copy, in-place re-annotation, 90° rotation, horizontal/vertical flip, click-through mode (restore anytime via **Restore Pin Interaction** in the menu bar), copy, save, or close.
 - Both actions have optional shortcuts under **Settings › Keyboard › Screenshot shortcuts**. Allow screen recording when prompted on first use.
 
 #### 🔍 File search (like Everything)
@@ -417,6 +422,7 @@ Requires macOS 14 Sonoma or later.
 | Pasteboard access | Record clipboard history in the background (choose "Always Allow") |
 | Files and Folders | The first time you open file search, macOS asks about Desktop, Documents and Downloads; folders you deny won't be searched |
 | Screen Recording | Prompted on first use of screenshots, scrolling capture, or copying text from screen |
+| Local Network | Only used when cross-device clipboard sharing is enabled, to discover and connect over encrypted LAN links to your other MacShun and WinShun computers |
 
 The settings window walks you through each one, and changes take effect immediately.
 
@@ -450,7 +456,7 @@ macOS supports per-display scaling; MacShun's Displays page shows it as Windows-
 WinShun has been renamed MacShun. Quit WinShun from the menu bar, drag Win顺 from Applications to the Trash, then install MacShun. Permissions, settings and clipboard history carry over, so there is nothing to grant again.
 
 **Is it free? Does it collect data?**
-Free and open source. MacShun checks for updates through the Gleaning release service and tries third-party mirrors for installer downloads, with GitHub as the fallback. You can turn off automatic checks in Settings. Opening the Gleaning page fetches public user counts without sending a computer identifier. The anonymous install report runs at most once a day and includes a SHA-256 hash of the machine identifier and project name, the app version, the macOS version, and the chip architecture. You can turn off install reports with “Send anonymous usage statistics” in Settings › General. Clipboard history stays on your Mac.
+Free and open source. MacShun checks for updates through the Gleaning release service and tries third-party mirrors for installer downloads, with GitHub as the fallback. You can turn off automatic checks in Settings. Opening the Gleaning page fetches public user counts without sending a computer identifier. The anonymous install report runs at most once a day and includes a SHA-256 hash of the machine identifier and project name, the app version, the macOS version, and the chip architecture. You can turn off install reports with “Send anonymous usage statistics” in Settings › General. Clipboard history stays local to your Mac by default; if you enable cross-device sharing, data is transferred end-to-end encrypted directly across your LAN or virtual LAN without any cloud server.
 
 **How do I update?**
 MacShun periodically checks the Gleaning release service. When there is a new version, a window shows what's new; click Update Now to download it from an accelerated mirror (falling back to the next address, and finally to the original GitHub URL), verify its size, SHA-256 and signature, then install and reopen, keeping settings and permissions. Mirrors are third parties, so trust comes entirely from those checks: a file with a wrong digest is discarded. You only see an error to retry if every address fails. You can also choose Check for Updates… from the menu bar icon. Version 0.3.0 checks GitHub for updates and switches to the Gleaning release service once it upgrades to 0.4.0.
